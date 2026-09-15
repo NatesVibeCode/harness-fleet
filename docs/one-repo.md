@@ -83,8 +83,25 @@ CLI equivalent: `--lane <name>` (already wired on `research`; extend to the rest
 
 ## Status
 
-Recorded, not started. Awaiting: the name, and whether history is imported or
-started fresh. Nothing else in this plan can be executed before those two.
+## Status: the merge is done, in the existing repo
+
+Name: **harness-fleet** (confirmed; it is ours on PyPI). History: kept — a fresh
+repo turned out to buy nothing the archive does not.
+
+| Step | State |
+| --- | --- |
+| Lanes ship with the tool | **done** — `account`, `career`, `partner` as package data, selectable through `harness_fleet_lanes` and `lane` on `harness_fleet_run` |
+| account-fleet absorbed | **done** — it had nothing unique but its own database; repository archived |
+| career-fleet absorbed | **done** — `career_fleet/`, its skill (3 copies), examples and 9 test files moved in; `career-fleet` declared as a second entry point so the commands its docs describe exist; repository archived |
+| Docs guard | **strengthened** — it reads this distribution's console scripts and checks each surface's documented commands with that surface's own parser |
+| Career's data | **stayed out** — databases, profile and target files are refused by `test_shipped_lanes.py` |
+| One skill (S7) | **not done** — career's skill moved across intact; collapsing the three into one procedure plus a lanes table is the remaining piece |
+| Single release | **not done** — deliberately; see versioning.md |
+
+Harness carries everything: **1301 passed, 78 skipped**, ruff and mypy clean.
+
+What is left is documentation, not code: S7's skill collapse, and one release when
+there is something worth handing someone.
 
 ---
 
