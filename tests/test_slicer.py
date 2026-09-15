@@ -29,15 +29,17 @@ def test_slice_long_document_offsets():
     assert slices[-1]["end"] == len(text)
 
 
-def test_slice_long_document_overlaps_and_snaps_to_sentences():
+def test_sentence_boundaries_are_preferred_over_mid_sentence_cuts():
+    """Structure-aligned partition: no overlap, and cuts land on sentence ends."""
     sentences = [f"Sentence number {i} states a verifiable fact about Kafka." for i in range(40)]
     text = " ".join(sentences)
     slices = slice_document(text, max_chars=300, overlap_chars=60)
     assert len(slices) > 1
-    for prev, cur in zip(slices, slices[1:], strict=False):
-        # Consecutive slices overlap (evidence spanning a cut stays whole)
-        assert cur["start"] < prev["end"]
-        assert text[cur["start"]:cur["end"]] == cur["text"]
-    # Window ends prefer sentence boundaries over mid-sentence cuts
+    assert slices[0]["start"] == 0
+    assert slices[-1]["end"] == len(text)
+    assert sum(s["end"] - s["start"] for s in slices) == len(text)
+    assert all(a["end"] == b["start"] for a, b in zip(slices, slices[1:], strict=False))
+    assert all(s["end"] - s["start"] <= 300 for s in slices)
+    assert all(text[s["start"]:s["end"]] == s["text"] for s in slices)
     for s in slices[:-1]:
-        assert s["text"][-1] in ".!?\n \"')]" or s["end"] - s["start"] == 300
+        assert s["text"].rstrip()[-1] in ".!?"

@@ -14,11 +14,11 @@ Hard dependencies: stdlib + ``httpx`` (already required). Broad web search
 Apache-2.0, then ``readability-lxml``, Apache-2.0) light up when the optional
 ``discover`` extra is installed::
 
-    pip install harness-fleet[discover]
+    pip install <distribution>[discover]
 
 JS-heavy pages render via the optional ``js`` extra (Playwright, experimental)::
 
-    pip install harness-fleet[js] && playwright install chromium
+    pip install <distribution>[js] && playwright install chromium
 
 Every entry point degrades to a clear install hint when an optional backend is
 missing. Keyless structured sources (Greenhouse/Ashby JSON APIs, HN Algolia,
@@ -37,6 +37,7 @@ import re
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
@@ -44,10 +45,13 @@ from urllib.parse import urljoin, urlparse, urlunparse
 
 import httpx
 
+from . import branding
+from .channels import channel_hits, load_channels
 from .models import InputItem
+from .sources import host_of, is_noise_host, is_source_host
 
-USER_AGENT = "harness-fleet-discover (+https://github.com/NatesVibeCode/harness-fleet)"
-DISCOVER_EXTRA = "pip install harness-fleet[discover]"
+USER_AGENT = f"{branding.CLI_NAME}-discover (+{branding.HOMEPAGE})"
+DISCOVER_EXTRA = f"pip install {branding.DIST_NAME}[discover]"
 
 HN_API = "https://hn.algolia.com/api/v1/search"
 YC_API = "https://api.ycombinator.com/v0.1/companies"
@@ -457,14 +461,36 @@ def _validate_backends(
     searxng_url: str | None,
     discourse_url: str | None = None,
 ) -> list[str]:
-    unknown = [b for b in backends if b not in BACKENDS]
+    channels = _workspace_channels()
+    unknown = [b for b in backends if b not in BACKENDS and b not in channels]
     if unknown:
-        raise DiscoverError(f"unknown search backend(s): {unknown} (choose from {sorted(BACKENDS)})")
+        hint = ""
+        try:
+            available = load_channels(Path.cwd())
+            if available:
+                hint = f"; workspace channels: {sorted(available)}"
+        except Exception:
+            pass
+        raise DiscoverError(
+            f"unknown search backend(s): {unknown} (choose from {sorted(BACKENDS)}{hint})"
+        )
     if "searxng" in backends and not searxng_url:
         raise DiscoverError("searxng backend requires --searxng-url (self-hosted instance)")
     if "discourse" in backends and not discourse_url:
         raise DiscoverError("discourse backend requires --discourse-url (instance to search)")
     return list(backends)
+
+
+def _workspace_channels() -> dict[str, Any]:
+    """Channels this workspace defines, loaded once per call site."""
+    from .channels import load_channels
+
+    try:
+        return load_channels(Path.cwd())
+    except Exception:
+        # A broken channel file must not take down the built-in backends; the
+        # CLI reports it when the channel itself is asked for.
+        return {}
 
 
 def _run_backend(
@@ -480,6 +506,9 @@ def _run_backend(
     lemmy_instance: str = LEMMY_DEFAULT,
     timeout: float = 20.0,
 ) -> list[SearchHit]:
+    channel = _workspace_channels().get(backend)
+    if channel is not None:
+        return channel_hits(channel, query, max_results=max_results, timeout=timeout, client=client)
     if backend == "ddgs":
         # The other backends inherit the timeout from the shared httpx client;
         # ddgs builds its own session, so it must be told explicitly.
@@ -563,7 +592,7 @@ def _parse_robots(txt: str) -> tuple[list[str], list[str]]:
         if key == "user-agent":
             if saw_rule:
                 applicable, saw_rule = False, False
-            applicable = applicable or value in ("*", "harness-fleet-discover")
+            applicable = applicable or value in ("*", f"{branding.CLI_NAME}-discover")
         elif key in ("allow", "disallow"):
             saw_rule = True
             if applicable and value:
@@ -694,27 +723,67 @@ def _extract_title(html: str) -> str:
     return _WS.sub(" ", _html.unescape(re.sub(r"<[^>]+>", "", match.group(1)))).strip()[:500]
 
 
+_DENSITY_MIN_DOC_WORDS = 200  # a document below this is genuinely thin (JS shell, stub)
+_DENSITY_MIN_CAPTURE_RATIO = 0.2  # an extractor must capture this share of a real body
+
+
+def _word_count(text: str) -> int:
+    """Whitespace word count; density compares like with like, not tokens."""
+    return len(text.split())
+
+
+def _document_word_count(html: str) -> int:
+    """Word count of the whole cleaned document, tags stripped, entities decoded."""
+    import html as _html
+
+    stripped = re.sub(r"<[^>]+>", " ", _remove_hidden_blocks(html))
+    return _word_count(_html.unescape(stripped))
+
+
+def _captures_document(candidate: str, document_words: int) -> bool:
+    """True when *candidate* plausibly represents the document it came from.
+
+    Extractors sometimes return one widget subtree of a long page — archived
+    table-era markup is the classic case — and accepting that would cite a menu
+    instead of the page. Candidates from a genuinely thin document (a JS shell,
+    a stub) still pass: there is nothing bigger to capture there.
+    """
+    if not candidate.strip():
+        return False
+    if document_words < _DENSITY_MIN_DOC_WORDS:
+        return True
+    return _word_count(candidate) >= _DENSITY_MIN_CAPTURE_RATIO * document_words
+
+
 def extract_text(html: str) -> str:
     """HTML -> verbatim plain text. Prefers readability, then trafilatura, then stdlib.
 
-    Hidden script/style blocks are removed first: their code is never page
-    copy, and trafilatura would otherwise surface JSON-LD bodies as text.
-    Readability goes first because it returns markup, so the chrome-aware
-    fallback stripper below still sees nav/menu roles and classes;
-    trafilatura's plain-text output would bypass those heuristics and leak
-    site chrome (menus, chat widgets) into citable evidence.
+    Hidden script/style blocks are removed first: their code is never page copy,
+    and trafilatura would otherwise surface JSON-LD bodies as text. Readability
+    goes first because it returns markup, so the chrome-aware fallback stripper
+    below still sees nav/menu roles and classes; trafilatura's plain-text output
+    would bypass those heuristics and leak site chrome into citable evidence.
+
+    Every extractor's output is density-gated against the whole document:
+    archived table-era pages can leave readability holding a small widget
+    subtree of a page that carries thousands of words of prose, and that widget
+    must not win. Rejected output falls through to the next extractor and
+    finally to the chrome-aware full-document strip.
     """
     if not html.strip():
         return ""
     cleaned = _remove_hidden_blocks(html)
+    document_words = _document_word_count(cleaned)
+    best_rejected = ""
     try:
         from readability import Document
 
         summary = Document(cleaned).summary()
         if summary and summary.strip():
-            text = _fallback_strip(summary)
-            if text.strip():
-                return text.strip()
+            text = _fallback_strip(summary).strip()
+            if text and _captures_document(text, document_words):
+                return text
+            best_rejected = max(best_rejected, text, key=len)
     except ImportError:
         pass
     except Exception:
@@ -724,13 +793,18 @@ def extract_text(html: str) -> str:
 
         out = trafilatura.extract(cleaned, include_comments=False, include_tables=True)
         if out and out.strip():
-            return out.strip()
+            text = out.strip()
+            if _captures_document(text, document_words):
+                return text
+            best_rejected = max(best_rejected, text, key=len)
     except ImportError:
         pass
     except Exception:
         pass
-    return _fallback_strip(cleaned).strip()
-
+    fallback = _fallback_strip(cleaned).strip()
+    # The full-document strip is the last resort. An extractor's widget is still
+    # better than an empty record when that strip finds nothing.
+    return fallback or best_rejected
 
 def require_playwright() -> None:
     """Fail fast with an install hint when the ``js`` extra is missing."""
@@ -738,7 +812,7 @@ def require_playwright() -> None:
         import playwright  # noqa: F401
     except ImportError as exc:
         raise DiscoverError(
-            "playwright is not installed (pip install harness-fleet[js] "
+            f"playwright is not installed (pip install {branding.DIST_NAME}[js] "
             "&& playwright install chromium)"
         ) from exc
 
@@ -754,7 +828,7 @@ def _render_js_page(url: str, timeout: float = 30.0) -> tuple[str, str]:
         from playwright.sync_api import sync_playwright
     except ImportError as exc:
         raise DiscoverError(
-            "playwright is not installed (pip install harness-fleet[js] "
+            f"playwright is not installed (pip install {branding.DIST_NAME}[js] "
             "&& playwright install chromium)"
         ) from exc
     try:
@@ -887,21 +961,213 @@ def _json_ld_description(html: str) -> str:
     return best
 
 
+# ---------------------------------------------------------------------------
+# Wayback Machine (archived captures, keyless CDX API)
+# ---------------------------------------------------------------------------
+
+WAYBACK_CDX_API = "http://web.archive.org/cdx/search/cdx"
+WAYBACK_MIN_CAPTURE_BYTES = 5_000  # smaller captures are stubs, not pages
+_WAYBACK_URL = re.compile(
+    r"^https?://web\.archive\.org/web/(?P<timestamp>\d{4,14})(?:[a-z_]{0,3})?/(?P<original>.+)$",
+    re.IGNORECASE,
+)
+_CDX_FIELDS = ("timestamp", "original", "statuscode", "length")
+
+
+def wayback_snapshot_url(original_url: str, timestamp: str) -> str:
+    """Raw-capture URL for one archived page (``id_``: Wayback chrome not injected)."""
+    return f"https://web.archive.org/web/{str(timestamp).strip()}id_/{str(original_url).strip()}"
+
+
+def _cdx_value(row: Sequence[Any], index: dict[str, int], *names: str) -> str:
+    for name in names:
+        position = index.get(name)
+        if position is not None and position < len(row):
+            value = str(row[position] or "").strip()
+            if value:
+                return value
+    return ""
+
+
+def _parse_wayback_cdx(payload: Any) -> list[dict[str, str]]:
+    """Defensive CDX ``output=json`` -> flat rows. Malformed input is ``[]``."""
+    if isinstance(payload, dict):
+        payload = payload.get("rows")
+    if not isinstance(payload, list):
+        return []
+    raw_rows = [row for row in payload if isinstance(row, (list, tuple)) and row]
+    if not raw_rows:
+        return []
+    header = [str(cell).strip().lower() for cell in raw_rows[0]]
+    if any(name in header for name in ("timestamp", "statuscode", "original")):
+        raw_rows = raw_rows[1:]
+    else:
+        header = list(_CDX_FIELDS)
+    index = {name: position for position, name in enumerate(header)}
+    rows: list[dict[str, str]] = []
+    for row in raw_rows:
+        timestamp = _cdx_value(row, index, "timestamp")
+        original = _cdx_value(row, index, "original")
+        if not timestamp or not original:
+            continue
+        rows.append({
+            "timestamp": timestamp,
+            "original": original,
+            "status": _cdx_value(row, index, "statuscode", "status"),
+            "length": _cdx_value(row, index, "length"),
+        })
+    return rows
+
+
+def wayback_cdx(
+    url_pattern: str,
+    *,
+    limit: int = 50,
+    collapse: str = "timestamp:6",
+    status: str = "200",
+    timeout: float = 20.0,
+    client: httpx.Client | None = None,
+) -> list[dict[str, str]]:
+    """List archived captures of *url_pattern* via the Wayback CDX API (keyless).
+
+    An empty, malformed or failed response is ``[]``: a missing archive must
+    never crash a discovery run.
+    """
+    params: dict[str, Any] = {
+        "url": url_pattern,
+        "output": "json",
+        "fl": ",".join(_CDX_FIELDS),
+        "collapse": collapse,
+        "limit": limit,
+    }
+    if status:
+        params["filter"] = f"status:{status}"
+    close = False
+    if client is None:
+        client = httpx.Client(timeout=timeout, follow_redirects=True, headers={"User-Agent": USER_AGENT})
+        close = True
+    try:
+        resp = client.get(WAYBACK_CDX_API, params=params, timeout=timeout)
+        if resp.status_code != 200:
+            return []
+        try:
+            payload = resp.json()
+        except Exception:
+            return []
+        return _parse_wayback_cdx(payload)
+    except Exception:
+        return []
+    finally:
+        if close:
+            client.close()
+
+
+def _cdx_digits(value: str | None) -> str:
+    return re.sub(r"\D", "", value or "")
+
+
+def pick_wayback_snapshots(
+    rows: Sequence[dict[str, Any]] | None,
+    *,
+    limit: int = 5,
+    since: str | None = None,
+    until: str | None = None,
+    min_length: int = WAYBACK_MIN_CAPTURE_BYTES,
+) -> list[dict[str, Any]]:
+    """Best captures from CDX rows: status-200 only, tiny stubs dropped, newest first."""
+    start, end = _cdx_digits(since), _cdx_digits(until)
+    picked: list[dict[str, Any]] = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        timestamp = str(row.get("timestamp") or "").strip()
+        if len(_cdx_digits(timestamp)) < 4:
+            continue
+        status = str(row.get("status") or row.get("statuscode") or "").strip()
+        if status and status != "200":
+            continue
+        try:
+            length = int(str(row.get("length") or "0").strip() or 0)
+        except ValueError:
+            length = 0
+        if 0 < length < min_length:
+            continue
+        if start and timestamp < start:
+            continue
+        if end and timestamp[: len(end)] > end:
+            continue
+        picked.append(dict(row))
+    picked.sort(key=lambda row: str(row.get("timestamp") or ""), reverse=True)
+    return picked[:limit]
+
+
+def wayback_snapshots(
+    url_pattern: str,
+    *,
+    limit: int = 5,
+    since: str | None = None,
+    until: str | None = None,
+    min_length: int = WAYBACK_MIN_CAPTURE_BYTES,
+    timeout: float = 20.0,
+    client: httpx.Client | None = None,
+) -> list[dict[str, Any]]:
+    """Newest usable captures for *url_pattern*."""
+    rows = wayback_cdx(url_pattern, limit=max(limit * 4, limit), timeout=timeout, client=client)
+    return pick_wayback_snapshots(rows, limit=limit, since=since, until=until, min_length=min_length)
+
+
+def _wayback_capture(url: str) -> tuple[str, str] | None:
+    """``(original_url, snapshot_timestamp)`` when *url* is a Wayback capture URL."""
+    match = _WAYBACK_URL.match(str(url).strip())
+    if not match:
+        return None
+    return match.group("original"), match.group("timestamp")
+
+
+def _snapshot_iso(timestamp: str) -> str:
+    """CDX timestamp -> ISO-8601 UTC capture time (partial stamps padded)."""
+    digits = (re.sub(r"\D", "", timestamp) + "0101000000")[:14]
+    try:
+        parsed = datetime.strptime(digits, "%Y%m%d%H%M%S").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return ""
+    return parsed.isoformat()
+
+
+def _archive_metadata(url: str) -> dict[str, Any]:
+    """Metadata markers for an archived capture (``{}`` for a live URL)."""
+    capture = _wayback_capture(url)
+    if not capture:
+        return {}
+    original, timestamp = capture
+    metadata: dict[str, Any] = {
+        "archived": True,
+        "archive": "wayback",
+        "snapshot_timestamp": timestamp,
+        "original_url": original,
+    }
+    captured_at = _snapshot_iso(timestamp)
+    if captured_at:
+        metadata["captured_at"] = captured_at
+    return metadata
+
+
 def _record_from_response(final_url: str, raw_header: str, raw: bytes, source_url: str) -> RawRecord:
     """Parse one fetched response into a verbatim record. Raises DiscoverError."""
+    archive = _archive_metadata(final_url) or _archive_metadata(source_url)
     content_type = raw_header.split(";")[0].strip().lower()
     if content_type == "application/pdf" or final_url.lower().endswith(".pdf"):
         text = _extract_pdf_bytes(raw)
         title = domain_of(final_url)
         return RawRecord(text=text, source_uri=final_url, title=title,
                          item_id=record_id(final_url, title),
-                         metadata={"evidence": "fetched", "format": "pdf"})
+                         metadata={"evidence": "fetched", "format": "pdf", **archive})
     if content_type == "text/plain" or final_url.endswith(".txt"):
         text = _decode_body(raw, raw_header).strip()
         if not text:
             raise DiscoverError(f"no extractable text for {source_url}")
         return RawRecord(text=text, source_uri=final_url, title=domain_of(final_url),
-                         item_id=record_id(final_url), metadata={"evidence": "fetched"})
+                         item_id=record_id(final_url), metadata={"evidence": "fetched", **archive})
     if content_type not in ("text/html", "application/xhtml+xml", ""):
         raise DiscoverError(f"unsupported content-type {content_type or 'unknown'} for {source_url}")
     html = _decode_body(raw, raw_header)
@@ -916,7 +1182,7 @@ def _record_from_response(final_url: str, raw_header: str, raw: bytes, source_ur
     if not text:
         raise DiscoverError(f"no extractable text for {source_url}")
     title = _extract_title(html) or domain_of(final_url)
-    metadata: dict[str, Any] = {"evidence": "fetched"}
+    metadata: dict[str, Any] = {"evidence": "fetched", **archive}
     if structured and text == structured:
         metadata["format"] = "json-ld"
     return RawRecord(text=text, source_uri=final_url, title=title,
@@ -935,9 +1201,16 @@ def _decode_body(raw: bytes, content_type: str) -> str:
 
 def _extract_pdf_bytes(raw: bytes) -> str:
     """Best-effort PDF -> text via pypdf (discover extra), then pdfminer if present."""
+    import logging
     from io import BytesIO
 
     from .input_data import looks_like_text
+
+    # pypdf's font parser logs a "fontTools is required" warning per glyph set
+    # on some PDFs, which buries the run's own output. The text still extracts;
+    # only the chatter is dropped.
+    for noisy in ("pypdf", "pdfminer", "fontTools"):
+        logging.getLogger(noisy).setLevel(logging.ERROR)
 
     try:
         from pypdf import PdfReader
@@ -1000,7 +1273,7 @@ def fetch_text(
             title = _extract_title(html) or domain_of(url)
             return RawRecord(text=text, source_uri=url, title=title,
                              item_id=record_id(url, title),
-                             metadata={"evidence": "fetched", "rendered": "js"})
+                             metadata={"evidence": "fetched", "rendered": "js", **_archive_metadata(url)})
         final_url, raw_header, raw = _http_get(url, client, timeout, respect_robots=False)
         return _record_from_response(final_url, raw_header, raw[:max_bytes], url)
     finally:
@@ -1013,11 +1286,16 @@ def fetch_text(
 # ---------------------------------------------------------------------------
 
 ARCTIC_POSTS = "https://arctic-shift.photon-reddit.com/api/posts/search"
+# Arctic Shift answered HTTP 400 for every query (checked 2026-09) and reddit.com's
+# own JSON answers 403 without OAuth, so the working keyless path is the Pushshift
+# mirror below: full submission and comment records, dated, with permalinks.
+PULLPUSH_SUBMISSIONS = "https://api.pullpush.io/reddit/search/submission/"
+PULLPUSH_COMMENTS = "https://api.pullpush.io/reddit/search/comment/"
 ARCTIC_COMMENTS = "https://arctic-shift.photon-reddit.com/api/comments/search"
 HN_ITEM_API = "https://hacker-news.firebaseio.com/v0/item/{item_id}.json"
 
 REDDIT_EMPTY = {"", "[removed]", "[deleted]"}
-REDDIT_UA = "harness-fleet-discover (+https://github.com/NatesVibeCode/harness-fleet; community research)"
+REDDIT_UA = f"{branding.CLI_NAME}-discover (+{branding.HOMEPAGE}; community research)"
 
 
 def _get_with_backoff(
@@ -1133,10 +1411,687 @@ def search_reddit(
                 ))
                 if len(hits) >= max_results:
                     return hits
+        if hits:
+            return hits
+        # The archive is currently answering HTTP 400 for every query, so fall
+        # through to the mirror rather than reporting a silent zero.
+        hits = search_reddit_pullpush(
+            words, subreddits=subreddits, max_results=max_results, timeout=timeout, client=client,
+        )
+        if hits:
+            return hits
+        return search_reddit_pullpush(
+            words, subreddits=subreddits, max_results=max_results, timeout=timeout,
+            client=client, kind="comment",
+        )
+    finally:
+        if close:
+            client.close()
+
+
+def search_reddit_pullpush(
+    query: str,
+    subreddits: Sequence[str] = (),
+    max_results: int = 10,
+    timeout: float = 20.0,
+    client: httpx.Client | None = None,
+    kind: str = "submission",
+) -> list[SearchHit]:
+    """Full-text Reddit search through the PullPush mirror (keyless).
+
+    Submissions give title + body; comments give the body alone, which is often
+    where the actual recommendation lives ("we used X for our Kafka rollout").
+    A failed or malformed response is an empty list, never an exception: one
+    dead mirror must not end a discovery run. The mirror throttles shared
+    quota (observed HTTP 429 after a handful of queries), so an empty result
+    here can mean "try later" rather than "nothing exists".
+    """
+    endpoint = PULLPUSH_COMMENTS if kind == "comment" else PULLPUSH_SUBMISSIONS
+    words = query.strip()
+    if not words:
+        return []
+    close = False
+    if client is None:
+        client = httpx.Client(timeout=timeout, follow_redirects=True, headers={"User-Agent": REDDIT_UA})
+        close = True
+    try:
+        subs = [s for s in subreddits] or [""]
+        per_sub = max(1, (max_results + len(subs) - 1) // len(subs))
+        hits: list[SearchHit] = []
+        for sub in subs:
+            params: dict[str, Any] = {"q": words, "size": min(per_sub, 100), "sort": "desc"}
+            if sub:
+                params["subreddit"] = sub
+            try:
+                resp = _get_with_backoff(client, endpoint, params=params, timeout=timeout)
+                rows = _safe_json(resp, endpoint).get("data") or []
+            except DiscoverError:
+                continue
+            for row in rows:
+                if row.get("over_18") in (True, "True", "true"):
+                    continue
+                permalink = str(row.get("permalink") or "")
+                url = f"https://www.reddit.com{permalink}" if permalink.startswith("/") else str(
+                    row.get("full_link") or permalink or ""
+                )
+                if not url.startswith(("http://", "https://")):
+                    continue
+                if kind == "comment":
+                    snippet = str(row.get("body") or "").strip()
+                    title = f"r/{row.get('subreddit')}: comment"
+                else:
+                    snippet = _reddit_post_text(row)
+                    title = f"r/{row.get('subreddit')}: {row.get('title') or ''}".strip()
+                if not snippet:
+                    continue
+                hits.append(SearchHit(
+                    url=url, title=title[:500], snippet=snippet[:SNIPPET_CHARS],
+                    backend="reddit-pullpush",
+                ))
+                if len(hits) >= max_results:
+                    return hits
         return hits
     finally:
         if close:
             client.close()
+
+
+def _feed_text(value: str | None) -> str:
+    """Feed item prose as plain text: CDATA/entities decoded, markup stripped."""
+    import html as _html
+
+    raw = _html.unescape(str(value or ""))
+    if "<" in raw and ">" in raw:
+        raw = _fallback_strip(raw)
+    return re.sub(r"\s+", " ", raw).strip()
+
+
+def _feed_published(entry: Any, ns: dict[str, str]) -> str:
+    """Item date as ISO-8601, from RSS pubDate or Atom published/updated."""
+    for tag in ("pubDate", "published", "updated", "date"):
+        node = entry.find(tag) if entry.find(tag) is not None else entry.find(f"{{{ns.get('atom', '')}}}{tag}")
+        if node is None or not (node.text or "").strip():
+            continue
+        text = node.text.strip()
+        for fmt in ("%a, %d %b %Y %H:%M:%S %z", "%a, %d %b %Y %H:%M:%S %Z", "%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%d"):
+            try:
+                parsed = datetime.strptime(text, fmt)
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=timezone.utc)
+                return parsed.astimezone(timezone.utc).isoformat()
+            except ValueError:
+                continue
+    return ""
+
+
+# ---------------------------------------------------------------------------
+# GitHub: engineering reality in a firm's own artifacts
+# ---------------------------------------------------------------------------
+
+GITHUB_API = "https://api.github.com"
+GITHUB_README_CHARS = 20000  # one README is prose enough; bound it per repo
+
+
+def _github_headers() -> dict[str, str]:
+    """GitHub request headers; a token is optional and never required.
+
+    Unauthenticated access allows ~60 requests/hour per IP. The connector works
+    without a token and reports a throttle rather than pretending the org is
+    empty; if ``GITHUB_TOKEN`` happens to be set it is used, but nothing here
+    asks for one or reads a credential store.
+    """
+    import os
+
+    headers = {"User-Agent": USER_AGENT, "Accept": "application/vnd.github+json"}
+    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
+
+
+def _github_get(client: httpx.Client, url: str, *, params: dict[str, Any] | None = None,
+                timeout: float = 20.0) -> Any:
+    """One GitHub API call, throttles surfaced as DiscoverError rather than silence."""
+    resp = client.get(url, params=params, timeout=timeout, headers=_github_headers())
+    if resp.status_code in (403, 429):
+        remaining = resp.headers.get("x-ratelimit-remaining")
+        if remaining == "0" or resp.status_code == 429:
+            raise DiscoverError(
+                "GitHub API rate limit reached (unauthenticated allows ~60 requests/hour); "
+                "set GITHUB_TOKEN or retry later"
+            )
+    if resp.status_code == 404:
+        raise DiscoverError(f"GitHub 404 for {url}")
+    if resp.status_code != 200:
+        raise DiscoverError(f"HTTP {resp.status_code} for {url}")
+    try:
+        return resp.json()
+    except ValueError as exc:
+        raise DiscoverError(f"invalid JSON from {url}: {exc}") from exc
+
+
+def _github_repo_record(repo: dict[str, Any], html_url: str) -> RawRecord:
+    """One repo as prose: what it is, what it is written in, how alive it is."""
+    pushed = str(repo.get("pushed_at") or repo.get("updated_at") or "")
+    parts = [
+        str(repo.get("full_name") or ""),
+        str(repo.get("description") or "").strip(),
+        f"Language: {repo.get('language') or 'unknown'}",
+        f"Stars: {repo.get('stargazers_count') or 0}",
+        f"Open issues: {repo.get('open_issues_count') or 0}",
+        f"Last pushed: {pushed}",
+        "Archived" if repo.get("archived") else "Active",
+    ]
+    metadata: dict[str, Any] = {
+        "evidence": "fetched", "source": "github", "kind": "repository",
+        "repo": repo.get("full_name"), "archived": bool(repo.get("archived")),
+    }
+    if pushed:
+        metadata["captured_at"] = pushed
+    return RawRecord(
+        text="\n".join(part for part in parts if part),
+        source_uri=str(repo.get("html_url") or html_url),
+        title=str(repo.get("full_name") or "")[:500] or None,
+        item_id=str(repo.get("html_url") or html_url),
+        metadata=metadata,
+    )
+
+
+def fetch_github_org(
+    org: str,
+    *,
+    max_repos: int = 10,
+    include_readmes: bool = True,
+    include_releases: bool = True,
+    include_issues: bool = True,
+    releases_per_repo: int = 3,
+    issues_per_repo: int = 10,
+    readme_chars: int = GITHUB_README_CHARS,
+    timeout: float = 20.0,
+    client: httpx.Client | None = None,
+) -> tuple[list[RawRecord], list[dict[str, str]]]:
+    """An org's public artifacts as records: repos, READMEs, releases, issue titles.
+
+    This is engineering reality rather than a claim about it: what the firm
+    builds, what it maintains, what it writes in a README, how it responds to
+    issues. Forks are skipped (they are other people's work), archived repos are
+    kept and marked, and everything carries the date it was last pushed so
+    recency decay measures the artifact rather than the fetch.
+    """
+    close = False
+    if client is None:
+        client = httpx.Client(timeout=timeout, follow_redirects=True, headers={"User-Agent": USER_AGENT})
+        close = True
+    records: list[RawRecord] = []
+    skipped: list[dict[str, str]] = []
+    try:
+        repos: list[dict[str, Any]] = []
+        for endpoint in (f"{GITHUB_API}/orgs/{org}/repos", f"{GITHUB_API}/users/{org}/repos"):
+            try:
+                payload = _github_get(client, endpoint, params={
+                    "sort": "pushed", "direction": "desc", "per_page": max(1, min(max_repos * 2, 100)),
+                    "type": "public",
+                }, timeout=timeout)
+            except DiscoverError as exc:
+                skipped.append({"source": f"github:{org}", "reason": str(exc)[:200]})
+                continue
+            if isinstance(payload, list):
+                repos = payload
+                break
+        for repo in repos:
+            if not isinstance(repo, dict) or repo.get("fork"):
+                continue
+            if len([r for r in records if r.metadata.get("kind") == "repository"]) >= max_repos:
+                break
+            html_url = str(repo.get("html_url") or "")
+            full_name = str(repo.get("full_name") or "")
+            records.append(_github_repo_record(repo, html_url))
+
+            if include_readmes and full_name:
+                try:
+                    payload = _github_get(client, f"{GITHUB_API}/repos/{full_name}/readme", timeout=timeout)
+                    raw = str(payload.get("content") or "").replace("\n", "")
+                    if raw:
+                        import base64
+
+                        try:
+                            text = base64.b64decode(raw).decode("utf-8", errors="replace")
+                        except Exception:
+                            text = ""
+                        if text.strip():
+                            metadata: dict[str, Any] = {
+                                "evidence": "fetched", "source": "github", "kind": "readme",
+                                "repo": full_name,
+                            }
+                            pushed = str(repo.get("pushed_at") or "")
+                            if pushed:
+                                metadata["captured_at"] = pushed
+                            records.append(RawRecord(
+                                text=text[:readme_chars],
+                                source_uri=f"{html_url}#readme", title=f"{full_name} README"[:500],
+                                item_id=f"{html_url}#readme", metadata=metadata,
+                            ))
+                except DiscoverError as exc:
+                    skipped.append({"source": f"github:{full_name}/readme", "reason": str(exc)[:200]})
+
+            if include_releases and full_name and releases_per_repo > 0:
+                try:
+                    releases = _github_get(client, f"{GITHUB_API}/repos/{full_name}/releases", params={
+                        "per_page": releases_per_repo,
+                    }, timeout=timeout)
+                except DiscoverError as exc:
+                    skipped.append({"source": f"github:{full_name}/releases", "reason": str(exc)[:200]})
+                    releases = []
+                for release in releases if isinstance(releases, list) else []:
+                    body = str(release.get("body") or "").strip()
+                    published = str(release.get("published_at") or release.get("created_at") or "")
+                    name = str(release.get("name") or release.get("tag_name") or "").strip()
+                    if not (body or name):
+                        continue
+                    release_meta: dict[str, Any] = {
+                        "evidence": "fetched", "source": "github", "kind": "release",
+                        "repo": full_name,
+                    }
+                    if published:
+                        release_meta["captured_at"] = published
+                    records.append(RawRecord(
+                        text=f"{full_name} {name}\n\n{body}".strip(),
+                        source_uri=str(release.get("html_url") or html_url),
+                        title=f"{full_name} release {name}"[:500] or None,
+                        item_id=str(release.get("html_url") or f"{html_url}#release-{name}"),
+                        metadata=release_meta,
+                    ))
+
+            if include_issues and full_name and issues_per_repo > 0:
+                try:
+                    issues = _github_get(client, f"{GITHUB_API}/repos/{full_name}/issues", params={
+                        "state": "all", "per_page": issues_per_repo, "sort": "updated",
+                    }, timeout=timeout)
+                except DiscoverError as exc:
+                    skipped.append({"source": f"github:{full_name}/issues", "reason": str(exc)[:200]})
+                    issues = []
+                for issue in issues if isinstance(issues, list) else []:
+                    if not isinstance(issue, dict) or "pull_request" in issue:
+                        continue
+                    title = str(issue.get("title") or "").strip()
+                    body = str(issue.get("body") or "").strip()
+                    if not title:
+                        continue
+                    updated = str(issue.get("updated_at") or "")
+                    issue_meta: dict[str, Any] = {
+                        "evidence": "fetched", "source": "github", "kind": "issue",
+                        "repo": full_name, "state": issue.get("state"),
+                    }
+                    if updated:
+                        issue_meta["captured_at"] = updated
+                    records.append(RawRecord(
+                        text=f"{full_name}: {title}\n\n{body[:1000]}".strip(),
+                        source_uri=str(issue.get("html_url") or html_url),
+                        title=f"{full_name}: {title}"[:500] or None,
+                        item_id=str(issue.get("html_url") or f"{html_url}#issue-{issue.get('number')}"),
+                        metadata=issue_meta,
+                    ))
+        return records, skipped
+    finally:
+        if close:
+            client.close()
+
+
+# ---------------------------------------------------------------------------
+# Package registries and documentation surfaces
+# ---------------------------------------------------------------------------
+
+PACKAGE_REGISTRIES = ("pypi", "npm", "crates", "rubygems", "maven")
+# Where documentation, changelogs and release notes usually live when a firm
+# publishes them. Probed, not guessed at fetch time: a candidate that answers
+# 404 simply is not part of the surface.
+DOC_PATH_CANDIDATES = ("/docs", "/documentation", "/changelog", "/releases", "/api-docs", "/blog")
+
+
+def _registry_urls(name: str) -> dict[str, str]:
+    """Registry API URLs for one package name, per ecosystem."""
+    return {
+        "pypi": f"https://pypi.org/pypi/{name}/json",
+        "npm": f"https://registry.npmjs.org/{name}",
+        "crates": f"https://crates.io/api/v1/crates/{name}",
+        "rubygems": f"https://rubygems.org/api/v1/gems/{name}.json",
+        "maven": f"https://search.maven.org/solrsearch/select?q=a:%22{name}%22&rows=10&wt=json",
+    }
+
+
+def _registry_records(registry: str, name: str, payload: Any, url: str) -> list[RawRecord]:
+    """One registry's payload as prose records: what the package says it is."""
+    records: list[RawRecord] = []
+    text_parts: list[str] = []
+    captured = ""
+    # A registry entry with no description is scaffolding, not evidence: an
+    # empty payload must not become a record just because it parsed.
+    has_prose = False
+
+    if registry == "pypi" and isinstance(payload, dict):
+        info = payload.get("info") or {}
+        has_prose = bool(str(info.get("summary") or "").strip() or str(info.get("description") or "").strip())
+        text_parts = [
+            f"{info.get('name') or name} {info.get('version') or ''}".strip(),
+            str(info.get("summary") or ""),
+            str(info.get("description") or "")[:20000],
+            f"Requires: {info.get('requires_python') or 'unspecified'}",
+            f"Home: {info.get('home_page') or info.get('project_url') or ''}",
+        ]
+        releases = payload.get("releases") or {}
+        if isinstance(releases, dict) and releases:
+            latest = sorted(releases)[-1]
+            files = releases.get(latest) or []
+            if files and isinstance(files[0], dict):
+                captured = str(files[0].get("upload_time_iso_8601") or files[0].get("upload_time") or "")
+    elif registry == "npm" and isinstance(payload, dict):
+        has_prose = bool(str(payload.get("description") or "").strip() or str(payload.get("readme") or "").strip())
+        latest = (payload.get("dist-tags") or {}).get("latest") or ""
+        text_parts = [
+            f"{payload.get('name') or name} {latest}".strip(),
+            str(payload.get("description") or ""),
+            str(payload.get("readme") or "")[:20000],
+        ]
+        times = payload.get("time") or {}
+        captured = str(times.get(latest) or times.get("modified") or "")
+    elif registry == "crates" and isinstance(payload, dict):
+        crate = payload.get("crate") or {}
+        has_prose = bool(str(crate.get("description") or "").strip())
+        text_parts = [
+            f"{crate.get('name') or name} {crate.get('newest_version') or ''}".strip(),
+            str(crate.get("description") or ""),
+            f"Downloads: {crate.get('downloads') or 0}",
+            f"Repository: {crate.get('repository') or ''}",
+        ]
+        captured = str(crate.get("updated_at") or crate.get("created_at") or "")
+    elif registry == "rubygems" and isinstance(payload, dict):
+        has_prose = bool(str(payload.get("info") or "").strip())
+        text_parts = [
+            f"{payload.get('name') or name} {payload.get('version') or ''}".strip(),
+            str(payload.get("info") or ""),
+            f"Downloads: {payload.get('downloads') or 0}",
+            f"Home: {payload.get('homepage_uri') or ''}",
+        ]
+        captured = str(payload.get("version_created_at") or "")
+    elif registry == "maven" and isinstance(payload, dict):
+        docs = ((payload.get("response") or {}).get("docs")) or []
+        has_prose = bool(docs)
+        text_parts = [f"Maven Central artifacts matching {name}: {len(docs)}"]
+        for artifact in docs[:10]:
+            if not isinstance(artifact, dict):
+                continue
+            text_parts.append(
+                f"{artifact.get('g')}:{artifact.get('a')} {artifact.get('latestVersion') or ''} "
+                f"({artifact.get('timestamp') or ''})"
+            )
+            if not captured and artifact.get("timestamp"):
+                captured = datetime.fromtimestamp(
+                    int(artifact["timestamp"]) / 1000, tz=timezone.utc
+                ).isoformat()
+
+    if not has_prose:
+        return []
+    text = "\n".join(part for part in text_parts if part and part.strip())
+    if not text.strip():
+        return []
+    metadata: dict[str, Any] = {
+        "evidence": "fetched", "source": f"registry:{registry}", "kind": "package", "package": name,
+    }
+    if captured:
+        try:
+            parsed = datetime.fromisoformat(captured.replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            metadata["captured_at"] = parsed.astimezone(timezone.utc).isoformat()
+            metadata["published"] = metadata["captured_at"]
+        except ValueError:
+            pass
+    records.append(RawRecord(
+        text=text,
+        source_uri=url,
+        title=f"{name} ({registry})"[:500],
+        item_id=url,
+        metadata=metadata,
+    ))
+    return records
+
+
+def fetch_package(
+    name: str,
+    *,
+    registry: str = "auto",
+    timeout: float = 20.0,
+    client: httpx.Client | None = None,
+) -> tuple[list[RawRecord], list[dict[str, str]]]:
+    """A published package as prose: description, README, version and date.
+
+    What a firm publishes and how often is engineering output as behaviour
+    rather than as a claim. Every registry here is a public JSON API (no key).
+    ``registry="auto"`` tries the ecosystems in order and returns the first that
+    knows the name; the misses are reported so an empty result is distinguishable
+    from "we never asked".
+    """
+    close = False
+    if client is None:
+        client = httpx.Client(timeout=timeout, follow_redirects=True, headers={"User-Agent": USER_AGENT})
+        close = True
+    skipped: list[dict[str, str]] = []
+    try:
+        candidates = [registry] if registry != "auto" else list(PACKAGE_REGISTRIES)
+        for candidate in candidates:
+            url = _registry_urls(name).get(candidate)
+            if not url:
+                skipped.append({"source": f"registry:{candidate}", "reason": f"unknown registry {candidate!r}"})
+                continue
+            try:
+                resp = _get_with_backoff(client, url, timeout=timeout, attempts=2)
+            except DiscoverError as exc:
+                skipped.append({"source": f"registry:{candidate}:{name}", "reason": str(exc)[:200]})
+                continue
+            try:
+                payload = _safe_json(resp, url)
+            except DiscoverError as exc:
+                skipped.append({"source": f"registry:{candidate}:{name}", "reason": str(exc)[:200]})
+                continue
+            records = _registry_records(candidate, name, payload, url)
+            if records:
+                return records, skipped
+        return [], skipped
+    finally:
+        if close:
+            client.close()
+
+
+def discover_doc_urls(
+    domain: str,
+    *,
+    paths: Sequence[str] = DOC_PATH_CANDIDATES,
+    timeout: float = 15.0,
+    client: httpx.Client | None = None,
+) -> tuple[list[str], list[dict[str, str]]]:
+    """Documentation and changelog URLs that actually answer for a domain.
+
+    A firm's docs and release notes explain what it builds and how it changes;
+    the paths are conventional, so they are probed rather than guessed at read
+    time. A 404 is simply not part of the surface, not a failure.
+    """
+    host = domain.strip().rstrip("/")
+    if "://" not in host:
+        host = f"https://{host}"
+    parsed = urlparse(host)
+    origin = f"{parsed.scheme}://{parsed.netloc}"
+    candidates = [f"{origin}{path}" for path in paths]
+    # A docs host is not always a `docs.` subdomain: docs.python.org is the
+    # documentation host itself, and prefixing it again asks DNS for
+    # docs.docs.python.org, which does not exist.
+    bare = parsed.netloc.split(":")[0]
+    if bare and not bare.startswith("docs."):
+        candidates.append(f"https://docs.{bare}")
+        if not bare.startswith("www."):
+            candidates.append(f"https://docs.{parsed.netloc}")
+    found: list[str] = []
+    skipped: list[dict[str, str]] = []
+    close = False
+    if client is None:
+        client = httpx.Client(timeout=timeout, follow_redirects=True, headers={"User-Agent": USER_AGENT})
+        close = True
+    try:
+        for url in dict.fromkeys(candidates):
+            try:
+                resp = client.get(url, timeout=timeout)
+            except Exception as exc:
+                skipped.append({"source": f"docs:{url}", "reason": str(exc)[:200]})
+                continue
+            if resp.status_code == 200 and "text/html" in (resp.headers.get("content-type") or "text/html"):
+                found.append(url)
+    finally:
+        if close:
+            client.close()
+    return found, skipped
+
+
+def fetch_feed(
+    url: str,
+    *,
+    max_results: int = 20,
+    timeout: float = 20.0,
+    client: httpx.Client | None = None,
+    include_transcripts: bool = True,
+    follow_links: bool = True,
+    max_chars: int | None = None,
+    respect_robots: bool = True,
+) -> list[RawRecord]:
+    """RSS or Atom feed -> records carrying the item prose.
+
+    Podcast show notes and newsletter archives are where practitioners explain
+    method and judgement in their own words, and both are reachable keylessly
+    through feeds. Items keep their publication date so recency decay measures
+    the claim rather than the fetch. A feed usually carries only an excerpt
+    (measured: 35-133 words), so by default the item link is followed for the
+    full article (measured: ~3,500 words for a newsletter post) and a
+    ``podcast:transcript`` link is followed as its own record when advertised.
+    """
+    import xml.etree.ElementTree as ET
+
+    close = False
+    if client is None:
+        client = httpx.Client(timeout=timeout, follow_redirects=True, headers={"User-Agent": USER_AGENT})
+        close = True
+    try:
+        resp = _get_with_backoff(client, url, timeout=timeout)
+        body = resp.text
+    except DiscoverError:
+        return []
+    finally:
+        if close:
+            client.close()
+
+    try:
+        root = ET.fromstring(body)
+    except ET.ParseError:
+        return []
+
+    ns = {
+        "atom": "http://www.w3.org/2005/Atom",
+        "content": "http://purl.org/rss/1.0/modules/content/",
+        "podcast": "http://podcastindex.org/namespace/1.0",
+    }
+    entries = list(root.iter("item")) or list(root.iter(f"{{{ns['atom']}}}entry"))
+    records: list[RawRecord] = []
+    for entry in entries[: max(0, max_results)]:
+        title_node = entry.find("title")
+        if title_node is None:
+            title_node = entry.find(f"{{{ns['atom']}}}title")
+        title = _feed_text(title_node.text if title_node is not None else "")
+
+        link = ""
+        link_node = entry.find("link")
+        if link_node is not None:
+            link = (link_node.text or link_node.get("href") or "").strip()
+        if not link:
+            for candidate in entry.findall(f"{{{ns['atom']}}}link"):
+                if (candidate.get("rel") or "alternate") == "alternate":
+                    link = (candidate.get("href") or "").strip()
+                    break
+
+        body_text = ""
+        for tag in ("encoded", "content", "description", "summary"):
+            node = entry.find(tag)
+            if node is None:
+                node = entry.find(f"{{{ns['content']}}}{tag}") or entry.find(f"{{{ns['atom']}}}{tag}")
+            if node is not None and (node.text or "").strip():
+                body_text = _feed_text(node.text)
+                break
+        text = f"{title}\n\n{body_text}".strip() if body_text else title
+        if max_chars is not None and len(text) > max_chars:
+            text = text[:max_chars]
+        if not text.strip():
+            continue
+        published = _feed_published(entry, ns)
+        metadata: dict[str, Any] = {"evidence": "fetched", "source": "feed", "feed": url}
+        if published:
+            metadata["published"] = published
+            metadata["captured_at"] = published
+        emitted = False
+
+        if follow_links and link and link != url:
+            # The feed carries an excerpt; the article carries the argument.
+            try:
+                page = fetch_text(link, timeout=timeout, respect_robots=respect_robots)
+            except Exception:
+                page = None
+            if page is not None and len((page.text or "").split()) > len(text.split()):
+                item_meta: dict[str, Any] = {
+                    "evidence": "fetched", "source": "feed-item", "feed": url,
+                }
+                if published:
+                    item_meta["published"] = published
+                    item_meta["captured_at"] = published
+                records.append(RawRecord(
+                    text=page.text,
+                    source_uri=link,
+                    title=title[:500] or None,
+                    item_id=link,
+                    metadata=item_meta,
+                ))
+                emitted = True
+
+        if not emitted:
+            # One record per item: the followed page when it carried more prose,
+            # otherwise what the feed itself provided.
+            records.append(RawRecord(
+                text=text,
+                source_uri=link or url,
+                title=title[:500] or None,
+                item_id=link or url,
+                metadata=metadata,
+            ))
+
+        if not include_transcripts:
+            continue
+        for transcript in entry.findall(f"{{{ns['podcast']}}}transcript"):
+            transcript_url = (transcript.get("url") or "").strip()
+            if not transcript_url:
+                continue
+            try:
+                page = fetch_text(transcript_url, timeout=timeout, respect_robots=respect_robots)
+            except Exception:
+                continue
+            transcript_meta: dict[str, Any] = {
+                "evidence": "fetched", "source": "feed-transcript",
+                "feed": url, "transcript_of": link or title,
+            }
+            if published:
+                transcript_meta["published"] = published
+                transcript_meta["captured_at"] = published
+            records.append(RawRecord(
+                text=page.text,
+                source_uri=transcript_url,
+                title=f"{title} (transcript)"[:500] or None,
+                item_id=transcript_url,
+                metadata=transcript_meta,
+            ))
+    return records
 
 
 def fetch_reddit_posts(
@@ -1513,6 +2468,78 @@ def fetch_stackexchange_questions(
             if max_questions is not None and len(records) >= max_questions:
                 break
         return records
+    finally:
+        if close:
+            client.close()
+
+
+#: Stack Exchange sites whose questions the API is asked for directly. Their
+#: HTML now answers 403 to non-browser clients, so fetching the page loses the
+#: body while the API still serves it.
+_SE_HOST_SITES = {
+    "stackoverflow.com": "stackoverflow",
+    "serverfault.com": "serverfault",
+    "superuser.com": "superuser",
+    "askubuntu.com": "askubuntu",
+    "mathoverflow.net": "mathoverflow",
+}
+_SE_QUESTION_ID_RE = re.compile(r"/questions/(\d+)")
+
+
+def se_site_for_url(url: str) -> str | None:
+    """The API ``site`` parameter for a question URL, or None if it is not SE."""
+    host = urlparse(url).netloc.lower()
+    host = host[4:] if host.startswith("www.") else host
+    if host in _SE_HOST_SITES:
+        return _SE_HOST_SITES[host]
+    if host.endswith(".stackexchange.com"):
+        return host[: -len(".stackexchange.com")]
+    return None
+
+
+def fetch_stackexchange_question(
+    url: str,
+    *,
+    timeout: float = 20.0,
+    client: httpx.Client | None = None,
+    include_answers: bool = False,
+) -> RawRecord:
+    """One question's body via the API, for a hit whose page will not serve us."""
+    match = _SE_QUESTION_ID_RE.search(url or "")
+    site = se_site_for_url(url or "")
+    if not match or not site:
+        raise DiscoverError(f"not a Stack Exchange question URL: {url}")
+    close = False
+    if client is None:
+        client = httpx.Client(timeout=timeout, follow_redirects=True, headers={"User-Agent": USER_AGENT})
+        close = True
+    try:
+        payload = _se_get(
+            f"/questions/{match.group(1)}",
+            {"site": site, "filter": "withbody"},
+            timeout,
+            client,
+        )
+        items = payload.get("items") or []
+        if not items:
+            raise DiscoverError(f"Stack Exchange returned no question for {url}")
+        question = items[0]
+        title = _hn_clean(str(question.get("title") or ""))
+        body = extract_text(str(question.get("body") or "")).strip()
+        text = f"{title}\n\n{body}".strip() if body else title
+        if include_answers:
+            answer = _se_top_answer(int(question.get("question_id", 0)), site, timeout, client)
+            if answer:
+                text += f"\n\nTop answer (score {answer[1]}):\n{answer[0]}"
+        if not text:
+            raise DiscoverError(f"Stack Exchange question {url} carried no text")
+        return RawRecord(
+            text=text,
+            source_uri=str(question.get("link") or url),
+            title=title[:500] or None,
+            item_id=slugify_id(f"se-{site}-{question.get('question_id')}"),
+            metadata={"evidence": "fetched", "source": "stackexchange", "site": site},
+        )
     finally:
         if close:
             client.close()
@@ -1936,6 +2963,16 @@ def search_devto(
     finally:
         if close:
             client.close()
+
+
+#: Backends with no keyword search API. They filter a recent listing, so a
+#: specific query can legitimately match nothing; saying so beats reporting
+#: "0 hits", which reads as a broken connector.
+LISTING_FILTER_BACKENDS: dict[str, str] = {
+    "devto": "the latest Dev.to articles",
+    "lobsters": "the newest Lobsters stories",
+    "yc": "the YC company directory",
+}
 
 
 BACKENDS: dict[str, Callable[..., list[SearchHit]]] = {
@@ -2626,6 +3663,25 @@ def run_discovery(
             if not ordered:
                 skipped.append({"query": query, "reason": "0 hits from backends"})
             for hit in ordered:
+                host = host_of(hit.url)
+                if host and not is_source_host(host):
+                    # Unknown provenance is recorded, never guessed at: the
+                    # growth pass proposes, a person promotes, and only then
+                    # does it classify.
+                    from . import registry
+
+                    if registry.lookup(host) is None:
+                        try:
+                            registry.observe(hit.url, hit.title or "")
+                        except Exception:
+                            pass
+                if is_noise_host(host_of(hit.url)):
+                    skipped.append({
+                        "url": hit.url,
+                        "reason": "academic publisher or paper aggregator; not an evidence surface "
+                                  "for company work (fetch it explicitly with --url if you want it)",
+                    })
+                    continue
                 hits_seen += 1
                 metrics = backend_metrics.setdefault(
                     hit.backend or "unknown",
@@ -2647,8 +3703,13 @@ def run_discovery(
                     ))
                     continue
                 try:
-                    fetched = fetch_smart_url(hit.url, client=client, respect_robots=respect_robots,
-                                               render_js=render_js)
+                    # Stack Exchange question pages answer 403 to non-browser
+                    # clients now; the API still serves the same body.
+                    if hit.backend == "stackexchange" and se_site_for_url(hit.url):
+                        fetched = fetch_stackexchange_question(hit.url, timeout=timeout, client=client)
+                    else:
+                        fetched = fetch_smart_url(hit.url, client=client, respect_robots=respect_robots,
+                                                   render_js=render_js)
                     fetched.metadata.update({
                         "discovery_backend": hit.backend,
                         "discovery_query": query,
@@ -2674,6 +3735,13 @@ def run_discovery(
             str(backend), {"queries": 0, "hits": 0, "unique_hits": 0, "captured": 0, "skipped": 0}
         )
         metrics["captured"] += 1
+    for backend, metrics in backend_metrics.items():
+        if metrics["hits"] == 0 and backend in LISTING_FILTER_BACKENDS:
+            skipped.append({
+                "source": backend,
+                "reason": f"0 matches in the recent listing it filters ({LISTING_FILTER_BACKENDS[backend]}); "
+                          "use --backend ddgs for keyword search over the open web",
+            })
     attempted = sum(metrics["unique_hits"] for metrics in backend_metrics.values())
     captured = len(items)
     coverage = (captured / attempted) if attempted else 0.0
@@ -2682,7 +3750,10 @@ def run_discovery(
         "attempted": attempted,
         "captured": captured,
         "coverage": round(coverage, 3),
-        "meets_threshold": min_source_coverage is None or (attempted > 0 and coverage >= min_source_coverage),
+        # A zero threshold disables the gate, including for a run where every
+        # source failed before yielding a hit: otherwise the documented escape
+        # hatch cannot be used to inspect exactly that case.
+        "meets_threshold": min_source_coverage is None or coverage >= min_source_coverage,
         "backends": {
             backend: {
                 **metrics,

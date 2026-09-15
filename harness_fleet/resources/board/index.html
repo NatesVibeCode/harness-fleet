@@ -426,6 +426,7 @@
       statCard("Partners", String(s.records), s.scored + " scored · " + s.unscored + " unscored"),
       statCard("Average score", s.average_score === null ? "—" : String(s.average_score), "best " + (s.best_score === null ? "—" : s.best_score) + " / " + p.checklist_total),
       statCard("Tier 1 / 2", (s.tier_counts.tier_1 || 0) + " / " + (s.tier_counts.tier_2 || 0), (s.tier_counts.tier_3 || 0) + " tier 3 · " + (s.tier_counts.unfit || 0) + " unfit"),
+      statCard("Evidence-capped tiers", String(s.tier_capped || 0), (s.lone_claims || 0) + " claim(s) stand alone"),
       statCard("Verified quotes", String(s.quote_count), s.records_with_quotes + " of " + s.records + " partners cited"),
       statCard("Route cost", "$" + Number(s.cost_reported || 0).toFixed(6), (s.routes || []).length + " price-verified route(s)"),
       statCard("Batches", s.batches_verified + "/" + s.batches_total, s.batches_failed ? s.batches_failed + " failed" : "all quotes verified")
@@ -532,7 +533,7 @@
             ])
           ])
         ]),
-        el("td", null, [el("span", { class:"tag tier_" + partner.tier, text:TIER_LABEL[partner.tier] || partner.tier || "—" })]),
+        tierCell(partner),
         el("td", null, [el("div", { class:"cell-text", text:partner.practice || "—" })])
       ];
       (p.attributes || []).forEach(function (a) {
@@ -545,9 +546,12 @@
           )]));
         } else cells.push(el("td", null, [el("div", { class:"cell-text", text:fmtValue(value) })]));
       });
+      var lone = ((partner.evidence || {}).contradictions || []).length;
       cells.push(el("td", null, [
         el("div", { class:"cell-sub", text:(partner.quotes || []).length + " quote(s)" }),
-        el("div", { class:"cell-sub", text:partner.source && partner.source.uri ? "source linked" : "no source uri" })
+        el("div", { class:"cell-sub", text:partner.source && partner.source.uri ? "source linked" : "no source uri" }),
+        evidenceChips(partner.evidence, 3),
+        lone ? el("div", { class:"cell-sub", style:"color:var(--warn)", text:lone + " claim(s) stand alone" }) : null
       ]));
       body.appendChild(el("tr", {
         class:"row", "aria-selected": STATE.selected === partner.id,
@@ -841,6 +845,37 @@
   }
 
   /* ---------------- drawer ---------------- */
+  var KIND_LABEL = {
+    delivery_proof:"delivery proof", named_clients:"named clients", stack_delivery:"stack in delivery",
+    independent_validation:"independent", delivery_hiring:"hiring", commercial_terms:"commercial",
+    certification:"certification", engineering_output:"engineering", growth_signal:"growth",
+    dated_events:"dated"
+  };
+
+  function evidenceChips(ev, limit) {
+    var kinds = (ev && ev.kinds) || {};
+    var present = Object.keys(kinds).filter(function (k) { return kinds[k]; });
+    if (!present.length) return el("span", { class:"empty-value", text:"no evidence read" });
+    return el("div", { class:"chips" }, present.slice(0, limit || 4).map(function (k) {
+      return el("span", { class:"tag soft mini", text:KIND_LABEL[k] || k });
+    }).concat(present.length > (limit || 4) ? [el("span", { class:"empty-value", text:"+" + (present.length - (limit || 4)) })] : []));
+  }
+
+  function tierCell(partner) {
+    var ev = partner.evidence || {};
+    var shown = ev.tier_capped && ev.tier_supported ? ev.tier_supported : partner.tier;
+    var node = el("span", { class:"tag tier_" + shown, text:TIER_LABEL[shown] || shown || "—" });
+    if (!ev.tier_capped) return el("td", null, [node]);
+    return el("td", null, [el("div", { style:"display:flex;align-items:center;gap:6px;flex-wrap:wrap" }, [
+      node,
+      el("span", {
+        class:"tag mini", style:"border-color:var(--warn-line);color:var(--warn)",
+        text:"evidence-capped",
+        title:(ev.tier_reasons || []).join("; ") || "the evidence does not support the scored tier"
+      })
+    ])]);
+  }
+
   function openDrawer(id) {
     var p = STATE.payload;
     var partner = (p.partners || []).filter(function (x) { return x.id === id; })[0];
@@ -853,7 +888,8 @@
       el("div", { style:"flex:1;min-width:0" }, [
         el("h3", { class:"drawer-title", text:partner.name || partner.id }),
         el("div", { style:"display:flex;align-items:center;gap:8px;flex-wrap:wrap" }, [
-          el("span", { class:"tag tier_" + partner.tier, text:TIER_LABEL[partner.tier] || partner.tier || "unscored" }),
+          el("span", { class:"tag tier_" + ((partner.evidence || {}).tier_capped && (partner.evidence || {}).tier_supported ? partner.evidence.tier_supported : partner.tier), text:TIER_LABEL[(partner.evidence || {}).tier_capped && (partner.evidence || {}).tier_supported ? partner.evidence.tier_supported : partner.tier] || partner.tier || "unscored" }),
+          ((partner.evidence || {}).tier_capped ? el("span", { class:"tag mini", style:"border-color:var(--warn-line);color:var(--warn)", text:"evidence-capped" }) : null),
           el("span", { class:"section-sub", text:partner.score === null ? "no score" : partner.score + " / " + p.checklist_total + " points" }),
           el("span", { class:"section-sub", text:(partner.quotes || []).length + " verified quote(s)" })
         ])
@@ -881,6 +917,46 @@
         ]);
       }))
     ]));
+
+    (function () {
+      var ev = partner.evidence || {};
+      if (!ev.kinds) return;
+      var rows = [];
+      if (ev.tier_capped) {
+        rows.push(el("div", { class:"q" }, [
+          el("span", { class:"q-mark no", text:"!" }),
+          el("div", { class:"q-text" }, [
+            el("div", { class:"t", text:"Scored " + (TIER_LABEL[ev.tier_claimed] || ev.tier_claimed) + ", evidence supports " + (TIER_LABEL[ev.tier_supported] || ev.tier_supported) }),
+            el("div", { class:"d", text:(ev.tier_reasons || []).join("; ") })
+          ])
+        ]));
+      }
+      (ev.contradictions || []).forEach(function (finding) {
+        rows.push(el("div", { class:"q" }, [
+          el("span", { class:"q-mark no", text:"!" }),
+          el("div", { class:"q-text" }, [
+            el("div", { class:"t", text:finding.kind.replace(/_/g, " ") }),
+            el("div", { class:"d", text:finding.claim + " — " + finding.counterpart }),
+            (finding.uris || []).length ? el("div", { class:"why", text:(finding.uris || []).join(", ") }) : null
+          ])
+        ]));
+      });
+      body.appendChild(el("div", { class:"section" }, [
+        el("div", { class:"section-head" }, [el("h4", { class:"section-title", style:"font-size:14px", text:"What the evidence carries" }),
+          el("span", { class:"section-sub", text:"read from the sources themselves, not from the score" })]),
+        el("div", { style:"margin-bottom:8px" }, [evidenceChips(ev, 12)]),
+        el("div", { class:"chips", style:"margin-bottom:8px" }, (ev.confidences || []).map(function (f) {
+          var weak = f.weight !== undefined && f.weight < 1;
+          return el("span", {
+            class:"tag soft mini",
+            style: weak ? "border-color:var(--warn-line);color:var(--warn)" : "",
+            title: (KIND_LABEL[f.kind] || f.kind) + " — " + (f.shown_as || f.confidence) + " (" + (f.category || "unlabelled") + ")",
+            text: (KIND_LABEL[f.kind] || f.kind) + ": " + (f.confidence || "?")
+          });
+        })),
+        el("div", { class:"q-list" }, rows.length ? rows : [el("div", { class:"section-sub", text:"No claim in this dossier stands alone." })])
+      ]));
+    })();
 
     body.appendChild(el("div", { class:"section" }, [
       el("div", { class:"section-head" }, [el("h4", { class:"section-title", style:"font-size:14px", text:"Attributes" }),

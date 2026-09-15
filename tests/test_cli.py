@@ -49,6 +49,16 @@ def test_run_explains_a_database_with_no_verified_free_routes(tmp_path, monkeypa
     input_path = tmp_path / "in.csv"
     input_path.write_text("item_id,text\na.com,Some source text about a company.\n", encoding="utf-8")
 
+    # A fresh database refreshes route prices by itself; make that refresh
+    # offline and empty so the *message* for a genuinely route-less database is
+    # what this test checks, with no network in the suite.
+    from harness_fleet.catalog import RouteCatalog
+
+    def empty_refresh(self, *args, **kwargs):
+        return {"refreshed": 0, "routes": []}
+
+    monkeypatch.setattr(RouteCatalog, "refresh_all", empty_refresh)
+
     with pytest.raises(ValueError) as err:
         cli.cmd_run(_run_namespace(
             db=str(db), workspace_root=str(tmp_path), input=str(input_path),
@@ -56,8 +66,8 @@ def test_run_explains_a_database_with_no_verified_free_routes(tmp_path, monkeypa
         ))
 
     message = str(err.value)
-    assert "no verified-free route is registered" in message
-    assert "routes refresh" in message
+    assert "refreshed route prices" in message
+    assert "quickstart" in message
 
 
 def test_run_registers_the_demo_route_when_it_is_pinned(tmp_path, monkeypatch):
@@ -576,7 +586,13 @@ def test_rescore_links_lineage_and_history(tmp_path, monkeypatch, capsys):
     assert store.run_snapshot("round-2")["parent_run_id"] == "round-1"
     rows = store.get_entity_history("acme")
     assert [row["run_id"] for row in rows] == ["round-1", "round-2"]
-    assert all(row["score"] == 100 for row in rows)
+    # Each round carries its own source, and the contract prices them: an ATS
+    # board outranks a generic press page for the same kind of claim.
+    scores = {row["run_id"]: row["score"] for row in rows}
+    # Round 1 is an ATS board, which may carry the claim; round 2 is a generic
+    # press page, which is a lead rather than evidence, so it does not score.
+    assert scores["round-1"] and scores["round-1"] > 0, scores
+    assert scores["round-2"] in (0, 0.0, None), f"a generic page is not evidence: {scores}"
 
     cli.cmd_history(Namespace(entity="acme", db=str(db), json=True))
     history = json.loads(capsys.readouterr().out)

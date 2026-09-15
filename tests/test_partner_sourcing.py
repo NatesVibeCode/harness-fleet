@@ -201,9 +201,9 @@ def test_find_partners_drops_pages_with_no_practice_language(monkeypatch):
     assert report.dropped_no_practice_signal == 1
 
 
-def test_enrich_keeps_mentions_that_lack_practice_language(monkeypatch):
-    # Enrich is about a partner you already picked: a bare recommendation is
-    # still evidence, so the find-stage gate must not apply here.
+def test_enrich_rejects_a_partner_with_no_delivery_evidence(monkeypatch):
+    """A dossier is the output of filtering: a mention that never says the firm
+    delivers work is not enough to write one."""
     plan = {"stages": {"enrich": {"web": {"queries": ['"{domain}"']}}}}
     monkeypatch.setattr(partner_sourcing, "crawl_site", lambda *a, **k: ([], []))
     _patch_search(monkeypatch, {'"trace3.com"': [
@@ -213,19 +213,69 @@ def test_enrich_keeps_mentions_that_lack_practice_language(monkeypatch):
         "https://news.ycombinator.com/item?id=7": "Trace3: great team, highly recommend",
     })
     items, report = enrich_partner("trace3.com", plan=plan, backends=["hn"], delay=0.0)
-    assert [item.item_id for item in items] == ["trace3.com"]
-    assert report.dropped_unattributed == 0
+    assert items == []
+    assert report.rejected and "no delivery evidence" in report.rejected
+    assert report.kept == 0
+def test_candidate_entities_never_invents_a_domain_from_a_slug():
+    """A slug names the subject of a case study; it is not a domain.
 
-
-def test_candidate_entities_reads_a_vendor_case_study_slug():
-    # appomni.com/case-studies/trace3/ is *about* trace3; both are candidates
-    # and attribution decides which one the page is really about.
+    Live regression: /case-studies/fintech-payment-platform produced a candidate
+    called fintech-payment-platform.com, a firm that does not exist, and
+    school-platform.com the same way.
+    """
     assert candidate_entities("https://appomni.com/case-studies/trace3/", "Trace3 is a partner") == [
+        "appomni.com",
+    ]
+    fabricated = candidate_entities(
+        "https://vendor.com/case-studies/fintech-payment-platform",
+        "how we built a payment platform for a fintech client",
+    )
+    assert fabricated == ["vendor.com"]
+    assert candidate_entities("https://vendor.com/case-studies/school-platform", "x") == ["vendor.com"]
+
+
+def test_candidate_entities_keeps_a_case_study_slug_that_is_already_a_domain():
+    assert candidate_entities("https://appomni.com/case-studies/trace3.com/", "x") == [
+        "appomni.com",
+        "trace3.com",
+    ]
+    assert candidate_entities("https://appomni.com/case-studies/linkedin.com/", "x") == ["appomni.com"]
+
+
+def test_candidate_entities_reads_a_partner_domain_linked_from_a_vendor_case_study():
+    text = 'Read how <a href="https://www.trace3.com/case-studies/kafka">Trace3</a> delivered it.'
+    assert candidate_entities("https://appomni.com/case-studies/identity-rollout", text) == [
         "appomni.com",
         "trace3.com",
     ]
 
 
+def test_candidate_entities_skips_social_and_hosting_platforms():
+    for url in (
+        "https://uk.linkedin.com/in/someone",
+        "https://www.linkedin.com/company/trace3",
+        "https://x.com/trace3",
+        "https://twitter.com/trace3",
+        "https://www.facebook.com/trace3",
+        "https://www.instagram.com/trace3",
+        "https://www.tiktok.com/@trace3",
+        "https://www.youtube.com/watch?v=1",
+        "https://soumikmukherjee.vercel.app/",
+        "https://school-platform.netlify.app/",
+        "https://someone.github.io/about",
+        "https://acme.webflow.io/",
+        "https://acme.notion.site/portfolio",
+        "https://acme.wordpress.com/",
+        "https://acme.blogspot.com/",
+        "https://docs.readthedocs.io/en/latest/",
+    ):
+        assert is_source_host(url.split("/")[2]), url
+        assert candidate_entities(url, "Trace3 delivers Kafka work") == [], url
+    assert candidate_entities("https://uk.linkedin.com/in/x", "see https://trace3.com") == ["trace3.com"]
+    assert candidate_entities(
+        "https://news.ycombinator.com/item?id=1",
+        "https://www.linkedin.com/in/x and https://soumikmukherjee.vercel.app/",
+    ) == []
 def test_candidate_entities_ignores_path_stopwords_and_empty_urls():
     assert candidate_entities("https://vendor.com/case-studies/customers", "x") == ["vendor.com"]
     assert candidate_entities("", "x") == []
@@ -438,7 +488,7 @@ def test_report_serializes_for_the_cli(monkeypatch):
     assert payload["stage"] == "find"
     assert set(payload) == {
         "stage", "searched", "fetched", "kept", "dropped_unattributed",
-        "dropped_no_practice_signal", "candidates", "skipped",
+        "dropped_no_practice_signal", "vendor_stories", "rejected", "candidates", "skipped",
     }
     assert json.loads(json.dumps(payload))["kept"] == 0
     assert items == []

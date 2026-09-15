@@ -252,6 +252,9 @@ function studioSelection() {
 let saveTimer = null;
 function persistSelection() {
   clearTimeout(saveTimer);
+  // Never save an empty selection: the autosave fires on load and after any
+  // untick, and an empty save used to wipe the stored selection.
+  if (!H.selected.size) return;
   saveTimer = setTimeout(async () => {
     try { await api("PUT", "/api/settings", studioSelection()); } catch (e) { /* local-only */ }
   }, 600);

@@ -7,7 +7,7 @@ from argparse import Namespace
 
 import pytest
 
-from harness_fleet import cli, discover
+from harness_fleet import branding, cli, discover
 from harness_fleet.discover import (
     DiscoverError,
     RawRecord,
@@ -243,7 +243,7 @@ def test_search_ddgs_missing_gives_install_hint(monkeypatch):
         return real_import(name, *args, **kwargs)
 
     monkeypatch.setattr(builtins, "__import__", fake_import)
-    with pytest.raises(DiscoverError, match="harness-fleet\\[discover\\]"):
+    with pytest.raises(DiscoverError, match=re.escape(f"{branding.DIST_NAME}[discover]")):
         discover.search_ddgs("q")
 
 
@@ -606,7 +606,7 @@ def test_fetch_pdf_without_parser_errors_cleanly(monkeypatch, fake_http):
         headers={"content-type": "application/pdf"}, content=b"%PDF-1.4 fake",
         url="https://f.example/doc.pdf",
     )
-    with pytest.raises(DiscoverError, match="harness-fleet\\[discover\\]"):
+    with pytest.raises(DiscoverError, match=re.escape(f"{branding.DIST_NAME}[discover]")):
         fetch_text("https://f.example/doc.pdf", respect_robots=False)
 
 
@@ -905,7 +905,7 @@ def _playwright_installed() -> bool:
 
 @pytest.mark.skipif(_playwright_installed(), reason="playwright is installed, so the missing-extra path is unreachable")
 def test_js_render_missing_playwright_errors_cleanly(fake_http):
-    with pytest.raises(DiscoverError, match="harness-fleet\\[js\\]"):
+    with pytest.raises(DiscoverError, match=re.escape(f"{branding.DIST_NAME}[js]")):
         fetch_text("https://a.example/1", respect_robots=False, render_js=True)
 
 
@@ -920,7 +920,7 @@ def test_require_playwright_hint(monkeypatch):
         return real_import(name, *args, **kwargs)
 
     monkeypatch.setattr(builtins, "__import__", fake_import)
-    with pytest.raises(DiscoverError, match="harness-fleet\\[js\\]"):
+    with pytest.raises(DiscoverError, match=re.escape(f"{branding.DIST_NAME}[js]")):
         discover.require_playwright()
 
 
@@ -935,7 +935,7 @@ def test_run_discovery_js_requires_playwright_upfront(monkeypatch):
         return real_import(name, *args, **kwargs)
 
     monkeypatch.setattr(builtins, "__import__", fake_import)
-    with pytest.raises(DiscoverError, match="harness-fleet\\[js\\]"):
+    with pytest.raises(DiscoverError, match=re.escape(f"{branding.DIST_NAME}[js]")):
         discover.run_discovery(["q"], backends=["hn"], render_js=True)
 
 
@@ -1463,12 +1463,42 @@ def test_run_discovery_validates_discourse_url():
 
 
 def test_run_discovery_new_backends(monkeypatch):
+    """A Stack Exchange hit is captured through the API, not the blocked page."""
     monkeypatch.setattr(discover, "search_stackexchange", lambda q, **kw: [
-        SearchHit(url="https://stackoverflow.com/q/1", title="t", snippet="s", backend="stackexchange")])
+        SearchHit(url="https://stackoverflow.com/questions/1/when-kafka", title="t", snippet="s",
+                  backend="stackexchange")])
+    captured = {}
+
+    def fake_question(url, **kwargs):
+        captured["url"] = url
+        return RawRecord(text="full", source_uri=url, title="t")
+
+    monkeypatch.setattr(discover, "fetch_stackexchange_question", fake_question)
     monkeypatch.setattr(discover, "fetch_smart_url", lambda url, **kw: RawRecord(
-        text="full", source_uri=url, title="t"))
+        text="page", source_uri=url, title="t"))
     items, report = discover.run_discovery(["q"], backends=["stackexchange"], delay=0)
     assert items[0].text == "full" and report["hits"] == 1
+    assert captured["url"].endswith("/questions/1/when-kafka")
+
+
+def test_a_stackexchange_lookalike_still_uses_the_page_fetcher(monkeypatch):
+    """Only real Stack Exchange question URLs take the API path."""
+    monkeypatch.setattr(discover, "search_stackexchange", lambda q, **kw: [
+        SearchHit(url="https://example.com/questions/1/when-kafka", title="t", snippet="s",
+                  backend="stackexchange")])
+    monkeypatch.setattr(discover, "fetch_smart_url", lambda url, **kw: RawRecord(
+        text="page", source_uri=url, title="t"))
+    items, _report = discover.run_discovery(["q"], backends=["stackexchange"], delay=0)
+    assert items[0].text == "page"
+
+
+def test_a_listing_filter_backend_says_why_it_matched_nothing(monkeypatch):
+    """Zero hits from a listing filter is explained, not reported as breakage."""
+    monkeypatch.setattr(discover, "search_devto", lambda q, **kw: [])
+    _items, report = discover.run_discovery(["zzz"], backends=["devto"], delay=0)
+    reasons = " ".join(str(entry.get("reason", "")) for entry in report["skipped"])
+    assert "recent listing it filters" in reasons
+    assert "--backend ddgs" in reasons
 
 
 def _qa_namespace(tmp_path, **over):
@@ -1647,3 +1677,27 @@ def test_devto_uses_backoff_for_details(monkeypatch):
     FlakyDetail.detail_calls = 0
     recs = discover.fetch_devto_tag("kafka")
     assert "Full body" in recs[0].text and slept == [0.0]  # retry-after: 0 honored
+
+
+def test_discovery_drops_academic_and_paper_hosts(monkeypatch):
+    """A broad web query drags in journals; they are not this product's surface."""
+    from harness_fleet.sources import host_of, is_noise_host
+
+    assert is_noise_host(host_of("https://academic.oup.com/ppmg/article/5/1/22/6486463"))
+    assert is_noise_host(host_of("https://www.sciencedirect.com/science/article/pii/S1"))
+    assert is_noise_host("arxiv.org")
+    # A company, a vendor story and an ATS board are evidence surfaces.
+    for host in ("acme.com", "aws.amazon.com", "boards.greenhouse.io", "news.ycombinator.com"):
+        assert not is_noise_host(host_of(host)), host
+
+    monkeypatch.setattr(discover, "search_hn", lambda q, **kw: [
+        SearchHit(url="https://academic.oup.com/ppmg/article/5/1/22/6486463", title="Paper",
+                  snippet="s", backend="hn"),
+        SearchHit(url="https://acme.com/case-studies/kafka", title="Case study", snippet="s", backend="hn"),
+    ])
+    monkeypatch.setattr(discover, "fetch_smart_url", lambda url, **kw: RawRecord(
+        text="Acme implemented Kafka and cut latency 40%.", source_uri=url, title="t"))
+    items, report = discover.run_discovery(["kafka"], backends=["hn"], delay=0)
+    assert [item.source_uri for item in items] == ["https://acme.com/case-studies/kafka"]
+    reasons = " ".join(str(entry.get("reason", "")) for entry in report["skipped"])
+    assert "academic publisher" in reasons

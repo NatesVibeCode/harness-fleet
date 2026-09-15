@@ -395,6 +395,9 @@ class StudioHandler(BaseHTTPRequestHandler):
                 body = _read_json(self)
                 if not isinstance(body, dict):
                     raise ValueError("settings must be an object")
+                unknown = sorted(set(body) - {"mode", "providers", "routes"})
+                if unknown:
+                    raise ValueError(f"unknown setting(s): {', '.join(unknown)}")
                 mode = str(body.get("mode") or "free")
                 if mode not in {"free", "specific"}:
                     raise ValueError("mode must be 'free' or 'specific'")
@@ -406,10 +409,15 @@ class StudioHandler(BaseHTTPRequestHandler):
                 if mode == "free":
                     selection["routes"] = []
                 store = _store(self)
+                # An empty selection used to clear what was saved and answer 200,
+                # so the studio's autosave (which fires while nothing is ticked)
+                # silently wiped a real selection. Refuse it instead; clearing is
+                # explicit: `harness-fleet settings --clear`.
                 if not selection["providers"]:
-                    store.clear_studio_selection()
-                    _send_json(self, 200, {"settings": selection, "revision": None})
-                    return
+                    raise ValueError(
+                        "no harness selected; pick at least one, or clear the saved selection "
+                        "with `harness-fleet settings --clear`"
+                    )
                 _send_json(self, 200, {
                     "settings": selection,
                     "revision": store.save_studio_selection(selection),

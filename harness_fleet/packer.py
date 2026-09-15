@@ -21,7 +21,7 @@ def _pack_cards(cards: list[dict[str, Any]]) -> dict[str, Any]:
 def iter_packed_batches(
     raw_records: Iterable[InputItem | dict[str, Any]],
     batch_size: int = 6,
-    max_slice_chars: int = 6000
+    max_slice_chars: int | None = 6000
 ) -> Iterator[dict[str, Any]]:
     """Yield packed batches while retaining only one batch of cards in memory."""
     if batch_size <= 0:
@@ -55,7 +55,7 @@ def iter_packed_batches(
 def pack_items(
     raw_records: Iterable[InputItem | dict[str, Any]],
     batch_size: int = 6,
-    max_slice_chars: int = 6000
+    max_slice_chars: int | None = 6000
 ) -> list[dict[str, Any]]:
     """Compatibility wrapper that intentionally materializes all packed batches."""
     return list(iter_packed_batches(raw_records, batch_size=batch_size, max_slice_chars=max_slice_chars))

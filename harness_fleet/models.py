@@ -12,6 +12,8 @@ from typing import Any, Literal
 from jsonschema import Draft202012Validator
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
+from . import contracts, evidence
+
 SCHEMA_BASE = "https://raw.githubusercontent.com/NatesVibeCode/harness-fleet/master/schemas"
 ID_PATTERN = r"^[A-Za-z0-9_.-]+$"
 
@@ -368,26 +370,78 @@ class TaskSpec(ClosedModel):
         source_uri: str | None,
         captured_at: str | None = None,
         scored_at: str | None = None,
+        text: str | None = None,
     ) -> dict[str, float]:
-        """Per-item support strength: source weight scaled by recency decay.
+        """Per-item support strength: source weight times recency decay.
 
         Quotes name the checklist items they support via `supports`; each
         item's strength is its strongest backing source times its recency
         decay at scoring time. Items with no backing quote score 0, so
         untagged truth cannot inflate. Both timestamps ride in the stored
         record, so revalidation recomputes identical strengths forever.
+
+        A quote must also *address* the claim it is tagged for: the central
+        requirements in ``evidence.quote_addresses_claim`` are checked here, so
+        a press release that names no technology cannot carry a stack claim and
+        a forum remark about culture cannot carry independent validation.
+        Products only supply their own vocabulary through ``evidence_terms``.
         """
-        weight = self.source_weight(source_uri)
-        strengths: dict[str, float] = {}
+        categories: dict[str, set[str]] = {}
         for quote in quotes:
             backed = quote.get("supports", []) if isinstance(quote, dict) else getattr(quote, "supports", [])
             if not isinstance(backed, list):
                 continue
+            quote_text = quote.get("text", "") if isinstance(quote, dict) else getattr(quote, "text", "")
+            quote_start = quote.get("start", 0) if isinstance(quote, dict) else getattr(quote, "start", 0)
+            category = ""
+            if text:
+                category = evidence.section_category_at(text, int(quote_start or 0))
+            if not category and source_uri:
+                category = evidence.classify_source_category(source_uri).upper()
             for item_id in backed:
-                if isinstance(item_id, str):
-                    strength = weight * self.recency_decay(item_id, captured_at, scored_at)
-                    strengths[item_id] = max(strength, strengths.get(item_id, 0.0))
+                if not isinstance(item_id, str):
+                    continue
+                # The quote must state the claim, and the source must be one that
+                # may carry it. Nothing else is averaged in at any weight: a
+                # source that cannot carry a claim is a lead, not evidence.
+                addressed, _reason = contracts.quote_addresses_claim(
+                    item_id, str(quote_text or ""), category, self.evidence_terms
+                )
+                if not addressed:
+                    continue
+                categories.setdefault(item_id, set()).add(category)
+        strengths: dict[str, float] = {}
+        for item_id, seen in categories.items():
+            strength = contracts.support_strength(item_id, seen)
+            if strength > 0:
+                strengths[item_id] = strength * self.source_weight(source_uri) * self.recency_decay(
+                    item_id, captured_at, scored_at
+                )
         return strengths
+
+    def support_notes(
+        self, quotes: list[Any], text: str | None = None, source_uri: str | None = None
+    ) -> dict[str, str]:
+        """Why a tagged quote was refused, per item, for the evidence readout."""
+        notes: dict[str, str] = {}
+        for quote in quotes:
+            backed = quote.get("supports", []) if isinstance(quote, dict) else getattr(quote, "supports", [])
+            if not isinstance(backed, list):
+                continue
+            quote_text = quote.get("text", "") if isinstance(quote, dict) else getattr(quote, "text", "")
+            quote_start = quote.get("start", 0) if isinstance(quote, dict) else getattr(quote, "start", 0)
+            category = evidence.section_category_at(text or "", int(quote_start or 0))
+            if not category and source_uri:
+                category = evidence.classify_source_category(source_uri).upper()
+            for item_id in backed:
+                if not isinstance(item_id, str):
+                    continue
+                addressed, reason = evidence.quote_addresses_claim(
+                    item_id, str(quote_text or ""), category, self.evidence_terms
+                )
+                if not addressed:
+                    notes[item_id] = reason
+        return notes
 
     def derive_checklist_score(
         self,
@@ -978,6 +1032,9 @@ class TaskSummary(ClosedModel):
     task_name: str
     revision_id: str = Field(pattern=r"^[0-9a-f]{64}$")
     created_at: str
+    #: 1 when the revision carries a checklist, so its score is derivable.
+    #: The store returns the SQLite flag as an int, and this model is strict.
+    scorable: int = Field(default=0, ge=0, le=1)
 
 
 class TasksResult(ClosedModel):
@@ -1200,3 +1257,110 @@ class SortSpec(ClosedModel):
 
     field: str = Field(pattern=CLAIM_KEY_PATTERN)
     descending: bool = True
+
+class RegistryDomain(ClosedModel):
+    """One domain the taxonomy has promoted, and why."""
+
+    domain: str
+    category: str
+    reason: str = ""
+
+
+class SourceProposal(ClosedModel):
+    """A candidate the growth pass suggests a category for."""
+
+    domain: str
+    category: str
+    confidence: float
+    sightings: int
+
+
+class SourceChannel(ClosedModel):
+    """A channel this workspace defines in its sources directory."""
+
+    name: str
+    category: str
+    path: str = ""
+
+
+class SourcesReport(ClosedModel):
+    """The source taxonomy as it stands: known, proposed, installed."""
+
+    registry: str
+    domains: list[RegistryDomain] = []
+    candidate_count: int = 0
+    proposals: list[SourceProposal] = []
+    channels: list[SourceChannel] = []
+
+
+
+class LaneYield(ClosedModel):
+    """One source's contribution to a run: what it returned, what it cost."""
+
+    source: str
+    kind: str = "backend"
+    captured: int = 0
+    attempted: int | None = None
+    skipped: int = 0
+
+
+class LaneCoverage(ClosedModel):
+    """One entity's evidence kinds, and what its bar is still missing."""
+
+    item_id: str
+    kinds: list[str] = []
+    missing: list[str] = []
+    claimed_tier: str | None = None
+
+
+class LaneSupport(ClosedModel):
+    """One entity's scored claims: carried by a qualifying source, or refused."""
+
+    item_id: str
+    supported: list[str] = []
+    refused: list[str] = []
+    reasons: list[str] = []
+
+
+class LaneTruthQuote(ClosedModel):
+    """One sampled quote, re-checked against its offsets and its live page."""
+
+    item_id: str
+    uri: str = ""
+    category: str = ""
+    exact: bool = False
+    live: str = "not_checked"
+    addressed: bool = False
+    reason: str = ""
+
+
+class LaneCost(ClosedModel):
+    """What the run spent: routes, attempts, cost and wall time."""
+
+    routes: list[str] = []
+    attempts: int = 0
+    cost: float = 0.0
+    wall_seconds: float | None = None
+    batches_verified: int = 0
+    batches_failed: int = 0
+
+
+class LaneReport(ClosedModel):
+    """The five measurements a lane is tuned by, for one finished run."""
+
+    run_id: str
+    lane: str = ""
+    tier_bar: list[str] = []
+    generated_at: str = ""
+    records: int = 0
+    yield_by_source: list[LaneYield] = []
+    coverage: list[LaneCoverage] = []
+    coverage_meeting_bar: float = 0.0
+    support: list[LaneSupport] = []
+    claims_supported: int = 0
+    claims_refused: int = 0
+    truth: list[LaneTruthQuote] = []
+    truth_sampled: int = 0
+    cost: LaneCost = LaneCost()
+    frozen: dict[str, str] = {}
+    notes: list[str] = []

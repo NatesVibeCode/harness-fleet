@@ -83,7 +83,12 @@ def test_payload_is_schema_driven_and_never_invents_scores(tmp_path):
             points for item, points in partner["checklist_points"].items() if partner["checklist"][item]
         )
         if score is not None:
-            assert abs(score - partner["earned_points"]) < 1e-6
+            # A score is the earned points *scaled by how well each claim is
+            # supported*: a quote that does not address its claim pays nothing,
+            # so the score can never exceed what was earned.
+            assert score <= partner["earned_points"] + 1e-6
+            if partner["earned_points"]:
+                assert score >= 0
         assert partner["provenance"]["route"] == "demo/fake"
         assert partner["provenance"]["cost"] == 0.0
 
@@ -206,3 +211,74 @@ def test_cli_prints_the_payload_with_json(tmp_path, capsys):
     payload = json.loads(capsys.readouterr().out)
     assert payload["run"]["run_id"] == "board-run"
     assert payload["stats"]["records"] == 3
+
+
+def test_the_board_shows_the_evidence_read_next_to_the_score(tmp_path):
+    """The run's evidence readout is rendered with the score it qualifies."""
+    db = _partner_run(tmp_path, run_id="evidence-run")
+    runs_dir = tmp_path / "runs"
+    run_dir = runs_dir / "evidence-run"
+    run_dir.mkdir(parents=True)
+    (run_dir / "evidence.json").write_text(json.dumps({
+        "run_id": "evidence-run",
+        "items": {
+            "cloud_solutions.io": {
+                "kinds": {"delivery_proof": True, "independent_validation": False},
+                "tier_claimed": "tier_1",
+                "tier_supported": "tier_2",
+                "tier_capped": True,
+                "tier_reasons": ["tier_1 needs independent_validation"],
+                "contradictions": [{"kind": "certification_unverified", "claim": "c", "counterpart": "n", "uris": []}],
+            }
+        },
+        "kind_totals": {"delivery_proof": 1, "independent_validation": 0},
+        "tier_capped": {"cloud_solutions.io": ["tier_1 needs independent_validation"]},
+        "contradictions": {"cloud_solutions.io": [{"kind": "certification_unverified"}]},
+    }), encoding="utf-8")
+
+    payload = build_board_payload(db, "evidence-run", runs_dir)
+    by_id = {p["id"]: p for p in payload["partners"]}
+    assert by_id["cloud_solutions.io"]["evidence"]["tier_supported"] == "tier_2"
+    assert payload["stats"]["tier_capped"] == 1
+    assert payload["stats"]["lone_claims"] == 1
+    assert payload["stats"]["evidence_kinds"]["delivery_proof"] == 1
+    # A partner with no readout still renders, with an empty evidence block.
+    assert by_id["northwind.example"]["evidence"] == {}
+
+
+def test_a_run_without_a_readout_still_renders(tmp_path):
+    """Evidence reads are additive: an older run must not break the board."""
+    db = _partner_run(tmp_path, run_id="no-evidence-run")
+    payload = build_board_payload(db, "no-evidence-run", tmp_path / "runs")
+    assert all(p["evidence"] == {} for p in payload["partners"])
+    assert payload["stats"]["tier_capped"] == 0
+    assert payload["stats"]["evidence_kinds"] == {}
+
+
+def test_a_corrupt_readout_is_ignored_rather_than_fatal(tmp_path):
+    db = _partner_run(tmp_path, run_id="corrupt-run")
+    run_dir = tmp_path / "runs" / "corrupt-run"
+    run_dir.mkdir(parents=True)
+    (run_dir / "evidence.json").write_text("{not json", encoding="utf-8")
+    payload = build_board_payload(db, "corrupt-run", tmp_path / "runs")
+    assert payload["stats"]["records"] == 3
+    assert all(p["evidence"] == {} for p in payload["partners"])
+
+
+def test_a_quote_that_does_not_address_its_claim_pays_nothing(tmp_path):
+    """The demo provider's canned quote is generic, so its points are not paid.
+
+    This is the central claim contract in action: an answer only scores when a
+    supporting quote actually states what the item claims.
+    """
+    from harness_fleet.task import PARTNER_CHECKLIST
+
+    db = _partner_run(tmp_path, run_id="unsupported-run")
+    payload = build_board_payload(db, "unsupported-run")
+    scored = [p for p in payload["partners"] if p["score"] is not None]
+    assert scored, "the demo provider still produces scored records"
+    assert any(p["score"] < p["earned_points"] for p in scored), (
+        "a generic quote must not pay the full checklist points"
+    )
+    assert set(payload["checklist"][0]) == {"item_id", "label", "points", "description", "passed"}
+    assert PARTNER_CHECKLIST, "the checklist contract is unchanged"

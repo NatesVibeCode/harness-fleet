@@ -22,6 +22,8 @@ from pathlib import Path
 EXACT_FILES = (
     "scripts/check_harness_drift.py",
     "tests/test_route_policy_contract.py",
+    "tests/test_harness_live.py",
+    "tests/test_live_probe_classification.py",
     "harness_fleet/providers/base.py",
     "harness_fleet/providers/harness.py",
     "harness_fleet/providers/opencode.py",
@@ -59,6 +61,25 @@ EXACT_FILES = (
     "harness_fleet/packer.py",
     "harness_fleet/sessions.py",
     "harness_fleet/slicer.py",
+    # The product surface itself: one CLI, one connector set, one board, one
+    # task vocabulary. Only branding.py differs per distribution, so a fix or a
+    # connector lands in every product at once instead of being ported.
+    "harness_fleet/cli.py",
+    "harness_fleet/discover.py",
+    "harness_fleet/board.py",
+    "harness_fleet/bundler.py",
+    "harness_fleet/task.py",
+    "harness_fleet/resources/board/index.html",
+    # The source taxonomy and the evidence rules are the fleet-wide semantic
+    # contract: every variant must judge a source and a dossier the same way.
+    "harness_fleet/sources.py",
+    # The central contracts every altitude reads.
+    "harness_fleet/contracts.py",
+    "harness_fleet/registry.py",
+    "harness_fleet/channels.py",
+    "harness_fleet/lanes.py",
+    "harness_fleet/lane_report.py",
+    "harness_fleet/evidence.py",
     "harness_fleet/ui.py",
     "harness_fleet/migrations/002_intelligence_and_policy.sql",
     "harness_fleet/migrations/001_control_plane.sql",
@@ -78,6 +99,10 @@ def _default_repos(cwd: Path) -> list[Path]:
         cwd.parent / "harness-fleet",
         cwd.parent / "account-fleet",
         cwd.parent / "Career" / "career-fleet",
+        # The fleets may live in one tree with the products nested under the
+        # engine (…/harness-fleet/career-fleet), so look inside as well as beside.
+        cwd / "career-fleet",
+        cwd / "account-fleet",
         cwd.parent.parent / "harness-fleet",
         cwd.parent.parent / "account-fleet",
         cwd.parent.parent / "Career" / "career-fleet",
@@ -96,6 +121,14 @@ def _normalized_digest(path: Path, relative: str) -> str:
         # Each fleet releases independently, so the version literal legitimately
         # differs. Everything else in the SDK surface must still match.
         text = re.sub(r'(?m)^__version__ = "[^"]*"$', '__version__ = "shared"', text)
+    if relative.endswith(("references/operations.md", "references/task-contracts.md", "SKILL.md")):
+        # The bundled engine skill is one document in every distribution, but the
+        # binary a user runs is the one they installed: account-fleet's copy says
+        # account-fleet. Normalize only the invocation, never the distribution or
+        # skill name, so `pip install harness-fleet` and
+        # `.agents/skills/harness-fleet` still have to match byte for byte.
+        text = re.sub(r'(?<![\w./-])(?:harness|account|career)-fleet(?= [a-z])', "<fleet>", text)
+        text = re.sub(r'"(?:harness|account|career)-fleet"', '"<fleet>"', text)
     if relative.endswith("references/operations.md"):
         text = re.sub(
             r'Schema version is `?"(?:2|3|4|5)"`?(?:\. Account runs can also retain the exact immutable Ideal Company Profile revision used for the campaign\.)?\.?',

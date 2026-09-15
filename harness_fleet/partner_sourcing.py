@@ -25,15 +25,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-from .bundler import (
-    ATS_DOMAINS,
-    CASE_STUDY_PATH_RE,
-    COMMUNITY_DOMAINS,
-    REGISTRY_DOMAINS,
-    REVIEW_DOMAINS,
-    bundle_records,
-    canonicalize_entity_id,
-)
+from .bundler import bundle_records, canonicalize_entity_id
 from .discover import (
     RawRecord,
     SearchHit,
@@ -43,6 +35,33 @@ from .discover import (
     web_search,
 )
 from .models import InputItem
+from .sources import (
+    ATS_DOMAINS as ATS_DOMAINS,
+)
+from .sources import (
+    CASE_STUDY_PATH_RE as CASE_STUDY_PATH_RE,
+)
+from .sources import (
+    COMMUNITY_DOMAINS as COMMUNITY_DOMAINS,
+)
+from .sources import (
+    PLATFORM_HOSTS as PLATFORM_HOSTS,
+)
+from .sources import (
+    REGISTRY_DOMAINS as REGISTRY_DOMAINS,
+)
+from .sources import (
+    REVIEW_DOMAINS as REVIEW_DOMAINS,
+)
+from .sources import (
+    host_of as _host,
+)
+from .sources import (
+    is_source_host as is_source_host,
+)
+from .sources import (
+    linked_domains as linked_domains,
+)
 
 PLAN_PATH = Path(__file__).resolve().parent / "data" / "partner_sources.json"
 COMMUNITY_BACKENDS = ("hn", "reddit", "stackexchange", "discourse", "devto", "lobsters", "lemmy")
@@ -65,43 +84,13 @@ class SourcingError(RuntimeError):
     """The plan is unusable, or a step cannot be attempted at all."""
 
 
-# Hosts that *talk about* partners rather than being partners: directories,
-# registries, community platforms and job boards. Their pages are evidence for
-# a partner; they are never candidates themselves.
-_SOURCE_HOSTS = REGISTRY_DOMAINS + REVIEW_DOMAINS + COMMUNITY_DOMAINS + ATS_DOMAINS
-_SLUG_STOPWORDS = {"case-study", "case-studies", "customers", "clients", "work", "portfolio", "success-stories"}
-_LINKED_DOMAIN_RE = re.compile(r'https?://([a-z0-9][a-z0-9.\-]{2,80}?)(?=[/\s"\'<>)\]]|$)', re.IGNORECASE)
-# Only these suffixes are treated as a firm's own site when linked from a
-# community or directory page; a link to a blog post is not a partner.
-_ENTITY_SUFFIXES = (
-    ".com", ".io", ".ai", ".dev", ".net", ".co", ".org", ".cloud", ".tech",
-    ".sh", ".app", ".us", ".uk", ".de", ".ca", ".au", ".nl", ".se", ".fr",
+# CMS assets live under the same paths as stories (background images, headers,
+# logos). They are never prose, so they are dropped before any fetch.
+_ASSET_HINTS = (
+    "background", "asset", "header", "logo", "icon", "font", "sprite",
+    "screenshot", "thumbnail", "avatar", "placeholder",
 )
-
-
-def _host(url: str | None) -> str:
-    parsed = urlparse((url or "").strip() if "://" in (url or "") else f"https://{(url or '').strip()}")
-    host = parsed.netloc.lower().strip()
-    return host[4:] if host.startswith("www.") else host
-
-
-def is_source_host(host: str) -> bool:
-    return any(marker in host for marker in _SOURCE_HOSTS)
-
-
-def linked_domains(text: str | None) -> list[str]:
-    """Firm domains linked from a page, in order, source hosts excluded."""
-    out: list[str] = []
-    for match in _LINKED_DOMAIN_RE.finditer(text or ""):
-        domain = match.group(1).lower().strip(".")
-        if domain.startswith("www."):
-            domain = domain[4:]
-        if "." not in domain or is_source_host(domain):
-            continue
-        if not domain.endswith(_ENTITY_SUFFIXES):
-            continue
-        out.append(domain)
-    return list(dict.fromkeys(out))
+_SLUG_STOPWORDS = {"case-study", "case-studies", "customers", "clients", "work", "portfolio", "success-stories"}
 
 
 def candidate_entities(url: str | None, text: str | None = None) -> list[str]:
@@ -109,9 +98,11 @@ def candidate_entities(url: str | None, text: str | None = None) -> list[str]:
 
     The page's own domain normally identifies the partner. Two exceptions are
     worth catching: a vendor case study (``appomni.com/case-studies/trace3/`` is
-    *about* trace3, so the slug is a candidate too), and a page hosted on a
-    community or directory site, which files under the firms it links to.
-    Attribution then decides which of those the page is really about.
+    *about* trace3, so the page files under the partner domains it links), and a
+    page hosted on a community, directory or platform site, which files under the
+    firms it links to. A slug is never turned into a domain: a candidate has to
+    be a domain somebody actually wrote down. Attribution then decides which of
+    those the page is really about.
     """
     host = _host(url)
     out: list[str] = []
@@ -122,12 +113,19 @@ def candidate_entities(url: str | None, text: str | None = None) -> list[str]:
         out.append(host)
     match = CASE_STUDY_PATH_RE.search(urlparse((url or "") if "://" in (url or "") else f"https://{url or ''}").path or "")
     if match and host and not is_source_host(host):
+        # A vendor case study is *about* a partner: file it under the real
+        # domains the page writes down, never under a domain we invent.
+        out.extend(linked_domains(text))
         segments = [seg for seg in urlparse((url or "") if "://" in (url or "") else f"https://{url or ''}").path.split("/") if seg]
         if segments:
             slug = segments[-1].lower().strip()
+            # A slug names the subject of a case study, but a slug is not a
+            # domain: `fintech-payment-platform` must never become
+            # `fintech-payment-platform.com`. Keep it only when it is already a
+            # dotted domain that is not a platform or source host.
             if (3 <= len(slug) <= 30 and slug not in _SLUG_STOPWORDS
-                    and not any(ch.isdigit() and len(slug) == 4 for ch in [slug[:1]])):
-                out.append(slug if "." in slug else f"{slug}.com")
+                    and "." in slug and not is_source_host(slug)):
+                out.append(slug)
     return list(dict.fromkeys(out))
 
 
@@ -282,6 +280,8 @@ class SourcingReport:
     kept: int = 0
     dropped_unattributed: int = 0
     dropped_no_practice_signal: int = 0
+    vendor_stories: int = 0
+    rejected: str | None = None
     skipped: list[dict[str, str]] = field(default_factory=list)
     candidates: list[str] = field(default_factory=list)
 
@@ -293,6 +293,8 @@ class SourcingReport:
             "kept": self.kept,
             "dropped_unattributed": self.dropped_unattributed,
             "dropped_no_practice_signal": self.dropped_no_practice_signal,
+            "vendor_stories": self.vendor_stories,
+            "rejected": self.rejected,
             "candidates": self.candidates,
             "skipped": self.skipped,
         }
@@ -397,6 +399,135 @@ def find_partners(
     return items, report
 
 
+def _fetch_markup(url: str, *, timeout: float, respect_robots: bool) -> str:
+    """Raw HTML/XML for link and sitemap discovery.
+
+    Prose extraction strips the markup, so hrefs and <loc> entries have to come
+    from the raw response: ``fetch_text`` is for the story text, not for
+    finding it.
+    """
+    import httpx
+
+    from .discover import USER_AGENT, robots_allowed
+
+    with httpx.Client(timeout=timeout, follow_redirects=True, headers={"User-Agent": USER_AGENT}) as client:
+        if respect_robots and not robots_allowed(url, client, timeout=timeout):
+            raise SourcingError(f"robots.txt disallows {url}")
+        response = client.get(url)
+    if response.status_code != 200:
+        raise SourcingError(f"HTTP {response.status_code} for {url}")
+    return response.text
+
+
+def vendor_story_urls(
+    plan: dict[str, Any] | None = None,
+    *,
+    vendors: Sequence[str] | None = None,
+    max_per_vendor: int = 20,
+    timeout: float = 20.0,
+    respect_robots: bool = True,
+) -> tuple[list[str], list[dict[str, str]]]:
+    """Enumerate a vendor's partner/customer story URLs from its own site.
+
+    Vendor-published stories are independent prose about the work, and the plan
+    lists where they live: a story hub whose links are the stories (AWS), or a
+    sitemap index walked one level and filtered to the story paths (Snowflake,
+    Databricks, Elastic, Datadog, MongoDB). Enumerated rather than searched,
+    because review sites that used to supply this now answer 403.
+    """
+
+    plan = plan or load_plan()
+    stage = plan.get("stages", {}).get("vendor_stories") or {}
+    configured = stage.get("vendors") or {}
+    wanted = [v for v in (vendors or configured) if v in configured]
+    urls: list[str] = []
+    skipped: list[dict[str, str]] = []
+
+    for vendor in wanted:
+        spec = configured.get(vendor) or {}
+        hub = spec.get("hub")
+        prefix = spec.get("story_path_prefix") or ""
+        if hub:
+            try:
+                markup = _fetch_markup(hub, timeout=timeout, respect_robots=respect_robots)
+            except Exception as exc:
+                skipped.append({"vendor": vendor, "reason": str(exc)[:200]})
+                continue
+            found = []
+            for match in re.finditer(r'href="([^"#?]+)"', markup):
+                link = match.group(1)
+                if prefix not in link:
+                    continue
+                # A story has a slug after the prefix; the hub itself (and its
+                # localized twins) does not, so those are not stories.
+                if not link.split(prefix, 1)[1].strip("/"):
+                    continue
+                found.append(link if link.startswith("http") else f"https://{urlparse(hub).netloc}{link}")
+            urls.extend(list(dict.fromkeys(found))[:max_per_vendor])
+            continue
+
+        sitemap = spec.get("sitemap")
+        if not sitemap:
+            continue
+        sitemap_urls: list[str] = [sitemap]
+        story_urls: list[str] = []
+        for sitemap_url in sitemap_urls:
+            try:
+                text = _fetch_markup(sitemap_url, timeout=timeout, respect_robots=respect_robots)
+            except Exception as exc:
+                skipped.append({"vendor": vendor, "reason": str(exc)[:200]})
+                continue
+            locs = re.findall(r"<loc>\s*([^<\s]+)\s*</loc>", text)
+            nested = [loc for loc in locs if loc.endswith(".xml") and len(sitemap_urls) < 8]
+            story_urls.extend(loc for loc in locs if not loc.endswith(".xml"))
+            sitemap_urls.extend(nested[:6])
+        paths = tuple(spec.get("story_paths") or ())
+        filtered = [
+            u for u in story_urls
+            if (not paths or any(path in u for path in paths))
+            and not any(hint in u.lower() for hint in _ASSET_HINTS)
+        ]
+        urls.extend(list(dict.fromkeys(filtered))[:max_per_vendor])
+
+    return list(dict.fromkeys(urls)), skipped
+
+
+def fetch_vendor_stories(
+    entity: str,
+    *,
+    plan: dict[str, Any] | None = None,
+    vendors: Sequence[str] | None = None,
+    max_per_vendor: int = 20,
+    timeout: float = 20.0,
+    respect_robots: bool = True,
+) -> tuple[list[RawRecord], list[dict[str, str]]]:
+    """Vendor stories that actually name *entity*.
+
+    Enumerating a vendor's stories is not evidence about a partner: the story
+    has to name them. Attribution decides, exactly as it does for search hits,
+    so a story that credits nobody is dropped rather than filed under whoever
+    happened to be nearby.
+    """
+    from .discover import fetch_text
+
+    plan = plan or load_plan()
+    domain = canonicalize_entity_id(entity) or entity
+    urls, skipped = vendor_story_urls(
+        plan, vendors=vendors, max_per_vendor=max_per_vendor, timeout=timeout,
+        respect_robots=respect_robots,
+    )
+    records: list[RawRecord] = []
+    for url in urls:
+        try:
+            record = fetch_text(url, timeout=timeout, respect_robots=respect_robots)
+        except Exception as exc:
+            skipped.append({"url": url, "reason": str(exc)[:200]})
+            continue
+        if is_attributed(record.text, record.source_uri, domain):
+            records.append(record)
+    return records, skipped
+
+
 def enrich_partner(
     entity: str,
     *,
@@ -410,6 +541,8 @@ def enrich_partner(
     respect_robots: bool = True,
     snippets_only: bool = False,
     include_fetch: bool = True,
+    vendor_stories: bool = True,
+    vendor_story_limit: int = 20,
 ) -> tuple[list[InputItem], SourcingReport]:
     """Enrich one partner (from find, or from a list you already have)."""
     plan = plan or load_plan()
@@ -442,6 +575,20 @@ def enrich_partner(
                 except Exception as exc:
                     report.skipped.append({"url": url, "reason": str(exc)[:200]})
 
+    # Vendor-published stories that name this partner: independent prose about
+    # the work, and the non-first-party half of the tier-1 evidence gate.
+    if include_fetch and vendor_stories:
+        try:
+            story_records, story_skipped = fetch_vendor_stories(
+                domain, plan=plan, max_per_vendor=vendor_story_limit, timeout=timeout,
+                respect_robots=respect_robots,
+            )
+            records.extend(story_records)
+            report.skipped.extend(story_skipped[:5])
+            report.vendor_stories = len(story_records)
+        except Exception as exc:
+            report.skipped.append({"source": "vendor_stories", "reason": str(exc)[:200]})
+
     # Independent mentions and press, via the search backends. --no-fetch means
     # no fetching at all, so search hits stay snippets in that mode.
     snippets_only = snippets_only or not include_fetch
@@ -468,9 +615,24 @@ def enrich_partner(
 
     attributed, dropped = filter_attributed(records, domain)
     report.dropped_unattributed = len(dropped)
-    # One dossier per partner: re-key every page to the entity so the bundle
-    # merges into a single row instead of one row per URL.
+
+    # A dossier is the *output* of filtering, never an input to it. `find` gates
+    # candidates before bundling; enrich used to bundle whatever domain it was
+    # handed, so `enrich stripe.com` produced a "partner dossier" for a SaaS
+    # vendor. The same gate applies here: the collected evidence has to show the
+    # entity delivering work at all.
     keyed = [item.model_copy(update={"item_id": domain}) for item in to_input_items(attributed)]
+    evidence = "\n".join(item.text for item in keyed)
+    if not has_practice_signal(evidence, practice_signals(plan)):
+        report.rejected = (
+            f"{domain} shows no delivery evidence in the sources collected for it: "
+            "nothing says it implements, integrates or delivers work for clients. "
+            "No dossier was written."
+        )
+        report.kept = 0
+        return [], report
+
+    # One dossier per partner: the bundle merges into a single row per entity.
     items = bundle_records(keyed)
     report.kept = len(items)
     return items, report

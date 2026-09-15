@@ -70,7 +70,13 @@ def test_mcp_tool_error_does_not_kill_server(tmp_path):
     assert responses[1]["result"]["isError"] is True
     assert responses[2]["id"] == 3
     tools = responses[2]["result"]["tools"]
-    assert len(tools) == 17
+    # Assert the surface, not a count: tools get added, and a magic number
+    # turns every addition into a false failure.
+    names = {tool["name"] for tool in tools}
+    assert {
+        "harness_fleet_routes", "harness_fleet_tasks", "harness_fleet_export",
+        "harness_fleet_sources", "harness_fleet_promote_source",
+    } <= names
     tool_names = {tool["name"] for tool in tools}
     assert "harness_fleet_init" in tool_names
     assert "harness_fleet_save_profile" in tool_names
@@ -81,6 +87,75 @@ def test_mcp_tool_error_does_not_kill_server(tmp_path):
     assert "harness_fleet_history" in tool_names
     assert all(tool["description"] for tool in tools)
     assert all("inputSchema" in tool and "outputSchema" in tool for tool in tools)
+
+
+def test_mcp_reports_this_package_version_not_the_sdk(tmp_path):
+    """serverInfo.version must be the product's, not the MCP library's."""
+    import harness_fleet
+
+    messages = [
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": {"name": "pytest", "version": "1"},
+            },
+        },
+    ]
+    process = subprocess.Popen(
+        [sys.executable, "-m", "harness_fleet.cli", "serve", "--workspace-root", str(tmp_path)],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    assert process.stdin is not None
+    assert process.stdout is not None
+    process.stdin.write(json.dumps(messages[0]) + "\n")
+    process.stdin.flush()
+    server_info = json.loads(process.stdout.readline())["result"]["serverInfo"]
+    process.stdin.close()
+    process.wait(timeout=10)
+
+    assert server_info["name"] == "harness-fleet"
+    assert server_info["version"] == harness_fleet.__version__
+
+
+def test_mcp_tasks_tool_returns_the_task_list(tmp_path):
+    """The tasks tool must return what `tasks --json` prints, `scorable` included."""
+    messages = [
+        {
+            "jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {"protocolVersion": "2024-11-05", "capabilities": {},
+                       "clientInfo": {"name": "pytest", "version": "1"}},
+        },
+        {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}},
+        {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+         "params": {"name": "harness_fleet_tasks", "arguments": {}}},
+    ]
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    process = subprocess.Popen(
+        [sys.executable, "-m", "harness_fleet.cli", "serve", "--workspace-root", str(workspace)],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    )
+    assert process.stdin is not None and process.stdout is not None
+    responses = []
+    for message in messages:
+        process.stdin.write(json.dumps(message) + "\n")
+        process.stdin.flush()
+        if "id" in message:
+            responses.append(json.loads(process.stdout.readline()))
+    process.stdin.close()
+    process.wait(timeout=10)
+
+    result = responses[1]["result"]
+    assert result.get("isError") is not True, result
+    payload = json.loads(result["content"][0]["text"])
+    assert payload["count"] == len(payload["tasks"])
 
 
 def test_mcp_tools_execution(tmp_path):
@@ -250,3 +325,56 @@ def test_mcp_validate_surfaces_slicing_caveats(tmp_path):
     assert report["input_items"] == 1
     assert report["errors"], "the slicing caveat must reach the MCP report"
     assert "max_slice_chars=300" in report["errors"][0]
+
+
+def test_mcp_sources_tools_drive_the_taxonomy(tmp_path):
+    """The taxonomy is drivable from an assistant, not only from the CLI."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    (workspace / "sources").mkdir()
+    (workspace / "sources" / "industry.json").write_text(json.dumps({
+        "name": "industry", "category": "b2b_directory_audit",
+        "list_url": "https://directory.example/?q={query}",
+    }), encoding="utf-8")
+
+    messages = [
+        {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+         "params": {"protocolVersion": "2024-11-05", "capabilities": {},
+                    "clientInfo": {"name": "pytest", "version": "1"}}},
+        {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}},
+        {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+         "params": {"name": "harness_fleet_sources", "arguments": {}}},
+        {"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+         "params": {"name": "harness_fleet_promote_source",
+                    "arguments": {"domain": "vendorhub.example", "category": "vendor_registry",
+                                  "reason": "publishes partner stories"}}},
+        {"jsonrpc": "2.0", "id": 4, "method": "tools/call",
+         "params": {"name": "harness_fleet_promote_source",
+                    "arguments": {"domain": "x.example", "category": "secret_sauce"}}},
+    ]
+    process = subprocess.Popen(
+        [sys.executable, "-m", "harness_fleet.cli", "serve", "--workspace-root", str(workspace)],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    )
+    assert process.stdin is not None and process.stdout is not None
+    responses = []
+    for message in messages:
+        process.stdin.write(json.dumps(message) + "\n")
+        process.stdin.flush()
+        if "id" in message:
+            responses.append(json.loads(process.stdout.readline()))
+    process.stdin.close()
+    process.wait(timeout=10)
+
+    listed = responses[1]["result"]
+    assert listed.get("isError") is not True, listed
+    payload = json.loads(listed["content"][0]["text"])
+    assert payload["channels"][0]["name"] == "industry"
+
+    promoted = json.loads(responses[2]["result"]["content"][0]["text"])
+    assert promoted["domains"][0]["domain"] == "vendorhub.example"
+    assert promoted["domains"][0]["reason"] == "publishes partner stories"
+
+    refused = responses[3]["result"]
+    assert refused.get("isError") is True, "an unknown category must be refused"
+    assert "unknown category" in json.dumps(refused)

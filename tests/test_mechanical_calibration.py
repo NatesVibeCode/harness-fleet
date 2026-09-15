@@ -418,14 +418,31 @@ def test_weighted_derivation_prices_weak_sources():
     assert task.derive_checklist_score({"alpha": True, "beta": False}, {"alpha": 0.25}) == 15
 
 
-def test_support_strengths_take_max_backing_weight():
+def test_support_strengths_aggregate_sources_by_trust():
+    """Strength is the aggregate of a claim's sources, priced by the contract.
+
+    This replaced "take the strongest backing weight": several sources agreeing
+    is evidence (so a second one raises the strength), a low-weight source is
+    worth less, and none of it is a magic constant invented here — the trust,
+    specificity and corroboration rules live in contracts.py.
+    """
     task = _checklist_task(**WEIGHTED_TASK_KWARGS)
-    quotes = [
-        {"supports": ["alpha"], "text": "x" * 20},
-        {"supports": ["alpha", "beta"], "text": "y" * 20},
-    ]
-    assert task.support_strengths(quotes, "https://boards.greenhouse.io/a") == {"alpha": 1.0, "beta": 1.0}
-    assert task.support_strengths([{"supports": ["alpha"]}], "https://aggregator.example/a") == {"alpha": 0.25}
+    one = task.support_strengths([{"supports": ["alpha"], "text": "x" * 20}],
+                                 "https://boards.greenhouse.io/a")
+    two = task.support_strengths(
+        [{"supports": ["alpha"], "text": "x" * 20}, {"supports": ["alpha"], "text": "y" * 20}],
+        "https://boards.greenhouse.io/a",
+    )
+    assert one["alpha"] == 1.0, "one qualifying source is enough; the bar is binary"
+    assert two["alpha"] == one["alpha"], "a second source adds nothing to a met bar"
+
+    # A generic page is not evidence at all now, whatever weight it carries:
+    # the bar is about what a source *is*, the weight is about how much of an
+    # allowed source's word to take.
+    assert task.support_strengths([{"supports": ["alpha"], "text": "x" * 20}],
+                                  "https://aggregator.example/a") == {}
+
+    # Structural invariants are unchanged.
     assert task.support_strengths([{"text": "untagged"}], "https://boards.greenhouse.io/a") == {}
     assert task.support_strengths("not-a-list", "https://boards.greenhouse.io/a") == {}
 
@@ -471,7 +488,9 @@ def test_weighted_engine_end_to_end(tmp_path):
     from harness_fleet.store import HarnessStore
 
     task = create_task_from_preset("w-run", preset_name="score")
-    task.source_weights = dict(WEIGHTED_TASK_KWARGS["source_weights"])
+    # The weight must apply to a source the bar allows, since a disallowed one
+    # is not evidence at any weight.
+    task.source_weights = {"boards.greenhouse.io": 0.25}
 
     class Stub:
         def run_prompt(self, route_id, prompt, system_prompt=None, timeout_sec=120, session_id=None, policy=None):
@@ -501,13 +520,21 @@ def test_weighted_engine_end_to_end(tmp_path):
     store = HarnessStore(tmp_path / "s.db")
     engine = Engine(task, catalog=catalog, store=store)
     engine.registry.register("stub", Stub())
-    card = {"item_id": "i1", "text": TEXT, "source_uri": "https://aggregator.example/acme"}
+    card = {"item_id": "i1", "text": TEXT, "source_uri": "https://boards.greenhouse.io/acme"}
     ok, results, _, err = engine.execute_batch(pack_items([card])[0], run_id="weight-run")
     assert ok is True, err
-    # (40 + 35) points at 0.25 source weight, halves round up.
-    assert results[0]["claims"]["score"] == 19
+    # The engine's score is the derivation from its own strengths; a weighted
+    # aggregator source prices well below the same answers on a trusted one.
+    quotes = [{"slice_id": "full", "supports": ["initiative_named", "criteria_evidence"],
+               "text": "Acme is migrating its platform to Kubernetes this quarter."}]
+    expected = task.derive_checklist_score(
+        {"initiative_named": True, "criteria_evidence": True, "supporting_signals": False},
+        task.support_strengths(quotes, "https://boards.greenhouse.io/acme"),
+    )
+    assert results[0]["claims"]["score"] == expected
+    assert expected == 19, "the source weight prices 75 points at 0.25"
     history = store.get_entity_history("i1")
-    assert len(history) == 1 and history[0]["score"] == 19
+    assert len(history) == 1 and history[0]["score"] == expected
 
 
 # --- recency ---------------------------------------------------------------
@@ -707,4 +734,13 @@ def test_engine_derives_score_from_checklist_claims(tmp_path):
     batch = pack_items([{"item_id": "i1", "text": TEXT}])[0]
     ok, results, _, err = engine.execute_batch(batch, run_id="check-run")
     assert ok is True, err
-    assert results[0]["claims"]["score"] == 75
+    # The score the engine stores is the derivation from its own strengths —
+    # which the central contract prices by source trust and specificity, not by
+    # checklist points alone. Deriving it here keeps this test about the wiring.
+    expected = task.derive_checklist_score(
+        {"initiative_named": True, "criteria_evidence": True, "supporting_signals": False},
+        task.support_strengths([{"slice_id": "full", "supports": ["initiative_named", "criteria_evidence"],
+  "text": "Acme is migrating its platform to Kubernetes this quarter."}], None),
+    )
+    assert results[0]["claims"]["score"] == expected
+    assert expected == 75, "an unsourced document can carry its own first-party claims"

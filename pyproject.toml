@@ -28,6 +28,12 @@ dependencies = [
     "jsonschema>=4.20.0",
     "httpx>=0.24.0",
     "mcp>=1.26.0,<2",
+    # Discovery and page reading are the product, not an extra: a default
+    # install that cannot find or read a source is useless on the first run.
+    "ddgs>=8.0",
+    "readability-lxml>=0.8",
+    "trafilatura>=1.0",
+    "pypdf>=4.0",
 ]
 
 [project.urls]
@@ -41,6 +47,7 @@ dev = [
     "pytest>=7.0.0",
 ]
 discover = [
+    # Kept for compatibility; these are default dependencies now.
     "ddgs>=8.0",
     "readability-lxml>=0.8",
     "trafilatura>=1.0",

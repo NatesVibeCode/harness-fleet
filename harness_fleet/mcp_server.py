@@ -9,6 +9,7 @@ from typing import Annotated, Any
 from mcp.server.fastmcp import FastMCP
 from pydantic import Field
 
+from . import __version__
 from .catalog import RouteCatalog
 from .engine import Engine
 from .export import export_clean_packet
@@ -25,17 +26,23 @@ from .models import (
     DoctorReport,
     EntityHistoryReport,
     InputItem,
+    LaneReport,
     ModelOutput,
     ProfileResult,
+    RegistryDomain,
     RouteEvalReport,
     RoutePolicy,
     RoutesResult,
     RunStatusReport,
     SchemaResult,
     SortSpec,
+    SourceChannel,
+    SourceProposal,
+    SourcesReport,
     TaskRegistrationResult,
     TaskSpec,
     TasksResult,
+    TaskSummary,
     ValidationReport,
 )
 from .packer import iter_packed_batches
@@ -58,6 +65,22 @@ class Workspace:
         if exists and not resolved.exists():
             raise FileNotFoundError(f"path not found: {value}")
         return resolved
+
+
+def _server_name() -> str:
+    """The product this install is: the entry point the user actually runs.
+
+    A client lists servers by the name the server reports, so an account-fleet
+    install must not introduce itself as harness-fleet, and two fleets installed
+    side by side must not both claim one name.
+    """
+    try:
+        from .setup import installed_cli_path
+
+        name = Path(installed_cli_path()).name
+        return name or "harness-fleet"
+    except Exception:  # a missing entry point must not break the server
+        return "harness-fleet"
 
 
 def create_mcp_server(workspace_root: str | Path, db_path: str | Path | None = None) -> FastMCP:
@@ -83,9 +106,12 @@ def create_mcp_server(workspace_root: str | Path, db_path: str | Path | None = N
         return store.get_task(reference)
 
     server = FastMCP(
-        "harness-fleet",
+        _server_name(),
         instructions="Execute typed, evidence-bound bulk tasks using free LLM workers inside the configured workspace.",
     )
+    # FastMCP takes no version, so without this the SDK advertises its own
+    # version in serverInfo and every client reports the wrong product build.
+    server._mcp_server.version = __version__
 
     @server.tool(structured_output=True)
     def harness_fleet_routes(
@@ -133,10 +159,89 @@ def create_mcp_server(workspace_root: str | Path, db_path: str | Path | None = N
         return TaskRegistrationResult(task=task.name, revision=revision)
 
     @server.tool(structured_output=True)
+    def harness_fleet_lane_report(
+        run_id: Annotated[str, Field(description="Run to measure")],
+        lane: Annotated[str, Field(description="Lane whose bar to judge against (optional)")] = "",
+        sample: Annotated[int, Field(ge=0, le=50, description="Entities to re-check for truth")] = 5,
+    ) -> LaneReport:
+        """Measure a finished run: yield, coverage, support quality, truth sample, cost.
+
+        Read-only: it reports what the run produced and never recomputes a score,
+        so it can be taken before and after a configuration change. Fetching for
+        the truth sample uses the workspace's normal polite fetch, and a page
+        that cannot be reached is reported as unreachable rather than as a
+        failed quote.
+        """
+        from .lane_report import build_lane_report
+        from .lanes import LaneError, load_lane
+
+        resolved = None
+        if lane.strip():
+            path = workspace.path(f"lanes/{lane.strip()}.json")
+            try:
+                resolved = load_lane(path)
+            except LaneError as exc:
+                raise ValueError(str(exc)) from exc
+        return build_lane_report(
+            store, run_id, workspace_root=workspace.root, lane=resolved, sample=sample
+        )
+
+    @server.tool(structured_output=True)
+    def harness_fleet_sources() -> SourcesReport:
+        """What the source taxonomy knows: promoted domains, waiting candidates, installed channels.
+
+        A domain stays a *candidate* — a lead, not evidence — until it is
+        promoted, so this is also the honest answer to "why did that source not
+        count?".
+        """
+        from .channels import load_channels
+        from .registry import load, propose
+
+        registry_path = workspace.path("source_registry.json")
+        data = load(registry_path)
+        return SourcesReport(
+            registry=str(registry_path),
+            domains=[
+                RegistryDomain(domain=domain, category=str(entry.get("category") or ""),
+                               reason=str(entry.get("reason") or ""))
+                for domain, entry in sorted((data.get("domains") or {}).items())
+            ],
+            candidate_count=len(data.get("candidates") or {}),
+            proposals=[
+                SourceProposal(domain=p["domain"], category=p["category"],
+                               confidence=float(p["confidence"]), sightings=int(p["sightings"]))
+                for p in propose(registry_path)
+            ],
+            channels=[
+                SourceChannel(name=name, category=channel.category, path=channel.path)
+                for name, channel in sorted(load_channels(workspace.root).items())
+            ],
+        )
+
+    @server.tool(structured_output=True)
+    def harness_fleet_promote_source(
+        domain: Annotated[str, Field(description="Domain to promote, e.g. vendorhub.example")],
+        category: Annotated[str, Field(description="Category from the central source taxonomy")],
+        reason: Annotated[str, Field(description="Why it belongs there; recorded with the entry")] = "",
+    ) -> SourcesReport:
+        """Promote a domain into the taxonomy so its pages can carry evidence."""
+        from .contracts import SOURCE_CATEGORIES
+        from .registry import promote
+
+        if category.strip().upper() not in SOURCE_CATEGORIES:
+            known = ", ".join(sorted(name.lower() for name in SOURCE_CATEGORIES))
+            raise ValueError(f"unknown category '{category}'; use one of: {known}")
+        promote(domain, category.strip().lower(), reason=reason, path=workspace.path("source_registry.json"))
+        return harness_fleet_sources()
+
+    @server.tool(structured_output=True)
     def harness_fleet_tasks() -> TasksResult:
         """List the current registered task names and their exact revision IDs."""
-        tasks = store.list_tasks()
-        return TasksResult(tasks=tasks, count=len(tasks))  # type: ignore[arg-type]
+        # Validate each row into the model instead of trusting the dict shape:
+        # the previous `type: ignore` here is what let a column the model did
+        # not know about (scorable) break this tool at runtime.
+        tasks = [TaskSummary(**row) for row in store.list_tasks()]
+        return TasksResult(tasks=tasks, count=len(tasks))
 
     @server.tool(structured_output=True)
     def harness_fleet_save_profile(profile: IdealCompanyProfile) -> ProfileResult:

@@ -48,3 +48,6 @@ generate_carousel.py
 
 # Local scratch: regenerable tool output, never shipped.
 .scratch/
+
+# The career product lives here as its own checkout; never commit it into harness.
+career-fleet/

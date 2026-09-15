@@ -106,6 +106,30 @@ def test_run_validation_is_fail_closed(server):
     assert status == 404
 
 
+def test_settings_refuse_an_empty_selection_instead_of_wiping_the_saved_one(server):
+    """The studio autosaves while nothing is ticked; that must not clear a choice."""
+    base, _ = server
+    status, saved = _call(base, "PUT", "/api/settings",
+                          {"mode": "specific", "providers": ["demo"], "routes": ["demo/fake"]})
+    assert status == 200 and saved["revision"]
+
+    status, error = _call(base, "PUT", "/api/settings",
+                          {"mode": "specific", "providers": [], "routes": ["demo/fake"]})
+    assert status == 400
+    assert "no harness selected" in error["error"]
+
+    status, current = _call(base, "GET", "/api/settings")
+    assert status == 200
+    assert current["settings"]["providers"] == ["demo"], "the saved selection must survive"
+
+
+def test_settings_reject_unknown_keys(server):
+    base, _ = server
+    status, error = _call(base, "PUT", "/api/settings", {"harness": "opencode", "mode": "free"})
+    assert status == 400
+    assert "unknown setting" in error["error"]
+
+
 def test_index_page_serves(server):
     import urllib.request as _urlopen
 
@@ -464,7 +488,7 @@ def test_settings_round_trip_persists_to_the_database(server):
     assert rows[0][3] == revision
 
 
-def test_free_mode_ignores_specific_routes_and_an_empty_selection_clears(server):
+def test_free_mode_ignores_specific_routes_and_an_empty_selection_is_refused(server):
     base, tmp_path = server
     status, saved = _call(base, "PUT", "/api/settings", {
         "mode": "free",
@@ -474,14 +498,17 @@ def test_free_mode_ignores_specific_routes_and_an_empty_selection_clears(server)
     assert status == 200
     assert saved["settings"]["routes"] == [], "free mode must not pin specific routes"
 
-    # Choosing no harness clears the stored selection entirely.
-    status, cleared = _call(base, "PUT", "/api/settings", {
+    # Choosing no harness is a refusal, not a silent clear. The studio autosaves
+    # while nothing is ticked, so "empty means clear" wiped real selections; the
+    # explicit way to clear is `harness-fleet settings --clear`.
+    status, error = _call(base, "PUT", "/api/settings", {
         "mode": "free", "providers": [], "routes": [],
     })
-    assert status == 200
-    assert cleared["revision"] is None
+    assert status == 400
+    assert "no harness selected" in error["error"]
+
     status, reloaded = _call(base, "GET", "/api/settings")
-    assert reloaded["settings"] is None
+    assert reloaded["settings"]["providers"] == ["codex"], "the saved selection must survive"
 
     import sqlite3
     connection = sqlite3.connect(tmp_path / "studio.db")
@@ -489,7 +516,19 @@ def test_free_mode_ignores_specific_routes_and_an_empty_selection_clears(server)
         count = connection.execute("SELECT COUNT(*) FROM studio_settings").fetchone()[0]
     finally:
         connection.close()
-    assert count == 0
+    assert count == 1
+
+
+def test_settings_clear_is_explicit(tmp_path):
+    """The supported way to remove a saved selection."""
+    from harness_fleet.store import HarnessStore
+
+    db = tmp_path / "clear.db"
+    store = HarnessStore(db)
+    store.save_studio_selection({"mode": "free", "providers": ["codex"], "routes": []})
+    assert store.get_studio_selection() is not None
+    store.clear_studio_selection()
+    assert store.get_studio_selection() is None
 
 
 def test_settings_rejects_an_unknown_mode(server):

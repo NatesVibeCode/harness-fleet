@@ -118,10 +118,12 @@ def test_fit_recovers_source_weights():
     import math as _math
 
     task = _task()
-    task.source_weights = {"good.example": 0.5, "bad.example": 0.5}
+    # Both sources must be ones the evidence bar allows, or no weight can be
+    # recovered: a disallowed domain is not evidence at any weight.
+    task.source_weights = {"boards.greenhouse.io": 0.5, "jobs.lever.co": 0.5}
     observations = []
     for index, answers in enumerate(_answersets()):
-        uri = "https://good.example/x" if index % 2 == 0 else "https://bad.example/y"
+        uri = "https://boards.greenhouse.io/good/x" if index % 2 == 0 else "https://jobs.lever.co/bad/y"
         weight = 1.0 if index % 2 == 0 else 0.3
         # Labels live on the rubric scale: derive rounds halves up, caps at 100.
         expected = min(100, _math.floor(sum(
@@ -131,8 +133,8 @@ def test_fit_recovers_source_weights():
     scored_at = "2026-09-01T00:00:00+00:00"
     fit = fit_calibration(task, observations, scored_at, kinds=("weights",))
     assert fit["fitted_train"]["mse"] < 1e-4
-    assert fit["weights"]["bad.example"] < fit["weights"]["good.example"]
-    assert abs(fit["weights"]["bad.example"] - 0.3) < 0.1
+    assert fit["weights"]["jobs.lever.co"] < fit["weights"]["boards.greenhouse.io"]
+    assert abs(fit["weights"]["jobs.lever.co"] - 0.3) < 0.1
 
 
 def test_fit_recovers_half_life_direction():

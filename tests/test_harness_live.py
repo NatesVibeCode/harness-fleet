@@ -8,6 +8,11 @@ Only *environmental* failures skip. A binary that is installed and
 authenticated but answers with a bad receipt is a wiring regression, so it
 fails here rather than hiding as another skip — otherwise this file can never
 report the breakage it exists to catch.
+
+One environment condition needs care: a CLI can be configured (in its own user
+config) with a model its build no longer recognizes, which is a stale machine,
+not a fleet bug. That skips *only* while our recipe passes no model of its own;
+the moment a recipe names a model, a rejected model is ours again and fails.
 """
 import shutil
 
@@ -26,6 +31,23 @@ from harness_fleet.providers.opencode import OpenCodeProvider
 ENVIRONMENTAL_ERROR_TYPES = frozenset(
     {"auth_error", "rate_limit", "timeout", "transient_http"}
 )
+
+#: A model id no recipe names, used to detect whether a recipe would pass one.
+_PROBE_MODEL = "harness-fleet-probe-model"
+
+
+def _explained_by_the_machine(provider_cls, receipt) -> bool:
+    """True when the failure is the machine's, not the fleet's wiring."""
+    if receipt.error_type in ENVIRONMENTAL_ERROR_TYPES:
+        return True
+    # Some CLIs report a rejected model as a generic inference error and put the
+    # real code in the message.
+    if "unrecognized_model" not in (receipt.error or ""):
+        return False
+    argv = provider_cls().build_argv(
+        model=_PROBE_MODEL, prompt="ping", prompt_file=None
+    )
+    return _PROBE_MODEL not in argv
 
 CASES = [
     ("opencode", "opencode", OpenCodeProvider, "opencode/harness-fleet-ping"),
@@ -48,7 +70,7 @@ def test_live_ping(name, binary, provider_cls, route_id):
     assert receipt.provider == name
     if not ok:
         detail = f"{name} not operational here: {(receipt.error or '')[:200]}"
-        if receipt.error_type in ENVIRONMENTAL_ERROR_TYPES:
+        if _explained_by_the_machine(provider_cls, receipt):
             pytest.skip(detail)
         pytest.fail(
             f"{name} is installed but failed with error_type={receipt.error_type!r}: {detail}"

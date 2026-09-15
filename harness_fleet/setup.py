@@ -201,22 +201,33 @@ def setup_workspace(
     skill_ready = dry_run or actions[0].status in {"created", "updated", "unchanged"}
     ready = not dry_run and skill_ready and provider_ready and observed_route_count > 0
     cli_command = installed_cli_path()
+    # The product this install is, so the commands handed back are the ones the
+    # user can actually run: an account-fleet install must not be told to run
+    # harness-fleet.
+    cli_name = Path(cli_command).name or "harness-fleet"
     stdio = StdioServerConfig(
         command=cli_command,
         args=["serve", "--workspace-root", str(workspace), "--db", str(database)],
     )
     next_commands: list[list[str]] = []
+    # The default surface is the local MCP server: the assistant you already use
+    # drives it, nothing is exposed to the network, and no key is needed. The
+    # CLI stays for scripting and CI.
+    next_commands.append([
+        cli_name, "mcp", "install", "--workspace-root", str(workspace),
+        "--db", str(database), "--json",
+    ])
     if not refresh_routes or observed_route_count == 0:
-        next_commands.append(["harness-fleet", "routes", "--db", str(database), "--refresh", "--json"])
+        next_commands.append([cli_name, "routes", "--db", str(database), "--refresh", "--json"])
     doctor_command = [
-        "harness-fleet", "doctor", "--db", str(database), "--workspace-root", str(workspace),
+        cli_name, "doctor", "--db", str(database), "--workspace-root", str(workspace),
         "--scope", scope, "--json",
     ]
     if skill_root is not None:
         doctor_command.extend(["--skill-root", str(skill_root)])
     next_commands.extend([
         doctor_command,
-        ["harness-fleet", "init", "my-task", "--db", str(database), "--workspace-root", str(workspace), "--preset", "classify"],
+        [cli_name, "init", "my-task", "--db", str(database), "--workspace-root", str(workspace), "--preset", "classify"],
     ])
     return SetupReport(
         ready=ready,

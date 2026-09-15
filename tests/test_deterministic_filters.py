@@ -374,12 +374,12 @@ def test_bundled_example_tasks_carry_worker_descriptions():
     from pathlib import Path
 
     repo = Path(__file__).resolve().parents[1]
-    paths = [
-        repo / "examples/account_research/task.json",
-        repo / "examples/saas_intelligence/task.json",
-        repo / "examples/security_cve_triage/task.json",
-        repo / "harness_fleet/resources/examples/account_research/task.json",
-    ]
+    # Examples are product-specific, so check the ones this distribution ships
+    # rather than a fixed list copied from another product's repo.
+    paths = sorted(repo.glob("examples/*/task.json")) + sorted(
+        repo.glob("harness_fleet/resources/examples/*/task.json")
+    )
+    assert paths, "a distribution with example tasks must ship at least one"
     for path in paths:
         props = json.loads(path.read_text())["claims_schema"]["properties"]
         missing = [name for name, spec in props.items() if not spec.get("description")]

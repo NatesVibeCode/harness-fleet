@@ -187,6 +187,64 @@
           "press"
         ]
       }
+    },
+    "vendor_stories": {
+      "comment": "Independent prose about a partner, published by the vendor it works with: the strongest non-first-party evidence that a practice is real, and the half of the tier-1 evidence gate that review sites used to supply before they started answering 403. Enumerated, not searched: walk each vendor's sitemap index one level, keep the story paths, fetch the pages, and let attribution file each story under the partner it names. Probed 2026-09: snowflake/databricks/elastic sitemap indexes answer 200 and list story sub-sitemaps; datadog and mongodb serve indexes too; confluent answers 404 on both index paths, and the AWS, Google Cloud, Azure marketplace and AppSource directories are client-rendered listings with no server-side prose, so those stay search-only.",
+      "vendors": {
+        "snowflake": {
+          "sitemap": "https://www.snowflake.com/sitemap_index.xml",
+          "story_paths": [
+            "/customers/",
+            "/case-studies/"
+          ]
+        },
+        "databricks": {
+          "sitemap": "https://www.databricks.com/en-customer-assets/sitemap/sitemap-index.xml",
+          "story_paths": [
+            "/customers/",
+            "/customer-assets/"
+          ]
+        },
+        "elastic": {
+          "sitemap": "https://www.elastic.co/sitemap.xml",
+          "story_paths": [
+            "/customers"
+          ]
+        },
+        "datadog": {
+          "sitemap": "https://www.datadoghq.com/sitemap.xml",
+          "story_paths": [
+            "/customers",
+            "/case-studies"
+          ]
+        },
+        "mongodb": {
+          "sitemap": "https://www.mongodb.com/sitemap.xml",
+          "story_paths": [
+            "/customers",
+            "/case-studies"
+          ]
+        },
+        "aws": {
+          "hub": "https://aws.amazon.com/partners/success/",
+          "story_path_prefix": "/partners/success/",
+          "slug_form": "<customer>-<partner>"
+        }
+      },
+      "search_only": [
+        "google-cloud",
+        "azure-marketplace",
+        "appsource",
+        "salesforce-appexchange",
+        "confluent"
+      ],
+      "yields": [
+        "third-party validation",
+        "named implementations",
+        "stack delivery",
+        "case study outcomes"
+      ],
+      "strategy": "Hub-and-spoke per vendor: fetch the vendor's story hub (or its sitemap index, one level down), collect the story URLs, fetch each story, and let attribution file it under the partner the story names. Verified 2026-09: aws.amazon.com/partners/success/ answers 200 with server-rendered story links whose slug carries the partner (/partners/success/biolytica-presidio/), and a fetched story carries ~2,400 words naming the customer, the partner and quantified outcomes — non-first-party prose about the work, fetchable without a key. Databricks' customer-assets sitemap lists 918 stories, but the sampled pages credit no partner in server-rendered text, so stories that name nobody simply file under no partner. partners.amazonaws.com partner pages are client-rendered shells (27 words) and the AWS/Google/Azure/AppSource/Salesforce directories stay search-only."
     }
   },
   "evidence_rules": {

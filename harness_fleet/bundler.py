@@ -7,149 +7,43 @@ into consolidated, section-tagged composite dossiers per canonical entity.
 from __future__ import annotations
 
 import csv
-import re
 from collections import defaultdict
 from collections.abc import Iterable, Sequence
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
 
 from .models import InputItem
-
-# Known directory & platform domains mapped to source categories
-REGISTRY_DOMAINS = (
-    "partners.amazonaws.com",
-    "snowflake.com",
-    "appsource.microsoft.com",
-    "cloud.google.com",
-    "datadoghq.com",
-    "ecosystem.hubspot.com",
-    "salesforce.com",
+from .sources import (
+    ATS_DOMAINS as ATS_DOMAINS,
+)
+from .sources import (
+    CASE_STUDY_PATH_RE as CASE_STUDY_PATH_RE,
+)
+from .sources import (
+    COMMUNITY_DOMAINS as COMMUNITY_DOMAINS,
+)
+from .sources import (
+    PLATFORM_HOSTS as PLATFORM_HOSTS,
+)
+from .sources import (
+    PRACTICE_PATH_RE as PRACTICE_PATH_RE,
 )
 
-REVIEW_DOMAINS = (
-    "clutch.co",
-    "g2.com",
-    "goodfirms.co",
-    "themanifest.com",
-    "upcity.com",
+# The taxonomy and the classifier live in .sources: every fleet tool labels
+# evidence the same way, and this module re-exports the names it always had
+# (the redundant alias is what keeps a linter from dropping a re-export).
+from .sources import (
+    REGISTRY_DOMAINS as REGISTRY_DOMAINS,
 )
-
-COMMUNITY_DOMAINS = (
-    "github.com",
-    "youtube.com",
-    "substack.com",
-    "medium.com",
-    "dev.to",
-    # The community backends the fleet searches. Without these, an HN thread or
-    # a Reddit post was filed as `general_web` and — in the sourcing runner —
-    # could be mistaken for a partner domain.
-    "news.ycombinator.com",
-    "reddit.com",
-    "redd.it",
-    "stackoverflow.com",
-    "stackexchange.com",
-    "serverfault.com",
-    "superuser.com",
-    "lobste.rs",
-    "lemmy.world",
-    "lemmy.ml",
-    "programming.dev",
+from .sources import (
+    REVIEW_DOMAINS as REVIEW_DOMAINS,
 )
-
-ATS_DOMAINS = (
-    "jobs.ashbyhq.com",
-    "boards.greenhouse.io",
-    "jobs.lever.co",
-    "apply.workable.com",
-    "jobs.",
+from .sources import (
+    canonicalize_entity_id as canonicalize_entity_id,
 )
-
-CASE_STUDY_PATH_RE = re.compile(r"/(case-stud|work|customers?|success-stor|clients|portfolio)", re.IGNORECASE)
-PRACTICE_PATH_RE = re.compile(r"/(services?|solutions?|practices?|about|partners?|consulting)", re.IGNORECASE)
-
-
-def canonicalize_entity_id(identifier_or_url: str) -> str:
-    """Extract clean, canonical domain/entity id from a URL or raw identifier."""
-    raw = (identifier_or_url or "").strip().lower()
-    if not raw:
-        return "unknown_entity"
-
-    # If it contains a URL scheme or looks like a URL
-    if "://" in raw or "/" in raw:
-        parsed = urlparse(raw if "://" in raw else f"https://{raw}")
-        host = parsed.netloc.lower().strip()
-        path = parsed.path.strip("/")
-
-        # Strip common prefixes
-        if host.startswith("www."):
-            host = host[4:]
-
-        # Handle ATS URLs where company slug is the first path segment
-        if any(ats in host for ats in ("ashbyhq.com", "greenhouse.io", "lever.co", "workable.com")):
-            parts = [p for p in path.split("/") if p]
-            if parts:
-                slug = parts[0].replace("-", "_")
-                # Append .com if slug looks like a domain name
-                return f"{slug}.com" if "." not in slug else slug
-
-        # Handle vendor registry paths: e.g. partners.amazonaws.com/partners/trace3
-        if "partners.amazonaws.com" in host or "snowflake.com" in host:
-            parts = [p for p in path.split("/") if p and p not in ("partners", "en-us", "marketplace")]
-            if parts:
-                slug = parts[-1].replace("-", "_")
-                return f"{slug}.com" if "." not in slug else slug
-
-        # Handle Clutch/G2 profiles: clutch.co/profile/trace3
-        if any(rev in host for rev in ("clutch.co", "g2.com")):
-            parts = [p for p in path.split("/") if p and p not in ("profile", "it-services", "products")]
-            if parts:
-                slug = parts[-1].replace("-", "_")
-                return f"{slug}.com" if "." not in slug else slug
-
-        if host:
-            return host
-
-    # Plain text identifier
-    cleaned = re.sub(r"[^a-z0-9_.-]+", "_", raw).strip("_.")
-    return cleaned or "unknown_entity"
-
-
-def classify_source_category(source_uri: str, entity_id: str = "") -> str:
-    """Classify a source URL into one of the 6 canonical partner evidence categories."""
-    uri = (source_uri or "").strip().lower()
-    if not uri:
-        return "general_web"
-
-    # 1. Vendor registries
-    if any(d in uri for d in REGISTRY_DOMAINS) and "partner" in uri:
-        return "vendor_registry"
-
-    # 2. Review and audit platforms
-    if any(d in uri for d in REVIEW_DOMAINS):
-        return "b2b_directory_audit"
-
-    # 3. Community and social platforms
-    if any(d in uri for d in COMMUNITY_DOMAINS):
-        return "community_and_social"
-
-    # 4. ATS / Hiring requisitions
-    if any(ats in uri for ats in ATS_DOMAINS):
-        return "ats_requisitions"
-
-    # 5. First-party case studies
-    if CASE_STUDY_PATH_RE.search(uri):
-        return "first_party_case_study"
-
-    # 6. First-party practices and services
-    if PRACTICE_PATH_RE.search(uri):
-        return "first_party_practice"
-
-    # Fallback to first-party if host matches entity domain
-    if entity_id and entity_id in uri:
-        return "first_party_practice"
-
-    return "general_web"
+from .sources import (
+    classify_source_category as classify_source_category,
+)
 
 
 def bundle_records(

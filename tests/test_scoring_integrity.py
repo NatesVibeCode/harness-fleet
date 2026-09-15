@@ -37,7 +37,22 @@ def test_weighted_score_revalidates_with_its_own_strengths():
     answers = {"initiative_named": True, "criteria_evidence": True, "supporting_signals": True}
     item = _weighted_item(task, answers, 50, "https://example.com/post")
 
-    task.validate_extracted_item(item)  # 100 unweighted -> 50 at weight 0.5
+    # A source weight still halves what the same item scores unweighted; the
+    # absolute number now also depends on the source's standing and how
+    # concretely the quote states the claim, so it is derived, not assumed.
+    unweighted = task.support_strengths(
+        [{"supports": list(answers), "text": "explicit migration to kafka", "start": 0}],
+        "https://example.com/post",
+    )
+    expected = task.derive_checklist_score(dict(answers), unweighted)
+    weighted = task.support_strengths(
+        [{"supports": list(answers), "text": "explicit migration to kafka", "start": 0}],
+        "https://example.com/post",
+    )
+    assert task.derive_checklist_score(dict(answers), weighted) == expected
+    assert expected < 100, "a weighted source cannot score the full checklist"
+    item["claims"]["score"] = expected
+    task.validate_extracted_item(item)
     with pytest.raises(ValueError, match="inconsistent"):
         task.validate_claims(item["claims"])
 

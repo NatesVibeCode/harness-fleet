@@ -1,4 +1,4 @@
-"""Human and machine CLI for the SQLite-backed harness-fleet control plane."""
+"""Human and machine CLI for the SQLite-backed control plane."""
 from __future__ import annotations
 
 import argparse
@@ -10,10 +10,11 @@ import shutil
 import sys
 import time
 import uuid
+from collections.abc import Iterable, Sequence
 from pathlib import Path
 from typing import Any
 
-from . import ui
+from . import branding, ui
 from .calibrate import PARAM_KINDS
 from .catalog import PriceState, RouteCatalog
 from .discover import (
@@ -25,20 +26,25 @@ from .discover import (
 from .discover import (
     DiscoverError,
     crawl_site,
+    discover_doc_urls,
     discover_sitemap_url,
     fetch_ashby_org,
     fetch_devto_tag,
     fetch_discourse_search,
+    fetch_feed,
+    fetch_github_org,
     fetch_greenhouse_board,
     fetch_hn_thread,
     fetch_lemmy,
     fetch_lever_org,
     fetch_lobsters,
+    fetch_package,
     fetch_reddit_posts,
     fetch_reddit_rss,
     fetch_sitemap_urls,
     fetch_smart_url,
     fetch_stackexchange_questions,
+    fetch_text,
     fetch_yc_companies,
     run_discovery,
     to_input_items,
@@ -65,6 +71,7 @@ from .models import (
 from .packer import iter_packed_batches
 from .profile import IdealCompanyProfile
 from .setup import installed_skill_matches, setup_workspace, skill_destination
+from .sources import entity_key_for
 from .store import SCHEMA_VERSION, HarnessStore
 from .task import (
     PRESETS,
@@ -73,6 +80,16 @@ from .task import (
     parse_half_life,
     parse_source_weight,
 )
+
+
+def _non_negative_int(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be an integer") from exc
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("must be 0 or more")
+    return parsed
 
 
 def _positive_int(value: str) -> int:
@@ -214,12 +231,9 @@ def _package_version() -> str:
     # Unified entry-point table: each distribution ships its own script, but
     # this module is byte-identical across repos, so every product name maps
     # to its distribution here.
-    preferred = {
-        "harness-fleet": "harness-fleet",
-        "account-fleet": "account-fleet",
-        "career-fleet": "career-fleet",
-        "career-lanes": "career-fleet",
-    }.get(executable)
+    entry_points = {name: name for name in branding.CLI_NAMES}
+    entry_points.update({name: branding.DIST_NAME for name in branding.LEGACY_CLI_NAMES})
+    preferred = entry_points.get(executable)
     # The code that is running knows its version; installed metadata can be
     # stale or belong to a different distribution on the path (a PYTHONPATH
     # checkout next to an older install is the common case).
@@ -232,8 +246,7 @@ def _package_version() -> str:
         pass
     package_names = [preferred] if preferred else []
     package_names.extend(
-        name for name in ("harness-fleet", "account-fleet", "career-fleet")
-        if name not in package_names
+        name for name in (*branding.CLI_NAMES, branding.DIST_NAME) if name not in package_names
     )
     for name in package_names:
         try:
@@ -255,7 +268,7 @@ def _store(args: argparse.Namespace) -> HarnessStore:
     workspace = Path(getattr(args, "workspace_root", ".")).expanduser().resolve()
     explicit = getattr(args, "db", None)
     configured = os.environ.get("HARNESS_FLEET_DB")
-    path = Path(explicit or configured or "harness-fleet.db").expanduser()
+    path = Path(explicit or configured or branding.DEFAULT_DB).expanduser()
     return HarnessStore(path if path.is_absolute() else workspace / path)
 
 
@@ -304,7 +317,7 @@ def cmd_profile(args: argparse.Namespace) -> None:
         loaded_profile = store.load_profile()
         if loaded_profile is None:
             raise FileNotFoundError(
-                f"No Ideal Company Profile found at {profile_path} or in {store.path}. Use 'harness-fleet profile --init'."
+                f"No Ideal Company Profile found at {profile_path} or in {store.path}. Use '{branding.CLI_NAME} profile --init'."
             )
         profile = loaded_profile
         profile.save(profile_path)
@@ -527,8 +540,10 @@ def cmd_init(args: argparse.Namespace) -> None:
         sample_path.parent.mkdir(parents=True, exist_ok=True)
         sample = InputItem(item_id="item_1", title="Example", text="Replace this text with the source you want to process.")
         sample_path.write_text(json.dumps(sample.model_dump(mode="json", by_alias=True), ensure_ascii=False) + "\n")
+    from .setup import installed_cli_path
+
     next_validate = shlex.join([
-        "harness-fleet", "validate", spec.name, "--input", str(sample_path),
+        Path(installed_cli_path()).name or branding.CLI_NAME, "validate", spec.name, "--input", str(sample_path),
         "--db", str(store.path.resolve()), "--workspace-root", str(workspace),
     ])
     _emit(
@@ -645,8 +660,8 @@ def _check_routes_for_run(store: HarnessStore, policy: RoutePolicy | None) -> No
             continue
         raise ValueError(
             f"route '{route_id}' is not registered in {store.path}. "
-            "Run `harness-fleet routes refresh` to discover free routes, or "
-            "`harness-fleet routes add` to register this one."
+            f"Run `{branding.CLI_NAME} routes refresh` to discover free routes, or "
+            f"`{branding.CLI_NAME} routes add` to register this one."
         )
 
     if pinned:
@@ -658,12 +673,142 @@ def _check_routes_for_run(store: HarnessStore, policy: RoutePolicy | None) -> No
         if route.get("enabled") and route.get("price_state") == "price_observed_zero"
     ]
     if not usable:
-        raise ValueError(
-            f"no verified-free route is registered in {store.path} yet "
-            f"({len(known)} hint(s), none priced at zero). Run "
-            "`harness-fleet routes refresh` to discover free routes, or use "
-            "`harness-fleet quickstart` for the offline demo."
+        # A fresh install should not need to know about a separate refresh step
+        # before its first run: do it here, once, and only report if it fails.
+        print("No verified-free route yet; refreshing route prices from the providers...")
+        try:
+            catalog.refresh_all()
+        except Exception as exc:  # offline, or every provider unreachable
+            raise ValueError(
+                f"no verified-free route is registered in {store.path} and the automatic "
+                f"refresh failed ({exc}). Run `{branding.CLI_NAME} routes refresh` yourself, "
+                f"or use `{branding.CLI_NAME} quickstart` for the offline demo."
+            ) from exc
+        usable = [
+            route for route in catalog.data.get("routes", [])
+            if route.get("enabled") and route.get("price_state") == "price_observed_zero"
+        ]
+        if not usable:
+            raise ValueError(
+                f"refreshed route prices but no provider offers a verified-free route right now. "
+                f"Run `{branding.CLI_NAME} quickstart` for the offline demo, or "
+                f"`{branding.CLI_NAME} routes add` to register your own."
+            )
+
+
+def _evidence_readout(
+    store: HarnessStore, run_id: str, items: Iterable[InputItem]
+) -> dict[str, Any]:
+    """Read every scored record's own text: kinds, tier caps, and lone claims.
+
+    The score says how well an entity fits; this says what the evidence behind
+    that score actually carries. It is deterministic, so it runs on every run
+    without spending a model call, and it is derived from the same text the
+    quotes came from.
+    """
+    from .evidence import entity_evidence, summarize
+    from .export import verified_records_from_snapshot
+
+    snapshot = store.run_snapshot(run_id)
+    records, _task = verified_records_from_snapshot(snapshot)
+    by_id = {str(item.item_id): item for item in items}
+    per_item: dict[str, Any] = {}
+    for record in records:
+        claims = record.claims if isinstance(record.claims, dict) else {}
+        tier = claims.get("fit_tier")
+        item = by_id.get(str(record.item_id))
+        per_item[str(record.item_id)] = entity_evidence(
+            (item.text or "") if item is not None else "",
+            tier=tier if isinstance(tier, str) else None,
+            source_uri=(item.source_uri or "") if item is not None else "",
         )
+    return {
+        "run_id": run_id,
+        "items": per_item,
+        "kind_totals": summarize(read["kinds"] for read in per_item.values()),
+        "tier_capped": {
+            item_id: read["tier_reasons"] for item_id, read in per_item.items() if read["tier_capped"]
+        },
+        "contradictions": {
+            item_id: read["contradictions"]
+            for item_id, read in per_item.items()
+            if read["contradictions"]
+        },
+        # A record whose text is not in this input cannot be read either way,
+        # which is different from a record whose text carries no evidence.
+        "text_missing": sorted(
+            str(record.item_id) for record in records if str(record.item_id) not in by_id
+        ),
+    }
+
+
+def _evidence_report_text(readout: dict[str, Any]) -> str:
+    """The readout as lines a person reads, not a JSON blob."""
+    totals = readout["kind_totals"]
+    lines = ["Evidence read:"]
+    lines.append(
+        "  kinds: " + (", ".join(f"{kind} {count}" for kind, count in totals.items()) or "none")
+    )
+    capped = readout["tier_capped"]
+    if capped:
+        lines.append(f"  tiers capped by missing evidence: {len(capped)}")
+        for item_id, reasons in list(capped.items())[:5]:
+            lines.append(f"    {item_id}: {'; '.join(reasons)}")
+    lone = readout["contradictions"]
+    if lone:
+        lines.append(f"  claims that stand alone: {len(lone)}")
+        for item_id, findings in list(lone.items())[:5]:
+            lines.append(f"    {item_id}: {', '.join(f['kind'] for f in findings)}")
+    if readout["text_missing"]:
+        lines.append(f"  records with no text to read: {len(readout['text_missing'])}")
+    return "\n".join(lines)
+
+
+def _enforce_required_kinds(readout: dict[str, Any], required: Sequence[str]) -> None:
+    """Fail the run when an entity is missing evidence the caller requires."""
+    if not required:
+        return
+    violations: list[str] = []
+    for item_id, read in readout["items"].items():
+        missing = [kind for kind in required if not read["kinds"].get(kind)]
+        if missing:
+            violations.append(f"{item_id} (missing {', '.join(missing)})")
+    if violations:
+        raise ValueError(
+            "required evidence kinds are missing for "
+            f"{len(violations)} of {len(readout['items'])} scored entities: "
+            + "; ".join(violations[:10])
+            + ". Gather the missing source kinds (a vendor story, a directory listing, "
+            "a quantified case study) or drop --require-kinds for this run."
+        )
+
+
+def _finish_with_evidence(
+    args: argparse.Namespace,
+    store: HarnessStore,
+    run_id: str,
+    run_dir: Path,
+    items: Iterable[InputItem],
+    payload: dict[str, Any],
+    human: str,
+) -> dict[str, Any]:
+    """Attach the evidence readout to a finished run, write it, and gate on it.
+
+    Written next to the packet so the board and later reads see the same object
+    the run printed, and gated after writing so a failing gate still leaves the
+    reasons on disk.
+    """
+    readout = _evidence_readout(store, run_id, items)
+    path = run_dir / "evidence.json"
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(readout, indent=2, ensure_ascii=False), encoding="utf-8")
+    except OSError as exc:  # a read-only workspace must not lose the whole run
+        print(f"Warning: could not write {path}: {exc}", file=sys.stderr)
+    payload = {**payload, "evidence": readout, "evidence_path": str(path)}
+    _emit(payload, args.json, human + "\n" + _evidence_report_text(readout) + f"\nEvidence: {path}")
+    _enforce_required_kinds(readout, [str(kind) for kind in (getattr(args, "require_kinds", None) or [])])
+    return payload
 
 
 def cmd_run(args: argparse.Namespace) -> None:
@@ -693,9 +838,13 @@ def cmd_run(args: argparse.Namespace) -> None:
         profile=profile,
         raw_items_factory=input_factory,
     )
-    _emit(
+    _finish_with_evidence(
+        args,
+        store,
+        run_id,
+        output.parent,
+        input_factory(),
         {"run_id": run_id, "packet": str(output), "result": packet},
-        args.json,
         f"Run '{run_id}' {store.run_snapshot(run_id)['status']}.\nPacket: {output}\nVerified records: {packet['total_verified_records']}",
     )
 
@@ -751,9 +900,13 @@ def cmd_rescore(args: argparse.Namespace) -> None:
         "output_path": str(output),
     }
     cached = " (cached)" if node.get("cached") else ""
-    _emit(
+    _finish_with_evidence(
+        args,
+        store,
+        run_id,
+        output.parent,
+        iter_input_items(input_path, **options),
         {"run_id": run_id, "parent_run": args.parent_run, "packet": str(output), "result": result},
-        args.json,
         f"Rescore '{run_id}' of '{args.parent_run}' ({parent['status']}) {result['status']}{cached}.\nPacket: {output}\nVerified records: {result['total_verified_records']}",
     )
 
@@ -1037,7 +1190,7 @@ def cmd_setup(args: argparse.Namespace) -> None:
     _emit(
         report,
         args.json,
-        f"Configured harness-fleet at {report.skill_path}.\n"
+        f"Configured {branding.CLI_NAME} at {report.skill_path}.\n"
         f"Database: {report.database}\nNext:\n{next_lines}",
     )
 
@@ -1173,7 +1326,7 @@ def cmd_quickstart(args: argparse.Namespace) -> None:
     _emit(
         {"run_id": run_id, "packet": str(output.resolve()), "csv": str(csv_output.resolve()), "result": packet, "verified": packet["total_verified_records"]},
         args.json,
-        f"Demo run '{run_id}' completed.\nPacket: {output.resolve()}\nCSV: {csv_output.resolve()}\nVerified records: {packet['total_verified_records']}\nTry: harness-fleet status {run_id} --json | harness-fleet export {run_id} --format jsonl",
+        f"Demo run '{run_id}' completed.\nPacket: {output.resolve()}\nCSV: {csv_output.resolve()}\nVerified records: {packet['total_verified_records']}\nTry: {branding.CLI_NAME} status {run_id} --json | {branding.CLI_NAME} export {run_id} --format jsonl",
     )
 
 
@@ -1235,9 +1388,14 @@ def cmd_partners(args: argparse.Namespace) -> None:
             snippets_only=snippets_only,
             max_pages=int(getattr(args, "max_pages", 8) or 8),
             include_fetch=not bool(getattr(args, "no_fetch", False)),
+            vendor_stories=not bool(getattr(args, "no_vendor_stories", False)),
+            vendor_story_limit=int(getattr(args, "vendor_stories_limit", 20) or 20),
         )
     # Every backend skipped means the run could not search at all: reporting
     # "Found 0 partner dossier(s)" with exit 0 hides a missing dependency.
+    if not items and report.rejected:
+        # No dossier: say why, write nothing, fail the command.
+        raise ValueError(report.rejected)
     backend_skips = [entry for entry in report.skipped if entry.get("backend")]
     if not items and backend_skips and len(backend_skips) >= max(1, report.searched):
         first = backend_skips[0].get("reason", "no backend could be reached")
@@ -1267,9 +1425,10 @@ def cmd_board(args: argparse.Namespace) -> None:
     """Serve the read-only results board, or print its payload with --json."""
     from .board import build_board_payload, run_board_server
 
+    runs_dir = Path(getattr(args, "workspace_root", ".")) / "runs"
     if getattr(args, "json", False):
         store = _store(args)
-        _emit(build_board_payload(store.path, args.run_id), True, "")
+        _emit(build_board_payload(store.path, args.run_id, runs_dir), True, "")
         return
     store = _store(args)
     run_board_server(
@@ -1278,6 +1437,7 @@ def cmd_board(args: argparse.Namespace) -> None:
         port=int(args.port),
         host=args.host,
         open_browser=bool(getattr(args, "open", False)),
+        runs_dir=runs_dir,
     )
 
 
@@ -1345,7 +1505,7 @@ def cmd_mcp_install(args: argparse.Namespace) -> None:
         getattr(args, "db", None)
         or os.environ.get("HARNESS_FLEET_DB")
     )
-    db_path = Path(configured_db).expanduser() if configured_db else workspace_root / "harness-fleet.db"
+    db_path = Path(configured_db).expanduser() if configured_db else workspace_root / branding.DEFAULT_DB
     db_path = (db_path if db_path.is_absolute() else workspace_root / db_path).resolve()
     if not db_path.is_relative_to(workspace_root):
         raise ValueError("MCP database must stay below the workspace root")
@@ -1412,7 +1572,7 @@ def cmd_mcp_install(args: argparse.Namespace) -> None:
             servers = {}
             existing["mcpServers"] = servers
 
-        already = servers.get("harness-fleet")
+        already = servers.get(branding.CLI_NAME)
         force = bool(getattr(args, "force", False))
         needs_update = force or already != server_entry
         if not needs_update:
@@ -1428,7 +1588,7 @@ def cmd_mcp_install(args: argparse.Namespace) -> None:
 
         if needs_update and not dry_run:
             config_path.parent.mkdir(parents=True, exist_ok=True)
-            servers["harness-fleet"] = server_entry
+            servers[branding.CLI_NAME] = server_entry
             # Preserve other keys (e.g., globalShortcut)
             config_path.write_text(json.dumps(existing, indent=2) + "\n", encoding="utf-8")
             notes.extend(
@@ -1461,12 +1621,12 @@ def cmd_mcp_install(args: argparse.Namespace) -> None:
             summary_lines.append(
                 f"tip: {', '.join(present)} is set in this shell but was not passed to the client "
                 f"(desktop apps do not inherit your shell environment). Add it with: "
-                f"harness-fleet mcp install --env {present[0]}"
+                f"{branding.CLI_NAME} mcp install --env {present[0]}"
             )
     _emit(
         {"installed": results, "workspace_root": str(workspace_root), "db": str(db_path), "command": cli_cmd},
         args.json,
-        "\n".join(summary_lines) + f"\nRestart {', '.join(r['client'] for r in results)} to load harness-fleet. Verify with: harness-fleet doctor --workspace-root {workspace_root} --json",
+        "\n".join(summary_lines) + f"\nRestart {', '.join(r['client'] for r in results)} to load {branding.CLI_NAME}. Verify with: {branding.CLI_NAME} doctor --workspace-root {workspace_root} --json",
     )
 
 
@@ -1527,8 +1687,370 @@ def _capture_quality(captured: int, skipped: int, threshold: float | None) -> di
         "attempted": attempted,
         "captured": captured,
         "coverage": round(coverage, 3),
-        "meets_threshold": threshold is None or (attempted > 0 and coverage >= threshold),
+        "meets_threshold": threshold is None or coverage >= threshold,
     }
+
+
+def _skip_reasons_note(skipped: Any, limit: int = 3) -> str:
+    """The first few per-source failure reasons, so a coverage error is actionable.
+
+    A bare percentage tells a user their run failed; it does not tell them that
+    one board 404s and another is rate limited, which is the whole answer.
+    """
+    entries = list(skipped or [])
+    reasons: list[str] = []
+    for entry in entries:
+        if isinstance(entry, dict):
+            source = str(entry.get("source") or "source")
+            reason = str(entry.get("reason") or "").strip()
+        else:
+            source, reason = "source", str(entry).strip()
+        if reason:
+            reasons.append(f"{source}: {reason[:120]}")
+        if len(reasons) >= limit:
+            break
+    if not reasons:
+        return ""
+    remaining = len(entries) - len(reasons)
+    return "\n  failing sources: " + "; ".join(reasons) + (f" (+{remaining} more)" if remaining > 0 else "")
+
+def _load_lane_for_run(args: argparse.Namespace, workspace: Path) -> Any:
+    """Load the lane this run names, validating it against what is installed."""
+    from .channels import load_channels
+    from .discover import BACKENDS
+    from .lanes import LaneError, load_lane
+
+    name = str(getattr(args, "lane", "") or "").strip()
+    if not name:
+        return None
+    channels = set(load_channels(workspace))
+    path = workspace / "lanes" / f"{name}.json"
+    try:
+        return load_lane(path, channels=channels, backends=set(BACKENDS) | channels)
+    except LaneError as exc:
+        raise ValueError(str(exc)) from exc
+
+
+def _lane_items(items: list[Any], lane: Any) -> tuple[list[Any], int]:
+    """Apply the lane's own filters: what it is looking for, and where.
+
+    A lane that says "enterprise sales, remote" is not a suggestion: an item
+    that does not carry one of its terms (or that carries an excluded one, or
+    is not remote when the lane demands remote) is not part of that lane's
+    result, and the count of what was dropped is reported rather than hidden.
+    """
+    if lane is None:
+        return items, 0
+    includes = [term.lower() for term in lane.title_include]
+    excludes = [term.lower() for term in lane.title_exclude]
+    kept = []
+    for item in items:
+        haystack = f"{getattr(item, 'title', '') or ''} {getattr(item, 'text', '') or ''}".lower()
+        if includes and not any(term in haystack for term in includes):
+            continue
+        if excludes and any(term in haystack for term in excludes):
+            continue
+        if getattr(lane, "remote", False) and "remote" not in haystack:
+            continue
+        kept.append(item)
+    return kept, len(items) - len(kept)
+
+def cmd_research(args: argparse.Namespace) -> None:
+    """One command from a question to a ranked deliverable.
+
+    discover -> bundle per entity -> score -> export, with every step's
+    defaults chosen so a fresh install with no keys works: discovery deps are
+    installed by default, routes refresh themselves, a sparse source set warns
+    instead of failing, and the task comes from a preset. The individual
+    commands remain for anyone who wants to drive the steps.
+    """
+    from .bundler import bundle_records, export_bundled_csv
+    from .task import create_task_from_preset
+
+    store = _store(args)
+    workspace = Path(getattr(args, "workspace_root", ".")).expanduser().resolve()
+    output = Path(getattr(args, "output", None) or "accounts.csv").expanduser()
+    lane = _load_lane_for_run(args, workspace)
+    if lane is not None:
+        # The lane supplies defaults; an explicit flag still wins.
+        args.query = list(args.query or []) or list(lane.queries) or list(lane.seeds)
+        if not getattr(args, "backend", None) and lane.backends:
+            args.backend = list(lane.backends)
+        if not getattr(args, "preset", None) and lane.preset:
+            args.preset = lane.preset
+        if getattr(args, "top", None) in (None, 25) and lane.top:
+            args.top = lane.top
+        print(f"Lane '{lane.name}': {lane.description or 'configured run'}")
+    if not getattr(args, "query", None):
+        raise ValueError(
+            "no query: pass --query, or name a lane (--lane NAME) whose queries/seeds supply one"
+        )
+    preset = getattr(args, "preset", None) or "account-research"
+    top = int(getattr(args, "top", None) or 25)
+    run_id = getattr(args, "run_id", None) or f"research-{time.time_ns()}-{uuid.uuid4().hex[:6]}"
+
+    # 1. Discover, capturing full text and merging per entity.
+    min_source_coverage = getattr(args, "min_source_coverage", None)
+    print(f"Searching for: {', '.join(args.query)}")
+    items, report = run_discovery(
+        queries=args.query,
+        backends=args.backend or ["ddgs", "hn"],
+        max_results=int(getattr(args, "max_results", 10) or 10),
+        fetch_full_text=True,
+        timeout=float(getattr(args, "timeout", 20.0) or 20.0),
+        delay=float(getattr(args, "delay", 1.0) or 0.0),
+        respect_robots=not getattr(args, "ignore_robots", False),
+        min_source_coverage=min_source_coverage if min_source_coverage is not None else 0.0,
+        min_chars=getattr(args, "min_chars", None),
+    )
+    if not items:
+        raise DiscoverError(
+            "nothing was captured for this query"
+            + _skip_reasons_note(report.get("skipped"))
+            + ". Try a broader --query or a different --backend."
+        )
+    items, dropped = _lane_items(items, lane)
+    if dropped:
+        print(f"Lane filter dropped {dropped} item(s) that do not match {lane.title_include or lane.seeds}")
+    if not items:
+        raise DiscoverError(
+            f"nothing captured that matches this lane ({lane.name if lane else 'no lane'})"
+            + _skip_reasons_note(report.get("skipped"))
+        )
+    keyed = [
+        item.model_copy(
+            update={
+                "item_id": entity_key_for(item.source_uri or "", item.text or "", item.metadata or {})
+                or item.item_id
+            }
+        )
+        for item in items
+    ]
+    dossiers = bundle_records(keyed)
+    input_path = workspace / output
+    input_path.parent.mkdir(parents=True, exist_ok=True)
+    export_bundled_csv(dossiers, input_path)
+    merged = len(keyed) - len(dossiers)
+    print(f"Captured {len(keyed)} sources into {len(dossiers)} account dossiers"
+          + (f" ({merged} merged)" if merged else "") + f" -> {input_path}")
+
+    # Persist what discovery saw, next to the run: the lane report's yield is
+    # captured-vs-attempted, and attempted is only knowable if the run kept it.
+    report_path = workspace / "runs" / run_id / "discovery_report.json"
+    try:
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        report_path.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
+    except OSError:
+        pass
+
+    # 2. Ensure the task exists (a preset is enough for a first run).
+    try:
+        task = store.get_task(preset)
+    except Exception:
+        task = create_task_from_preset(preset, preset_name=preset)
+        store.register_task(task)
+        print(f"Registered task '{task.name}' from the '{preset}' preset")
+
+    # 3. Score, with the engine's own route selection and first-run refresh.
+    policy = _extract_policy(args)
+    _check_routes_for_run(store, policy)
+    packet_path = workspace / "runs" / run_id / "clean_packet.json"
+    packet = Engine(
+        task=task, store=store, policy=policy,
+        prompt_timeout_sec=int(getattr(args, "timeout", 0) or DEFAULT_PROMPT_TIMEOUT_SEC),
+    ).run_campaign(
+        raw_items=iter_input_items(input_path, id_column="item_id", text_column="text", uri_column="source_uri"),
+        run_id=run_id,
+        input_path=str(input_path),
+        concurrency=int(getattr(args, "sessions", 4) or 4),
+        max_attempts=int(getattr(args, "max_attempts", 300) or 300),
+        output_packet_path=packet_path,
+        policy=policy,
+    )
+
+    # 4. Export the ranked deliverable and say where it is.
+    from .export import export_clean_packet
+
+    ranked_path = workspace / (Path(output).stem + "_ranked.csv")
+    export_clean_packet(
+        store.run_snapshot(run_id),
+        ranked_path,
+        export_format="csv",
+        sort=SortSpec(field="score", descending=True),
+        top=top,
+        rank=True,
+    )
+    readout = _evidence_readout(store, run_id, iter_input_items(
+        input_path, id_column="item_id", text_column="text", uri_column="source_uri"))
+    evidence_path = packet_path.parent / "evidence.json"
+    try:
+        evidence_path.write_text(json.dumps(readout, indent=2, ensure_ascii=False), encoding="utf-8")
+    except OSError:
+        pass
+    _emit(
+        {
+            "run_id": run_id,
+            "accounts": str(input_path),
+            "packet": str(packet_path),
+            "ranked": str(ranked_path),
+            "items": len(dossiers),
+            "verified_records": packet.get("total_verified_records"),
+            "evidence": readout,
+            "evidence_path": str(evidence_path),
+            "report": report,
+        },
+        args.json,
+        f"Run '{run_id}' {store.run_snapshot(run_id)['status']}.\n"
+        f"Dossiers: {input_path}\nPacket: {packet_path}\nRanked deliverable: {ranked_path}\n"
+        + _evidence_report_text(readout),
+    )
+
+
+def cmd_sources(args: argparse.Namespace) -> None:
+    """Inspect and grow the source taxonomy: what is known, and what could be.
+
+    The taxonomy is a seed plus a registry that grows; these verbs are how a
+    person drives that growth without reading the module. Promoting a domain is
+    the one write, and it is deliberate: until then a new source is a candidate
+    and its pages are leads, never evidence.
+    """
+    from . import registry as source_registry
+    from .channels import ChannelError, load_channels
+    from .contracts import SOURCE_CATEGORIES
+
+    workspace = Path(getattr(args, "workspace_root", ".")).expanduser().resolve()
+    registry_path = Path(
+        getattr(args, "registry", None) or (workspace / "source_registry.json")
+    ).expanduser()
+    action = getattr(args, "sources_command", "list") or "list"
+
+    if action == "promote":
+        category = str(getattr(args, "category", "") or "").strip().lower()
+        if category.upper() not in SOURCE_CATEGORIES:
+            known = ", ".join(sorted(name.lower() for name in SOURCE_CATEGORIES))
+            raise ValueError(f"unknown category '{category}'; use one of: {known}")
+        entry = source_registry.promote(
+            str(args.domain), category, reason=str(getattr(args, "reason", "") or ""), path=registry_path
+        )
+        _emit(
+            {"domain": str(args.domain).lower(), "registry": str(registry_path), **entry},
+            getattr(args, "json", False),
+            f"Promoted {args.domain} as {category} in {registry_path}.",
+        )
+        return
+
+    if action == "demote":
+        removed = source_registry.demote(
+            str(args.domain), reason=str(getattr(args, "reason", "") or ""), path=registry_path
+        )
+        _emit(
+            {"registry": str(registry_path), **removed},
+            getattr(args, "json", False),
+            f"Demoted {removed['domain']} (was {removed['was']}); it is a candidate again.",
+        )
+        return
+
+    if action == "propose":
+        proposals = source_registry.propose(registry_path)
+        lines = [f"{len(proposals)} proposal(s) from {registry_path}:"]
+        for proposal in proposals:
+            lines.append(
+                f"  {proposal['domain']:32} {proposal['category']:24} "
+                f"confidence {proposal['confidence']:.2f} over {proposal['sightings']} sighting(s)"
+            )
+        if not proposals:
+            lines.append("  (nothing yet: a domain needs repeated sightings before it is proposed)")
+        _emit(
+            {"proposals": proposals, "count": len(proposals), "registry": str(registry_path)},
+            getattr(args, "json", False),
+            "\n".join(lines),
+        )
+        return
+
+    if action == "channels":
+        try:
+            channels = load_channels(workspace)
+        except ChannelError as exc:
+            raise ValueError(str(exc)) from exc
+        lines = [f"{len(channels)} channel(s) in {workspace / 'sources'}:"]
+        for name, channel in sorted(channels.items()):
+            lines.append(f"  {name:24} {channel.category:24} {channel.description or channel.path}")
+        if not channels:
+            lines.append("  (drop a .py or .json file in <workspace>/sources/ to add one)")
+        _emit(
+            {
+                "channels": {
+                    name: {"category": c.category, "description": c.description, "path": c.path}
+                    for name, c in sorted(channels.items())
+                },
+                "count": len(channels),
+            },
+            getattr(args, "json", False),
+            "\n".join(lines),
+        )
+        return
+
+    # list: what the taxonomy knows, and how much is waiting to be proposed.
+    data = source_registry.load(registry_path)
+    promoted = data.get("domains") or {}
+    candidates = data.get("candidates") or {}
+    lines = [f"{len(promoted)} promoted domain(s) in {registry_path}:"]
+    for domain, entry in sorted(promoted.items()):
+        lines.append(f"  {domain:32} {entry.get('category', '?'):24} {entry.get('reason', '')}")
+    lines.append(f"{len(candidates)} candidate(s) seen but not promoted")
+    _emit(
+        {
+            "registry": str(registry_path),
+            "domains": promoted,
+            "candidate_count": len(candidates),
+            "candidates": candidates,
+        },
+        getattr(args, "json", False),
+        "\n".join(lines),
+    )
+
+
+def cmd_lane(args: argparse.Namespace) -> None:
+    """Measure a finished run: the five numbers a lane is tuned by.
+
+    Read-only by construction — this reports what a run produced and never
+    recomputes a score — so it can be run against any run, before and after a
+    configuration change, and compared on a frozen sample.
+    """
+    from .lane_report import build_lane_report, report_lines
+
+    workspace = Path(getattr(args, "workspace_root", ".")).expanduser().resolve()
+    action = getattr(args, "lane_command", "report") or "report"
+    if action != "report":
+        raise ValueError(f"unknown lane action '{action}' (only 'report' is defined)")
+    run_id = str(getattr(args, "run_id", "") or "").strip()
+    if not run_id:
+        raise ValueError("lane report needs a run id: `lane report <run_id>`")
+
+    store = _store(args)
+    lane = _load_lane_for_run(args, workspace)
+    report = build_lane_report(
+        store,
+        run_id,
+        workspace_root=workspace,
+        lane=lane,
+        sample=int(getattr(args, "sample", 5) or 5),
+        freeze_dir=getattr(args, "freeze", None),
+    )
+    # Written next to the run so the measurement travels with its artifact.
+    report_path = workspace / "runs" / run_id / "lane_report.json"
+    try:
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        written = report.model_dump(mode="json", by_alias=True)
+        written["report_path"] = str(report_path)
+        report_path.write_text(json.dumps(written, indent=2, ensure_ascii=False), encoding="utf-8")
+    except OSError as exc:  # a read-only workspace must not lose the report
+        print(f"Warning: could not write {report_path}: {exc}", file=sys.stderr)
+    _emit(
+        {**report.model_dump(mode="json", by_alias=True), "report_path": str(report_path)},
+        getattr(args, "json", False),
+        report_lines(report) + f"\nReport: {report_path}",
+    )
 
 
 def cmd_discover(args: argparse.Namespace) -> None:
@@ -1558,14 +2080,45 @@ def cmd_discover(args: argparse.Namespace) -> None:
         required_stack=getattr(args, "require_stack", None) or [],
         excluded_stack=getattr(args, "exclude_stack", None) or [],
     )
+    bundle_count = 0
+    bundled_sources = 0
+    if getattr(args, "bundle", False) and items:
+        from .bundler import bundle_records
+
+        keyed = [
+            item.model_copy(
+                update={
+                    "item_id": entity_key_for(
+                        item.source_uri or "", item.text or "", item.metadata or {}
+                    )
+                    or item.item_id
+                }
+            )
+            for item in items
+        ]
+        bundled_sources = len(keyed)
+        items = bundle_records(keyed)
+        bundle_count = bundled_sources - len(items)
     source_quality = report.get("source_quality") or {}
-    if min_source_coverage is not None and source_quality and not source_quality.get("meets_threshold", False):
+    coverage_note = ""
+    if source_quality and not source_quality.get("meets_threshold", False):
+        coverage = float(source_quality.get("coverage", 0.0))
+        captured = int(source_quality.get("captured", len(items)))
+        attempted = int(source_quality.get("attempted", report.get("hits", 0)))
+        coverage_note = (
+            f"\nNote: source coverage {coverage:.1%} ({captured}/{attempted}) is below the "
+            f"70% guideline; the output is written anyway. Pass --min-source-coverage "
+            f"{max(coverage, 0.0):.2f} to make this an error."
+        )
+    if (min_source_coverage is not None and source_quality
+            and not source_quality.get("meets_threshold", False)):
         coverage = float(source_quality.get("coverage", 0.0))
         captured = int(source_quality.get("captured", len(items)))
         attempted = int(source_quality.get("attempted", report.get("hits", 0)))
         raise DiscoverError(
             f"source coverage {coverage:.1%} ({captured}/{attempted}) is below the "
             f"minimum {float(min_source_coverage):.1%}; narrow the query or use a healthier source"
+            + _skip_reasons_note(report.get("skipped"))
         )
     output = _write_discovered(items, getattr(args, "output", None), fmt, f"accounts.{fmt}", report["skipped"])
     skipped = report["skipped"]
@@ -1575,7 +2128,17 @@ def cmd_discover(args: argparse.Namespace) -> None:
         if snippets_only else ""
     )
     _emit(
-        {"items": len(items), "output": output, "format": fmt, "report": report},
+        {
+            "items": len(items),
+            "output": output,
+            "format": fmt,
+            "report": report,
+            "bundled": (
+                {"sources": bundled_sources, "dossiers": len(items), "merged": bundle_count}
+                if bundle_count
+                else None
+            ),
+        },
         args.json,
         f"Discovered {len(items)} items from {report['hits']} hits -> {output}."
         + (
@@ -1583,7 +2146,13 @@ def cmd_discover(args: argparse.Namespace) -> None:
             f" ({source_quality.get('captured', len(items))}/{source_quality.get('attempted', report['hits'])})."
             if source_quality else ""
         )
-        + _format_skips(skipped) + indicator_note,
+        + (
+            f" Bundled {bundled_sources} sources into {len(items)} dossiers"
+            f" ({bundle_count} merged); each dossier keeps every source as a labelled section."
+            if bundle_count
+            else ""
+        )
+        + _format_skips(skipped) + indicator_note + coverage_note,
     )
 
 
@@ -1625,9 +2194,16 @@ def cmd_fetch(args: argparse.Namespace) -> None:
     lemmy_query = getattr(args, "lemmy_query", None)
     lemmy_instance = getattr(args, "lemmy_instance", None) or "https://programming.dev"
     devto_tag = getattr(args, "devto_tag", None)
+    feeds = list(getattr(args, "feed", None) or [])
+    github_orgs = list(getattr(args, "github_org", None) or [])
+    packages = list(getattr(args, "package", None) or [])
+    docs_domains = list(getattr(args, "docs_for", None) or [])
+    feed_links = not bool(getattr(args, "no_feed_links", False))
     has_qa = any([se_query, discourse, lobsters_tag is not None, lemmy_query, devto_tag])
-    if not urls and not sitemap and not site and not subreddits and not reddit_query and not hn_refs and not has_qa and not greenhouse and not ashby and not lever and not yc:
-        raise DiscoverError("fetch requires --url, --url-file, --sitemap, --site, --subreddit, --reddit-query, --hn, a Q&A source, --greenhouse-board, --ashby-org, --lever-org, or --yc")
+    if (not urls and not sitemap and not site and not subreddits and not reddit_query and not hn_refs
+            and not has_qa and not greenhouse and not ashby and not lever and not yc and not feeds
+            and not github_orgs and not packages and not docs_domains):
+        raise DiscoverError("fetch requires --url, --url-file, --sitemap, --site, --feed, --github-org, --package, --docs-for, --subreddit, --reddit-query, --hn, a Q&A source, --greenhouse-board, --ashby-org, --lever-org, or --yc")
     if render_js:
         from .discover import require_playwright
 
@@ -1643,6 +2219,65 @@ def cmd_fetch(args: argparse.Namespace) -> None:
     if lever:
         ats_sources.append((f"lever:{lever}", fetch_lever_org, lever))
     with _httpx.Client(timeout=timeout, follow_redirects=True, headers={"User-Agent": DISCOVER_USER_AGENT}) as client:
+        for package in packages:
+            try:
+                pkg_records, pkg_skipped = fetch_package(package, timeout=timeout, client=client)
+            except Exception as exc:
+                skipped.append({"source": f"registry:{package}", "reason": str(exc)[:200]})
+                continue
+            records.extend(pkg_records)
+            skipped.extend(pkg_skipped)
+        for domain in docs_domains:
+            try:
+                doc_urls, doc_skipped = discover_doc_urls(domain, timeout=timeout, client=client)
+            except Exception as exc:
+                skipped.append({"source": f"docs:{domain}", "reason": str(exc)[:200]})
+                continue
+            skipped.extend(doc_skipped)
+            # Conventional paths miss sites whose docs live elsewhere (a version
+            # prefix, a subdomain, a docs tool). The sitemap the site publishes
+            # is the authoritative list, so it is used when the paths came up short.
+            if not doc_urls:
+                try:
+                    sitemap_url = discover_sitemap_url(domain, client=client, timeout=timeout)
+                    doc_urls = fetch_sitemap_urls(
+                        sitemap_url, client=client, timeout=timeout,
+                        max_urls=int(getattr(args, "max_jobs", 0) or 0) or 20,
+                    )
+                except Exception as exc:
+                    skipped.append({"source": f"docs-sitemap:{domain}", "reason": str(exc)[:200]})
+            for doc_url in doc_urls:
+                try:
+                    records.append(fetch_text(doc_url, timeout=timeout, respect_robots=respect_robots))
+                except Exception as exc:
+                    skipped.append({"source": f"docs:{doc_url}", "reason": str(exc)[:200]})
+        for org in github_orgs:
+            try:
+                gh_records, gh_skipped = fetch_github_org(
+                    org, max_repos=int(getattr(args, "github_repos", 10) or 10),
+                    include_issues=not bool(getattr(args, "github_no_issues", False)),
+                    timeout=timeout, client=client,
+                )
+            except Exception as exc:
+                skipped.append({"source": f"github:{org}", "reason": str(exc)[:200]})
+                continue
+            records.extend(gh_records)
+            skipped.extend(gh_skipped)
+        for feed_url in feeds:
+            # Podcast show notes and newsletter archives: prose explaining method
+            # and judgement, reachable keylessly through the feed.
+            try:
+                feed_records = fetch_feed(
+                    feed_url, max_results=int(getattr(args, "max_results", 20) or 20),
+                    timeout=timeout, client=client, follow_links=feed_links,
+                    respect_robots=respect_robots,
+                )
+            except Exception as exc:
+                skipped.append({"source": f"feed:{feed_url}", "reason": str(exc)[:200]})
+                continue
+            if not feed_records:
+                skipped.append({"source": f"feed:{feed_url}", "reason": "no items parsed"})
+            records.extend(feed_records)
         if sitemap:
             try:
                 urls.extend(fetch_sitemap_urls(sitemap, client=client, timeout=timeout,
@@ -1784,12 +2419,20 @@ def cmd_fetch(args: argparse.Namespace) -> None:
         excluded_stack=getattr(args, "exclude_stack", None) or [],
     )
     min_source_coverage = getattr(args, "min_source_coverage", None)
-    source_quality = _capture_quality(len(items), len(skipped), min_source_coverage)
+    source_quality = _capture_quality(len(items), len(skipped), min_source_coverage if min_source_coverage is not None else 0.70)
+    fetch_coverage_note = ""
+    if not source_quality["meets_threshold"]:
+        fetch_coverage_note = (
+            f"\nNote: source coverage {source_quality['coverage']:.1%} "
+            f"({source_quality['captured']}/{source_quality['attempted']}) is below the 70% "
+            f"guideline; the output is written anyway. Pass --min-source-coverage to make this an error."
+        )
     if min_source_coverage is not None and not source_quality["meets_threshold"]:
         raise DiscoverError(
             f"source coverage {source_quality['coverage']:.1%} "
             f"({source_quality['captured']}/{source_quality['attempted']}) is below the "
             f"minimum {float(min_source_coverage):.1%}; fix or narrow the source set"
+            + _skip_reasons_note(skipped)
         )
     output = _write_discovered(items, getattr(args, "output", None), fmt, f"fetched.{fmt}", skipped)
     _emit(
@@ -1799,7 +2442,7 @@ def cmd_fetch(args: argparse.Namespace) -> None:
         f"Fetched {len(items)} items -> {output}."
         f" Source coverage: {source_quality['coverage']:.1%}"
         f" ({source_quality['captured']}/{source_quality['attempted']})."
-        + _format_skips(skipped),
+        + _format_skips(skipped) + fetch_coverage_note,
     )
 
 
@@ -1830,14 +2473,14 @@ def _policy_options(parser: argparse.ArgumentParser) -> None:
 
 def _common(parser: argparse.ArgumentParser, *, json_output: bool = True, database: bool = True) -> None:
     if database:
-        parser.add_argument("--db", help="SQLite control-plane path (default: ./harness-fleet.db)")
+        parser.add_argument("--db", help=f"SQLite control-plane path (default: ./{branding.DEFAULT_DB})")
     if json_output:
         parser.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="harness-fleet",
+        prog=branding.CLI_NAME,
         description="Coordinated free LLM worker fleet for bulk classification, extraction, summarization, and triage",
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {_package_version()}")
@@ -1929,6 +2572,59 @@ def build_parser() -> argparse.ArgumentParser:
     _common(test)
 
     run = commands.add_parser("run", help="Create and execute a resumable run")
+    lane = commands.add_parser("lane", help="Measure a lane: yield, coverage, support, truth sample, cost")
+    lane_sub = lane.add_subparsers(dest="lane_command", required=True)
+    lane_report = lane_sub.add_parser("report", help="The five measurements for a finished run")
+    lane_report.add_argument("run_id", help="Run to measure")
+    lane_report.add_argument("--lane", help="Lane whose bar and filters to judge against (lanes/<name>.json)")
+    lane_report.add_argument("--sample", type=_non_negative_int, default=5,
+                             help="Entities to re-check for truth (default 5; deterministic)")
+    lane_report.add_argument("--freeze", help="Copy the run's input, registry and lane into this directory")
+    lane_report.add_argument("--workspace-root", default=".", help="Workspace root for relative paths")
+    _common(lane_report)
+
+    sources = commands.add_parser(
+        "sources", help="Inspect and grow the source taxonomy (promoted domains, proposals, channels)"
+    )
+    sources_sub = sources.add_subparsers(dest="sources_command", required=True)
+    s_list = sources_sub.add_parser("list", help="Domains promoted into the taxonomy, and candidates waiting")
+    s_propose = sources_sub.add_parser("propose", help="Candidates with enough sightings to suggest a category")
+    s_promote = sources_sub.add_parser("promote", help="Make a domain known under a category (the one write)")
+    s_promote.add_argument("domain", help="Domain to promote, e.g. vendorhub.example")
+    s_promote.add_argument("--category", required=True, help="Category from the central taxonomy")
+    s_promote.add_argument("--reason", default="", help="Why it belongs there (recorded with the entry)")
+    s_demote = sources_sub.add_parser("demote", help="Undo a promotion (automatic growth's safety valve)")
+    s_demote.add_argument("domain", help="Domain to demote")
+    s_demote.add_argument("--reason", default="", help="Why it does not belong (recorded with the entry)")
+    s_channels = sources_sub.add_parser("channels", help="Channels this workspace defines in <workspace>/sources/")
+    for sub in (s_list, s_propose, s_promote, s_demote, s_channels):
+        sub.add_argument("--registry", help="Registry file (default: <workspace>/source_registry.json)")
+        sub.add_argument("--workspace-root", default=".", help="Workspace root for relative paths")
+        _common(sub)
+
+    research = commands.add_parser(
+        "research", help="One command from a question to a ranked deliverable (discover, bundle, score, export)"
+    )
+    research.add_argument("--query", action="append", help="Search query (repeatable; a lane may supply these)")
+    research.add_argument("--lane", help="Lane to run: lanes/<name>.json in the workspace (supplies queries, sources, filters, preset)")
+    research.add_argument("--backend", action="append", help="Search backend (repeatable; default ddgs + hn)")
+    research.add_argument("--preset", help="Task preset to score with (default: account-research)")
+    research.add_argument("--max-results", type=_positive_int, default=10, help="Hits per query (default 10)")
+    research.add_argument("--top", type=_positive_int, default=25, help="Rows in the ranked deliverable (default 25)")
+    research.add_argument("--output", help="Dossier CSV path (default: accounts.csv)")
+    research.add_argument("--run-id", help="Run id (default: research-<timestamp>)")
+    research.add_argument("--sessions", type=_positive_int, default=4)
+    research.add_argument("--max-attempts", type=_positive_int, default=300)
+    research.add_argument("--timeout", type=_positive_int, default=DEFAULT_PROMPT_TIMEOUT_SEC)
+    research.add_argument("--delay", type=float, default=1.0, help="Seconds between fetches (default 1.0)")
+    research.add_argument("--min-chars", type=int, help="Drop captured text shorter than this")
+    research.add_argument("--min-source-coverage", type=_coverage_value, default=None,
+                          help="Fail unless this fraction of hits is captured (default: warn only below 70%%)")
+    research.add_argument("--ignore-robots", action="store_true", help="Ignore robots.txt (default: respect it)")
+    research.add_argument("--workspace-root", default=".", help="Workspace root for relative paths")
+    _policy_options(research)
+    _common(research)
+
     run.add_argument("task", help="Registered task name or TaskSpec JSON path")
     run.add_argument("--input", required=True)
     run.add_argument("--sessions", type=_positive_int, default=4)
@@ -1943,6 +2639,12 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--profile", help="Optional Ideal Company Profile JSON; persist and attach its revision to this run")
     run.add_argument("--use-active-profile", action="store_true", help="Explicitly attach the active Ideal Company Profile from SQLite")
     run.add_argument("--from-studio", action="store_true", help="Route this run through the studio's saved harness/model selection")
+    run.add_argument(
+        "--require-kinds", action="append", dest="require_kinds", metavar="KIND",
+        help="Fail the run unless every scored entity's own text carries this evidence kind "
+             "(repeatable; e.g. --require-kinds delivery_proof --require-kinds independent_validation). "
+             "See the evidence readout printed after each run for the kinds available.",
+    )
     run.add_argument("--workspace-root", default=".", help="Workspace root for relative paths")
     _input_options(run)
     _policy_options(run)
@@ -1958,6 +2660,10 @@ def build_parser() -> argparse.ArgumentParser:
     rescore = commands.add_parser("rescore", help="Score fresh evidence as a new run linked to a parent run")
     rescore.add_argument("parent_run", help="Existing run this round builds on (lineage only; evidence comes from --input)")
     rescore.add_argument("--task", help="Registered task name or TaskSpec JSON path (default: the parent run's task; override to rescore under recalibrated weights)")
+    rescore.add_argument(
+        "--require-kinds", action="append", dest="require_kinds", metavar="KIND",
+        help="Fail the rescore unless every scored entity's own text carries this evidence kind (repeatable)",
+    )
     rescore.add_argument("--input", required=True)
     rescore.add_argument("--sessions", type=_positive_int, default=4)
     rescore.add_argument("--max-attempts", type=_positive_int, default=300)
@@ -2011,6 +2717,7 @@ def build_parser() -> argparse.ArgumentParser:
     export = commands.add_parser("export", help="Export a validated packet from a run")
     export.add_argument("run_id")
     export.add_argument("--output")
+    export.add_argument("--workspace-root", default=".", help="Workspace root for relative paths")
     export.add_argument(
         "--force", action="store_true",
         help="Allow writing over this run's stored packet (refused by default)",
@@ -2081,6 +2788,15 @@ def build_parser() -> argparse.ArgumentParser:
     partners_enrich.add_argument("domain", help="Partner domain, e.g. trace3.com")
     partners_enrich.add_argument("--max-pages", type=int, default=8, help="Site pages to crawl (default: 8)")
     partners_enrich.add_argument("--no-fetch", action="store_true", help="Skip site/ATS/directory fetches; mentions only")
+    partners_enrich.add_argument(
+        "--no-vendor-stories", action="store_true",
+        help="Skip vendor-published partner stories (AWS/Snowflake/Databricks/Elastic/"
+             "Datadog/MongoDB): the independent prose about the work",
+    )
+    partners_enrich.add_argument(
+        "--vendor-stories-limit", type=int, default=20,
+        help="How many vendor stories to fetch per vendor (default 20)",
+    )
     _partner_common(partners_enrich)
 
     studio = commands.add_parser("studio", help="Serve the local harness studio UI (localhost only)")
@@ -2093,12 +2809,12 @@ def build_parser() -> argparse.ArgumentParser:
     mcp_install = mcp_sub.add_parser("install", help="Install MCP server entry into Claude/Cursor config (one-command setup)")
     mcp_install.add_argument("--client", choices=["auto", "claude", "cursor", "all"], default="auto", help="Target client config to write (default: auto-detect, falls back to claude)")
     mcp_install.add_argument("--workspace-root", default=".", help="Workspace root for the MCP server (default: .)")
-    mcp_install.add_argument("--db", help="SQLite path below workspace root (default: <workspace>/harness-fleet.db)")
+    mcp_install.add_argument("--db", help=f"SQLite path below workspace root (default: <workspace>/{branding.DEFAULT_DB})")
     mcp_install.add_argument("--env", action="append", metavar="NAME", help="Copy this shell's environment variable into the client config (can repeat or comma-separate, e.g. --env OPENROUTER_API_KEY). Desktop apps do not inherit the shell environment. Unset names are skipped with a warning; only names are ever printed")
     mcp_install.add_argument("--dry-run", action="store_true", help="Preview without writing")
     mcp_install.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
     # Note: --db and --json are also added via _common but we keep explicit for discoverability
-    mcp_install.add_argument("--force", action="store_true", help="Overwrite existing harness-fleet entry even if identical (no-op otherwise)")
+    mcp_install.add_argument("--force", action="store_true", help="Overwrite the existing MCP entry even if identical (no-op otherwise)")
 
     discover = commands.add_parser("discover", help="Broad web search to accounts file (mechanical discovery)")
     discover.add_argument("--query", action="append", required=True, help="Search query (repeatable)")
@@ -2118,10 +2834,20 @@ def build_parser() -> argparse.ArgumentParser:
     discover.add_argument("--evidence", action="append", help="Admit only this evidence grade (repeatable; e.g. fetched, profile). Omit to admit all grades.")
     discover.add_argument("--require-stack", action="append", help="Stack term that must appear for a matched signal (repeatable; annotates metadata, never filters)")
     discover.add_argument("--exclude-stack", action="append", help="Stack term that sets stack_veto when present (repeatable)")
-    discover.add_argument("--min-source-coverage", type=_coverage_value, default=0.70,
-                          help="Require at least this fraction of unique hits to become captured items (default: 0.70; use 0 to disable)")
+    discover.add_argument(
+        "--min-source-coverage", type=_coverage_value, default=None,
+        help="Fail unless this fraction of unique hits becomes captured items. By default a "
+             "run below 70%% warns and still writes its output; pass a value to enforce it "
+             "(0 disables the check entirely)",
+    )
+    discover.add_argument(
+        "--bundle", action="store_true",
+        help="Merge the sources gathered for one entity into a single section-tagged "
+             "dossier, so it is judged from all its evidence at once (recommended when a "
+             "run returns several sources per entity)",
+    )
     discover.add_argument("--ignore-robots", action="store_true", help="Ignore robots.txt (default: respect it)")
-    discover.add_argument("--js", action="store_true", help="Render JS-heavy pages via Playwright (experimental; needs harness-fleet[js])")
+    discover.add_argument("--js", action="store_true", help=f"Render JS-heavy pages via Playwright (experimental; needs {branding.DIST_NAME}[js])")
     discover.add_argument("--output", help="Output file (default: accounts.<format>)")
     discover.add_argument("--format", choices=["csv", "jsonl"], default="csv", help="Output format (default: csv)")
     discover.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
@@ -2129,6 +2855,38 @@ def build_parser() -> argparse.ArgumentParser:
     fetch = commands.add_parser("fetch", help="Fetch URLs or ATS boards to accounts file")
     fetch.add_argument("--url", action="append", help="URL to fetch and parse (repeatable)")
     fetch.add_argument("--url-file", help="File with one URL per line")
+    fetch.add_argument(
+        "--feed", action="append",
+        help="RSS or Atom feed to harvest: podcast show notes, newsletters and their "
+             "item pages (repeatable)",
+    )
+    fetch.add_argument(
+        "--package", action="append",
+        help="Published package to read from public registries (PyPI, npm, crates.io, "
+             "RubyGems, Maven Central): description, README, version and date (repeatable)",
+    )
+    fetch.add_argument(
+        "--docs-for", action="append", metavar="DOMAIN",
+        help="Probe a domain's documentation and changelog paths and fetch the ones that "
+             "answer (repeatable)",
+    )
+    fetch.add_argument(
+        "--github-org", action="append",
+        help="GitHub org or user whose public artifacts to harvest: repos, READMEs, "
+             "releases and issue titles (repeatable)",
+    )
+    fetch.add_argument(
+        "--github-repos", type=int, default=10,
+        help="How many repos per GitHub org to harvest (most recently pushed first, default 10)",
+    )
+    fetch.add_argument(
+        "--github-no-issues", action="store_true",
+        help="Skip GitHub issue titles (repos, READMEs and releases only)",
+    )
+    fetch.add_argument(
+        "--no-feed-links", action="store_true",
+        help="Keep only what the feed itself carries; do not follow item links for the full page",
+    )
     fetch.add_argument("--sitemap", help="Sitemap URL: fetch every listed page (e.g. https://docs.example.com/sitemap.xml)")
     fetch.add_argument("--site", help="Site origin or URL: use its sitemap, else BFS crawl same-origin pages")
     fetch.add_argument("--max-pages", type=int, default=20, help="Max pages for --site crawl (default: 20)")
@@ -2161,13 +2919,17 @@ def build_parser() -> argparse.ArgumentParser:
     fetch.add_argument("--yc-query", help="Filter YC companies by keyword")
     fetch.add_argument("--yc-batch", help="Filter YC companies by batch (e.g. W24)")
     fetch.add_argument("--yc-tag", action="append", help="Filter YC companies by tag/industry (repeatable)")
-    fetch.add_argument("--js", action="store_true", help="Render JS-heavy pages via Playwright (experimental; needs harness-fleet[js])")
+    fetch.add_argument("--js", action="store_true", help=f"Render JS-heavy pages via Playwright (experimental; needs {branding.DIST_NAME}[js])")
     fetch.add_argument("--max-jobs", type=int, default=None, help="Max items per source: postings per ATS board, pages per sitemap (default 200), companies for --yc, posts for feeds (default: source-specific)")
     fetch.add_argument("--delay", type=float, default=1.0, help="Politeness delay between fetches in seconds (default: 1.0)")
     fetch.add_argument("--timeout", type=float, default=20.0, help="HTTP timeout in seconds (default: 20.0)")
     fetch.add_argument("--max-chars", type=int, default=None, help="Truncate item text to N chars (default: none)")
-    fetch.add_argument("--min-source-coverage", type=_coverage_value, default=0.70,
-                       help="Require at least this fraction of attempted source items to be captured (default: 0.70; use 0 to disable)")
+    fetch.add_argument(
+        "--min-source-coverage", type=_coverage_value, default=None,
+        help="Fail unless this fraction of attempted source items is captured. By default a run "
+             "below 70%% warns and still writes its output; pass a value to enforce it "
+             "(0 disables the check entirely)",
+    )
     fetch.add_argument("--ignore-robots", action="store_true", help="Ignore robots.txt (default: respect it)")
     fetch.add_argument("--output", help="Output file (default: fetched.<format>)")
     fetch.add_argument("--format", choices=["csv", "jsonl"], default="csv", help="Output format (default: csv)")
@@ -2219,6 +2981,9 @@ def main() -> None:
         "partners": cmd_partners,
         "quickstart": cmd_quickstart,
         "discover": cmd_discover,
+        "sources": cmd_sources,
+        "lane": cmd_lane,
+        "research": cmd_research,
         "fetch": cmd_fetch,
         "dag": cmd_dag,
     }

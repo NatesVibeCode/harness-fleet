@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from harness_fleet import branding
 from harness_fleet.catalog import RouteCatalog
 from harness_fleet.cli import build_parser, cmd_mcp_install
 from harness_fleet.input_data import InputDataError, load_input_items
@@ -45,11 +46,13 @@ def test_missing_survivor_file_fails_instead_of_silently_emptying_campaign(tmp_p
         load_input_items(source, only_ids=tmp_path / "missing.csv")
 
 
-def test_cli_prog_and_mcp_install_use_harness_name(tmp_path, monkeypatch):
+def test_cli_prog_and_mcp_install_use_this_distributions_name(tmp_path, monkeypatch):
+    """Each product's CLI introduces itself as that product, engine and all."""
     import harness_fleet.cli as cli_module
+    from harness_fleet import branding
 
-    assert cli_module.build_parser().prog == "harness-fleet"
-    monkeypatch.setattr("sys.argv", ["harness-fleet", "doctor"])
+    assert cli_module.build_parser().prog == branding.CLI_NAME
+    monkeypatch.setattr("sys.argv", [branding.CLI_NAME, "doctor"])
     assert cli_module._package_version()
 
     config = tmp_path / "mcp.json"
@@ -61,7 +64,7 @@ def test_cli_prog_and_mcp_install_use_harness_name(tmp_path, monkeypatch):
     )
     cmd_mcp_install(args)
     installed = json.loads(config.read_text(encoding="utf-8"))
-    assert "harness-fleet" in installed["mcpServers"]
+    assert branding.CLI_NAME in installed["mcpServers"]
     assert "free-fleet" not in installed["mcpServers"]
 
 
@@ -94,7 +97,7 @@ def test_mcp_install_passes_requested_env_into_the_client_config(tmp_path, monke
         tmp_path, "--env", "OPENROUTER_API_KEY,GROQ_API_KEY", "--env", "OLLAMA_BASE_URL", "--json",
     ))
 
-    entry = json.loads(config.read_text(encoding="utf-8"))["mcpServers"]["harness-fleet"]
+    entry = json.loads(config.read_text(encoding="utf-8"))["mcpServers"][branding.CLI_NAME]
     assert entry["env"] == {
         "OPENROUTER_API_KEY": "sk-or-test-not-real",
         "GROQ_API_KEY": "gsk-test-not-real",
@@ -113,7 +116,7 @@ def test_mcp_install_skips_unset_env_but_still_installs(tmp_path, monkeypatch, c
     out = capsys.readouterr().out
     assert "env: OPENROUTER_API_KEY (set)" in out
     assert "GROQ_API_KEY requested but not set in this shell; skipping" in out
-    entry = json.loads(config.read_text(encoding="utf-8"))["mcpServers"]["harness-fleet"]
+    entry = json.loads(config.read_text(encoding="utf-8"))["mcpServers"][branding.CLI_NAME]
     assert entry["env"] == {"OPENROUTER_API_KEY": "sk-or-test-not-real"}
     assert "GROQ_API_KEY" not in json.dumps(entry)
 
@@ -126,7 +129,7 @@ def test_mcp_install_without_env_writes_no_env_block(tmp_path, monkeypatch, caps
 
     cmd_mcp_install(_install_args(tmp_path))
 
-    entry = json.loads(config.read_text(encoding="utf-8"))["mcpServers"]["harness-fleet"]
+    entry = json.loads(config.read_text(encoding="utf-8"))["mcpServers"][branding.CLI_NAME]
     assert "env" not in entry
     # Opt-in only: an ambient key is never written silently, but the user is told.
     assert "not passed to the client" in capsys.readouterr().out
@@ -143,7 +146,7 @@ def test_mcp_install_reports_env_keys_a_plain_rerun_drops(tmp_path, monkeypatch,
     cmd_mcp_install(_install_args(tmp_path))
 
     assert "env: OPENROUTER_API_KEY dropped" in capsys.readouterr().out
-    entry = json.loads(config.read_text(encoding="utf-8"))["mcpServers"]["harness-fleet"]
+    entry = json.loads(config.read_text(encoding="utf-8"))["mcpServers"][branding.CLI_NAME]
     assert "env" not in entry
 
 

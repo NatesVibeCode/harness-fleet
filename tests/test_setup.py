@@ -170,3 +170,19 @@ def test_account_skill_and_examples_are_bundled():
         assert {p.relative_to(root): p.read_bytes() for p in root.rglob("*") if p.is_file()} == expected
     for name in ("task.json", "sample_accounts.csv"):
         assert (resources / "examples/account_research" / name).read_bytes() == (repository / "examples/account_research" / name).read_bytes()
+
+def test_generated_commands_name_the_installed_cli(monkeypatch, tmp_path):
+    """Setup must hand back the commands this install can actually run.
+
+    An account-fleet install that is told to run `harness-fleet routes` is a
+    broken first five minutes, which is what makes a release feel unusable.
+    """
+    from harness_fleet import setup
+
+    monkeypatch.setattr(setup, "installed_cli_path", lambda: "/opt/fleet/bin/harness-fleet")
+    report = setup.setup_workspace(scope="project", workspace_root=tmp_path, dry_run=True)
+    assert report.stdio_server.command == "/opt/fleet/bin/harness-fleet"
+    assert report.next_commands, "setup hands back the next steps to run"
+    assert all(command[0] == "harness-fleet" for command in report.next_commands), report.next_commands
+    assert all("/opt/fleet/bin" not in command[0] for command in report.next_commands)
+

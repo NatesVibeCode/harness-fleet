@@ -177,7 +177,27 @@ def _counter(values: list[Any]) -> dict[str, int]:
     return dict(sorted(counts.items(), key=lambda kv: (-kv[1], kv[0])))
 
 
-def build_board_payload(db_path: Path | str, run_id: str | None = None) -> dict[str, Any]:
+def _load_evidence(runs_dir: Path | str | None, run_id: str | None) -> dict[str, Any]:
+    """The run's evidence readout, when one was written next to its packet.
+
+    Board rendering must not depend on it: a run scored before evidence reads
+    existed, or one whose workspace has moved, simply has no evidence block.
+    """
+    if not runs_dir or not run_id:
+        return {}
+    path = Path(runs_dir) / str(run_id) / "evidence.json"
+    try:
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return loaded if isinstance(loaded, dict) else {}
+
+
+def build_board_payload(
+    db_path: Path | str,
+    run_id: str | None = None,
+    runs_dir: Path | str | None = None,
+) -> dict[str, Any]:
     """Assemble everything the page needs for one run.
 
     Raises ``KeyError`` when the run does not exist and ``ValueError`` when the
@@ -186,6 +206,9 @@ def build_board_payload(db_path: Path | str, run_id: str | None = None) -> dict[
     store = HarnessStore(db_path)
     snapshot = store.run_snapshot(run_id) if run_id else store.run_snapshot(latest_run_id(store))
     records, task = verified_records_from_snapshot(snapshot)
+    evidence_run = _load_evidence(runs_dir, snapshot.get("run_id"))
+    raw_items = evidence_run.get("items")
+    evidence_items: dict[str, Any] = raw_items if isinstance(raw_items, dict) else {}
     route_by_item = _build_item_route_map(snapshot)
     provenance_by_item = _batches_by_item(snapshot)
     receipts = _receipts(snapshot)
@@ -238,6 +261,7 @@ def build_board_payload(db_path: Path | str, run_id: str | None = None) -> dict[
             },
             "provenance": provenance,
             "diversity": claims.get("source_diversity_count"),
+            "evidence": evidence_items.get(str(record.item_id), {}),
         })
 
     partners.sort(key=lambda p: (p["score"] is None, -(p["score"] or 0), p["id"]))
@@ -286,6 +310,9 @@ def build_board_payload(db_path: Path | str, run_id: str | None = None) -> dict[
             "batches_failed": batches_failed,
             "batches_total": len(batches),
             "attempts_used": snapshot.get("attempts_used"),
+            "tier_capped": len(evidence_run.get("tier_capped") or {}),
+            "evidence_kinds": evidence_run.get("kind_totals") or {},
+            "lone_claims": len(evidence_run.get("contradictions") or {}),
         },
         "checklist": [
             {
@@ -360,6 +387,7 @@ class BoardHandler(BaseHTTPRequestHandler):
     server_version = "HarnessFleetBoard/1.0"
     db_path: Path | None = None
     run_id: str | None = None
+    runs_dir: Path | str | None = None
 
     def log_message(self, fmt: str, *args: Any) -> None:  # quieter default logging
         return
@@ -388,7 +416,7 @@ class BoardHandler(BaseHTTPRequestHandler):
             # ?run=<id> lets the page switch runs without restarting the server.
             requested = (params.get("run") or [""])[0] or self.run_id or None
             try:
-                payload = build_board_payload(self.db_path, requested)  # type: ignore[arg-type]
+                payload = build_board_payload(self.db_path, requested, self.runs_dir)  # type: ignore[arg-type]
             except KeyError as exc:
                 _send_json(self, 404, {"error": str(exc)})
                 return
@@ -415,13 +443,15 @@ def run_board_server(
     port: int = 8100,
     host: str = "127.0.0.1",
     open_browser: bool = False,
+    runs_dir: Path | str | None = None,
 ) -> None:
     """Serve the board until interrupted."""
     BoardHandler.db_path = Path(db_path)
     BoardHandler.run_id = run_id
+    BoardHandler.runs_dir = runs_dir
     server = ThreadingHTTPServer((host, port), BoardHandler)
     url = f"http://{host}:{server.server_port}/"
-    payload = build_board_payload(db_path, run_id)  # fail before opening a page
+    payload = build_board_payload(db_path, run_id, runs_dir)  # fail before opening a page
     print(f"Harness Fleet board: {url}")
     print(f"  run: {payload['run']['run_id']} ({payload['run']['status']})")
     print(f"  {payload['stats']['records']} records · {payload['stats']['quote_count']} quotes · "

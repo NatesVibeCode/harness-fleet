@@ -143,12 +143,38 @@ class ExportNode(ClosedModel):
     filter: ClaimFilter | None = None
 
 
-DagNode = RunNode | RescoreNode | CalibrateNode | FilterNode | ExportNode
+class ReviewNode(ClosedModel):
+    """A bounded uncertainty loop: gather only what the evidence is missing.
+
+    Reads a run, asks the central contract what each record's evidence lacks
+    for its tier, searches for exactly those kinds, rescores the new sources as
+    a child run (so the lineage in ``history`` shows the trajectory), and
+    repeats until every record clears the bar, a round adds nothing new, or
+    ``max_rounds`` is reached. A DAG spec cannot cycle, so the loop lives here
+    and the acyclicity of the graph is preserved.
+    """
+    kind: Literal["review"] = "review"
+    id: str
+    from_run: str
+    task: str | None = None
+    tier: str = "tier_1"
+    require_kinds: list[str] = []
+    max_rounds: int = 2
+    max_entities: int = 5
+    max_results: int = 6
+    backends: list[str] = []
+    sessions: int = 4
+    max_attempts: int = 300
+    policy: RoutePolicy | None = None
+    workspace_root: str | None = None
+
+
+DagNode = RunNode | RescoreNode | CalibrateNode | FilterNode | ExportNode | ReviewNode
 
 
 class DagSpec(ClosedModel):
     name: str
-    nodes: list[RunNode | RescoreNode | CalibrateNode | FilterNode | ExportNode]
+    nodes: list[RunNode | RescoreNode | CalibrateNode | FilterNode | ExportNode | ReviewNode]
 
     @model_validator(mode="after")
     def check_graph(self) -> DagSpec:
@@ -171,6 +197,9 @@ class DagSpec(ClosedModel):
 
         deps: dict[str, set[str]] = {}
         for node in self.nodes:
+            if isinstance(node, ReviewNode):
+                deps[node.id] = set()
+                continue
             if isinstance(node, RunNode):
                 refs = list(node.ids_from)
                 for ref in refs:
@@ -388,6 +417,138 @@ def _execute_calibrate_node(
     }
 
 
+def _execute_review_node(
+    node: ReviewNode,
+    store: HarnessStore,
+    root: Path,
+    state: dict[str, Any],
+    dag_id: str,
+) -> dict[str, Any]:
+    """Run the uncertainty loop for one node, recording every round."""
+    from . import contracts
+    from .bundler import bundle_records
+    from .discover import run_discovery
+    from .engine import Engine
+    from .evidence import coverage
+    from .export import verified_records_from_snapshot
+    from .input_data import iter_input_items
+    from .sources import classify_source_category, entity_key_for
+
+    def bar_kinds() -> tuple[str, ...]:
+        return tuple(node.require_kinds) or contracts.TIER_MINIMUMS.get(node.tier, ())
+
+    run_id = _resolve_run_ref(state, dag_id, node.from_run)
+    text_by_id: dict[str, str] = {}
+    rounds: list[dict[str, Any]] = []
+    for round_index in range(max(1, int(node.max_rounds))):
+        snapshot = store.run_snapshot(run_id)
+        records, task = verified_records_from_snapshot(snapshot)
+        # The evidence read needs the text the parent run scored, which lives in
+        # its input file; without it every claim looks unsupported.
+        if not text_by_id:
+            input_path = snapshot.get("input_path") or (snapshot.get("run") or {}).get("input_path")
+            if input_path and Path(str(input_path)).is_file():
+                try:
+                    for item in iter_input_items(str(input_path)):
+                        text_by_id[str(item.item_id)] = item.text or ""
+                except Exception:
+                    pass
+        if not records:
+            break
+        # Which entities are short of the bar, and of what exactly?
+        gaps: dict[str, list[str]] = {}
+        for record in records:
+            item_id = str(record.item_id)
+            kinds = coverage(text_by_id.get(item_id, ""), record.source_uri or "")
+            missing = [kind for kind in bar_kinds() if not kinds.get(kind)]
+            if missing:
+                gaps[item_id] = missing
+        if not gaps:
+            rounds.append({"round": round_index, "run_id": run_id, "gaps": {}, "added": 0, "status": "satisfied"})
+            break
+        selected = dict(list(gaps.items())[: max(1, int(node.max_entities))])
+        queries: list[str] = []
+        for entity, missing in selected.items():
+            queries.extend(contracts.queries_for_gaps(entity, missing))
+        if not queries:
+            rounds.append({"round": round_index, "run_id": run_id, "gaps": selected, "added": 0, "status": "no_query"})
+            break
+        items, _report = run_discovery(
+            queries=queries,
+            backends=node.backends or ["ddgs", "hn"],
+            max_results=int(node.max_results),
+            delay=0.5,
+            min_source_coverage=0.0,
+        )
+        fresh = [
+            item for item in items
+            if str(item.item_id) in selected
+            or entity_key_for(item.source_uri or "", item.text or "", item.metadata or {}) in selected
+        ]
+        if not fresh:
+            rounds.append({"round": round_index, "run_id": run_id, "gaps": selected, "added": 0, "status": "nothing_new"})
+            break
+        keyed = [
+            item.model_copy(update={
+                "item_id": entity_key_for(item.source_uri or "", item.text or "", item.metadata or {}) or item.item_id
+            })
+            for item in fresh
+        ]
+        dossiers = bundle_records(keyed)
+        round_dir = root / "runs" / dag_id / f"review-{node.id}-r{round_index + 1}"
+        round_dir.mkdir(parents=True, exist_ok=True)
+        evidence_csv = round_dir / "evidence.csv"
+        import csv as _csv
+
+        with evidence_csv.open("w", encoding="utf-8", newline="") as handle:
+            writer = _csv.writer(handle)
+            writer.writerow(["item_id", "text", "source_uri"])
+            for dossier in dossiers:
+                writer.writerow([dossier.item_id, dossier.text, dossier.source_uri or ""])
+                text_by_id[str(dossier.item_id)] = dossier.text or ""
+        next_run = f"{dag_id}-{node.id}-r{round_index + 1}"
+        Engine(task=task, store=store, policy=node.policy).run_campaign(
+            raw_items=iter_input_items(evidence_csv, id_column="item_id", text_column="text", uri_column="source_uri"),
+            run_id=next_run,
+            input_path=str(evidence_csv),
+            concurrency=int(node.sessions),
+            max_attempts=int(node.max_attempts),
+            output_packet_path=round_dir / "clean_packet.json",
+            policy=node.policy,
+            parent_run_id=run_id,
+        )
+        rounds.append({
+            "round": round_index,
+            "run_id": next_run,
+            "parent_run": run_id,
+            "gaps": selected,
+            "queries": queries,
+            "added": len(dossiers),
+            "status": "rescored",
+        })
+        run_id = next_run
+
+    final_snapshot = store.run_snapshot(run_id)
+    final_records, _task = verified_records_from_snapshot(final_snapshot)
+    remaining: dict[str, list[str]] = {}
+    for record in final_records:
+        item_id = str(record.item_id)
+        kinds = coverage(text_by_id.get(item_id, ""), record.source_uri or "")
+        missing = [kind for kind in bar_kinds() if not kinds.get(kind)]
+        if missing:
+            remaining[item_id] = missing
+    return {
+        "run_id": run_id,
+        "rounds": rounds,
+        "rounds_used": len([entry for entry in rounds if entry.get("status") == "rescored"]),
+        "unsatisfied": remaining,
+        "satisfied": not remaining,
+        "categories": sorted({
+            classify_source_category(record.source_uri or "") for record in final_records
+        }),
+    }
+
+
 def _combine_ids(sets: list[set[str]], mode: str) -> set[str] | None:
     if not sets:
         return None
@@ -413,6 +574,22 @@ def _run_complete(store: HarnessStore, run_id: str) -> bool:
     )
 
 
+def _ensure_routes(store: HarnessStore, policy: RoutePolicy | None) -> None:
+    """A DAG run gets the same first-run route refresh the CLI gives `run`."""
+    if policy is not None and getattr(policy, "allowed_routes", None):
+        return
+    from .catalog import RouteCatalog
+
+    catalog = RouteCatalog(db_path=store.path)
+    usable = [
+        route for route in catalog.data.get("routes", [])
+        if route.get("enabled") and route.get("price_state") == "price_observed_zero"
+    ]
+    if usable:
+        return
+    print("No verified-free route yet; refreshing route prices from the providers...")
+    catalog.refresh_all()
+
 def run_dag(
     spec: DagSpec,
     store: HarnessStore,
@@ -436,6 +613,7 @@ def run_dag(
     dag_dir.mkdir(parents=True, exist_ok=True)
     sidecar = dag_dir / "dag.json"
 
+    _ensure_routes(store, next((node.policy for node in spec.nodes if isinstance(node, RunNode)), None))
     state: dict[str, Any] = {"dag_id": dag_id, "spec_digest": spec_digest(spec), "nodes": {}}
     if resume and sidecar.is_file():
         try:
@@ -453,6 +631,10 @@ def run_dag(
     for node_id in order:
         node = by_id[node_id]
         saved = state["nodes"].get(node_id) if isinstance(state.get("nodes"), dict) else None
+        if isinstance(node, ReviewNode):
+            state["nodes"][node_id] = _execute_review_node(node, store, root, state, dag_id)
+            sidecar.write_text(json.dumps(state, indent=2), encoding="utf-8")
+            continue
         if isinstance(node, RunNode):
             run_id = f"{dag_id}-{node_id}"
             if resume and isinstance(saved, dict) and saved.get("run_id") == run_id and _run_complete(store, run_id):

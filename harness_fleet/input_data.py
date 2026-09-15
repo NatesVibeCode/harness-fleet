@@ -51,6 +51,11 @@ def _strip_html(text: str) -> str:
 
 def _extract_pdf_text(path: Path) -> str:
     """Best-effort PDF extraction using pypdf if available; falls back to raw bytes decode."""
+    import logging
+
+    # See discover._extract_pdf_bytes: library chatter is not run output.
+    for noisy in ("pypdf", "pdfminer", "fontTools"):
+        logging.getLogger(noisy).setLevel(logging.ERROR)
     try:
         from pypdf import PdfReader
 
