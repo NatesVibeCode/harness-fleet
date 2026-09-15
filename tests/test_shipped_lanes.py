@@ -13,8 +13,14 @@ SHIPPED = REPO / "lanes"
 
 
 def test_every_shipped_lane_validates():
-    """A lane that ships must be runnable as installed, with no workspace setup."""
-    loaded = lane_module.load_lanes(REPO, channels=set(load_channels(REPO)), backends=set(BACKENDS))
+    """A lane that ships must be runnable as installed, with no workspace setup.
+
+    The lanes live in package data, so this asserts on what an *install* carries
+    — a product repo has no repo-root lanes directory and must still pass.
+    """
+    loaded = lane_module.shipped_lanes()
+    assert loaded
+    loaded = lane_module.load_available_lanes(REPO, channels=set(load_channels(REPO)), backends=set(BACKENDS))
     assert loaded, "the package ships lanes"
     for name, lane in loaded.items():
         assert lane.description, f"{name} explains what it is for"
@@ -23,12 +29,12 @@ def test_every_shipped_lane_validates():
 
 
 def test_the_three_products_ship_as_lanes():
-    assert set(lane_module.load_lanes(REPO)) >= {"account", "career", "partner"}
+    assert set(lane_module.shipped_lanes()) >= {"account", "career", "partner"}
 
 
 def test_the_career_lane_is_the_role_search_it_claims_to_be():
     """The lane that motivates the tuning plan: titles, remote, its own preset."""
-    career = lane_module.load_lanes(REPO)["career"]
+    career = lane_module.shipped_lanes()["career"]
     assert "enterprise sales" in career.title_include
     assert career.remote is True
     assert career.preset == "triage"
