@@ -1,0 +1,851 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Pursue committed Career Fleet target companies with relationship context, cadence, and evidence in one workspace.">
+  <meta id="themeColorMeta" name="theme-color" content="#f2f1ed">
+  <title>Career Fleet Targets — Its a free tool</title>
+  <script>
+    (function () {
+      try {
+        var storedTheme = localStorage.getItem("career-fleet-theme");
+        document.documentElement.dataset.theme = storedTheme === "dark" || storedTheme === "light"
+          ? storedTheme
+          : (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+      } catch (error) {
+        document.documentElement.dataset.theme = "light";
+      }
+    }());
+  </script>
+  <style>
+    /* OD-LAYOUT-PRIMITIVES v1 — structure only: display, flex/grid, overflow, wrapping, ratio. */
+    @layer od-layout {
+      :where(.od-stack,.od-row,.od-row-top,.od-cluster,.od-grid,.od-field,.od-stat,.od-cell,.od-tile) > :where(*) { min-width: 0; }
+      .od-stack { display: flex; flex-direction: column; gap: var(--od-gap, 8px); }
+      .od-row { display: flex; align-items: center; gap: var(--od-gap, 8px); }
+      .od-row-top { display: flex; align-items: flex-start; gap: var(--od-gap, 8px); }
+      .od-cluster { display: flex; flex-wrap: wrap; align-items: center; gap: var(--od-gap, 8px); }
+      .od-fill { flex: 1 1 0; min-width: 0; }
+      .od-fixed { flex: none; }
+      .od-grid { display: grid; gap: var(--od-gap, 12px); grid-template-columns: repeat(var(--od-cols, 3), minmax(0, 1fr)); }
+      .od-stat, .od-field, .od-cell { display: grid; gap: var(--od-gap, 2px); }
+      :where(.od-stat,.od-field,.od-cell) > :where(*) { display: block; }
+      .od-tile { display: grid; grid-template-rows: auto 1fr; }
+      :where(.od-tile) > :where(*) { display: block; }
+      .od-media { display: block; width: 100%; height: auto; aspect-ratio: var(--od-ratio, auto); }
+      .od-media-cover { object-fit: cover; }
+      .od-truncate { display: block; max-width: 100%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+      .od-clamp-2, .od-clamp-3 { display: -webkit-box; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+      .od-clamp-2 { -webkit-line-clamp: 2; }
+      .od-clamp-3 { -webkit-line-clamp: 3; }
+      .od-lines-2 { min-height: calc(2 * 1.4em); }
+      .od-nowrap { white-space: nowrap; }
+      .od-keep { word-break: keep-all; overflow-wrap: anywhere; }
+      .od-screen { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; height: 100%; }
+      .od-scroll { overflow-y: auto; overscroll-behavior: contain; min-height: 0; }
+      .od-rail { display: flex; gap: var(--od-gap, 8px); overflow-x: auto; scroll-snap-type: x proximity; scrollbar-width: none; padding-inline: var(--od-rail-pad, 16px); scroll-padding-inline: var(--od-rail-pad, 16px); }
+      .od-rail::-webkit-scrollbar { display: none; }
+      :where(.od-rail) > :where(*) { flex: none; scroll-snap-align: start; }
+      :where(.od-rail) > :where(:last-child) { margin-inline-end: var(--od-rail-pad, 16px); }
+      .od-spacer { flex: none; visibility: hidden; pointer-events: none; }
+      .od-touch { min-width: 44px; min-height: 44px; }
+    }
+    /* /OD-LAYOUT-PRIMITIVES v1 */
+
+    :root {
+      color-scheme: light;
+      --background: #f2f1ed;
+      --foreground: #26251e;
+      --surface: #e6e5e0;
+      --surface-raised: #ebeae5;
+      --surface-soft: #f7f7f4;
+      --button-surface: #ebeae5;
+      --accent: #f54e00;
+      --accent-quiet: rgba(245, 78, 0, 0.1);
+      --accent-deep: #cf2d56;
+      --accent-gradient: radial-gradient(circle at 18% 0%, rgba(255, 255, 255, 0.2), transparent 42%), linear-gradient(120deg, var(--accent) 0%, var(--accent-deep) 100%);
+      --accent-gradient-active: radial-gradient(circle at 82% 100%, rgba(255, 255, 255, 0.14), transparent 42%), linear-gradient(300deg, var(--accent-deep) 0%, var(--accent) 100%);
+      --surface-gradient: linear-gradient(135deg, var(--surface-raised) 0%, var(--surface) 74%, var(--background) 140%);
+      --accent-soft-gradient: radial-gradient(circle at 0% 0%, rgba(245, 78, 0, 0.14), transparent 58%), linear-gradient(135deg, rgba(245, 78, 0, 0.12), rgba(207, 45, 86, 0.09));
+      --primary-foreground: #ffffff;
+      --muted: rgba(38, 37, 30, 0.68);
+      --meta: rgba(38, 37, 30, 0.48);
+      --border: rgba(38, 37, 30, 0.12);
+      --border-strong: rgba(38, 37, 30, 0.22);
+      --success: #1f8a65;
+      --danger: #cf2d56;
+      --warning: #c08532;
+      --font-display: "CursorGothic", "CursorGothic Fallback", system-ui, "Helvetica Neue", Helvetica, Arial, sans-serif;
+      --font-body: "jjannon", "Iowan Old Style", "Palatino Linotype", "URW Palladio L", P052, ui-serif, Georgia, Cambria, "Times New Roman", Times, serif;
+      --font-mono: "berkeleyMono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+      --text-xs: 0.75rem;
+      --text-sm: 0.875rem;
+      --text-base: 1rem;
+      --text-lg: 1.2rem;
+      --text-xl: 1.5rem;
+      --text-2xl: 2.25rem;
+      --leading-body: 1.6;
+      --space-1: 4px;
+      --space-2: 8px;
+      --space-3: 12px;
+      --space-4: 16px;
+      --space-5: 20px;
+      --space-6: 24px;
+      --space-8: 32px;
+      --space-12: 48px;
+      --radius-sm: 8px;
+      --radius-md: 10px;
+      --radius-pill: 9999px;
+      --line: 1px;
+      --motion-fast: 150ms;
+      --motion-base: 200ms;
+      --shadow-raised: 0 24px 56px rgba(0, 0, 0, 0.14), 0 0 0 1px var(--border);
+    }
+    :root[data-theme="dark"] {
+      color-scheme: dark;
+      --background: #26251e;
+      --foreground: #f2f1ed;
+      --surface: #3a3932;
+      --surface-raised: #46443b;
+      --surface-soft: #2d2c26;
+      --button-surface: #3a3932;
+      --accent: #f54e00;
+      --accent-quiet: rgba(245, 78, 0, 0.18);
+      --accent-deep: #f08aa2;
+      --accent-gradient: radial-gradient(circle at 18% 0%, rgba(255, 255, 255, 0.16), transparent 42%), linear-gradient(120deg, var(--accent) 0%, var(--accent-deep) 100%);
+      --accent-gradient-active: radial-gradient(circle at 82% 100%, rgba(255, 255, 255, 0.12), transparent 42%), linear-gradient(300deg, var(--accent-deep) 0%, var(--accent) 100%);
+      --surface-gradient: linear-gradient(135deg, var(--surface-raised) 0%, var(--surface) 74%, var(--background) 140%);
+      --accent-soft-gradient: radial-gradient(circle at 0% 0%, rgba(245, 78, 0, 0.22), transparent 58%), linear-gradient(135deg, rgba(245, 78, 0, 0.2), rgba(240, 138, 162, 0.14));
+      --primary-foreground: #ffffff;
+      --muted: rgba(242, 241, 237, 0.74);
+      --meta: rgba(242, 241, 237, 0.56);
+      --border: rgba(242, 241, 237, 0.2);
+      --border-strong: rgba(242, 241, 237, 0.36);
+      --success: #9fc9a2;
+      --danger: #f08aa2;
+      --warning: #dfa88f;
+      --shadow-raised: 0 24px 56px rgba(0, 0, 0, 0.34), 0 0 0 1px var(--border);
+    }
+    *, *::before, *::after { box-sizing: border-box; }
+    html { min-width: 320px; background: var(--background); }
+    body { margin: 0; min-width: 320px; min-height: 100dvh; background: var(--background); color: var(--foreground); font-family: var(--font-body); font-size: var(--text-base); line-height: var(--leading-body); text-rendering: optimizeLegibility; -webkit-font-smoothing: antialiased; }
+    button, input { font: inherit; }
+    button { cursor: pointer; }
+    a { color: var(--accent); }
+    h1, h2, h3, h4, p, dl, dd, ul { margin: 0; }
+    h1, h2, h3, h4 { font-family: var(--font-display); line-height: 1.2; letter-spacing: -0.02em; }
+    [hidden] { display: none !important; }
+    :focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
+    .skip-link { position: fixed; z-index: 10; top: var(--space-2); left: var(--space-2); padding: var(--space-2) var(--space-3); border: var(--line) solid var(--foreground); border-radius: var(--radius-sm); background: var(--background); color: var(--foreground); transform: translateY(-180%); transition: transform var(--motion-fast) ease-out; }
+    .skip-link:focus { transform: translateY(0); }
+    .app-shell { min-height: 100dvh; }
+    .topbar { position: sticky; top: 0; z-index: 5; display: flex; align-items: center; gap: var(--space-3); min-height: 64px; padding: var(--space-2) clamp(var(--space-3), 3vw, var(--space-6)); border-bottom: var(--line) solid var(--border); background: var(--background); }
+    .brand { display: grid; gap: 1px; flex: none; line-height: 1.15; }
+    .brand-name { font-family: var(--font-display); font-size: var(--text-sm); font-weight: 700; }
+    .product-name { color: var(--muted); font-size: var(--text-sm); }
+    .top-nav { display: flex; align-items: center; gap: var(--space-1); margin-left: var(--space-4); }
+    .nav-link { display: inline-flex; align-items: center; min-height: 44px; padding: 0 var(--space-3); border: var(--line) solid transparent; border-radius: var(--radius-sm); color: var(--muted); text-decoration: none; font-size: var(--text-sm); font-weight: 700; }
+    .nav-link:hover, .nav-link[aria-current="page"] { border-color: var(--border); background: var(--surface-gradient); color: var(--foreground); }
+    .top-actions { display: flex; align-items: center; gap: var(--space-2); margin-left: auto; }
+    .button { min-height: 44px; display: inline-flex; align-items: center; justify-content: center; gap: var(--space-2); padding: 0 var(--space-3); border: var(--line) solid var(--border); border-radius: var(--radius-sm); background: var(--button-surface); color: var(--foreground); font-size: var(--text-sm); font-weight: 700; line-height: 1.2; text-decoration: none; white-space: nowrap; transition: background-color var(--motion-fast) ease, border-color var(--motion-fast) ease, color var(--motion-fast) ease, transform var(--motion-fast) ease; }
+    .button:hover { border-color: var(--accent); background: var(--surface-gradient); }
+    .button:active { transform: translateY(1px); }
+    .button-primary { border-color: var(--accent); background: var(--accent-gradient); color: var(--primary-foreground); }
+    .button-primary:hover { border-color: var(--accent); background: var(--accent-gradient); color: var(--primary-foreground); }
+    .button-primary:active { background: var(--accent-gradient-active); }
+    .button-quiet { background: var(--button-surface); }
+    .button-small { min-height: 36px; padding-inline: var(--space-2); }
+    .button[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-soft-gradient); }
+    .button[disabled] { cursor: not-allowed; opacity: 0.55; }
+    .icon { width: 18px; height: 18px; display: block; flex: none; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+    .main-shell { width: min(1480px, 100%); margin-inline: auto; padding: clamp(var(--space-4), 4vw, var(--space-8)) clamp(var(--space-3), 3vw, var(--space-6)) var(--space-12); }
+    .page-header { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--space-6); align-items: end; margin-bottom: var(--space-6); }
+    .page-header-copy { display: grid; gap: var(--space-2); max-width: 72ch; }
+    .eyebrow { color: var(--muted); font-family: var(--font-mono); font-size: var(--text-xs); letter-spacing: 0.08em; text-transform: uppercase; }
+    .page-header h1 { font-size: clamp(2rem, 4vw, 3.25rem); text-wrap: balance; }
+    .page-header p { max-width: 66ch; color: var(--muted); }
+    .header-actions { display: flex; flex-wrap: wrap; justify-content: end; gap: var(--space-2); }
+    .source-status { display: inline-flex; align-items: center; gap: var(--space-2); min-height: 36px; padding: 0 var(--space-3); border: var(--line) solid var(--border); border-radius: var(--radius-pill); color: var(--muted); font-family: var(--font-mono); font-size: var(--text-xs); }
+    .source-status::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+    .source-status.is-live { color: var(--success); }
+    .source-status.is-error { color: var(--danger); }
+    .metric-grid { --od-cols: 5; margin-bottom: var(--space-6); }
+    .metric-card { min-height: 112px; align-content: space-between; padding: var(--space-4); border: var(--line) solid var(--border); border-radius: var(--radius-sm); background: var(--surface); }
+    .metric-card strong { display: block; font-family: var(--font-display); font-size: clamp(1.8rem, 4vw, 2.5rem); line-height: 1; font-variant-numeric: tabular-nums; }
+    .metric-card span { display: block; color: var(--muted); font-size: var(--text-sm); }
+    .metric-card.is-emphasis { background: var(--surface-gradient); }
+    .metric-card.is-alert strong { color: var(--accent); }
+    .target-grid { display: grid; grid-template-columns: minmax(196px, 224px) minmax(320px, 1fr) minmax(360px, 500px); gap: var(--space-4); align-items: start; }
+    .panel { min-width: 0; border: var(--line) solid var(--border); border-radius: var(--radius-md); background: var(--surface-soft); }
+    .panel-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-2); padding: var(--space-4); border-bottom: var(--line) solid var(--border); }
+    .panel-heading h2 { font-size: var(--text-xl); }
+    .panel-heading p { margin-top: var(--space-1); color: var(--muted); font-size: var(--text-sm); }
+    .filter-panel { padding-bottom: var(--space-3); }
+    .filter-group { display: grid; gap: var(--space-2); padding: var(--space-3) var(--space-4); border-top: var(--line) solid var(--border); }
+    .filter-group h3 { font-family: var(--font-mono); font-size: var(--text-xs); letter-spacing: 0.08em; text-transform: uppercase; }
+    .filter-list { display: grid; gap: 2px; }
+    .filter-button { min-height: 40px; padding: 0 var(--space-2); border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--muted); text-align: left; }
+    .filter-button:hover { background: var(--surface-gradient); color: var(--foreground); }
+    .filter-button[aria-pressed="true"] { background: var(--accent-soft-gradient); color: var(--foreground); font-weight: 700; }
+    .filter-note { margin: var(--space-3) var(--space-4) 0; padding-top: var(--space-3); border-top: var(--line) solid var(--border); color: var(--muted); font-size: var(--text-sm); }
+    .work-panel { overflow: hidden; }
+    .work-toolbar { display: grid; gap: var(--space-3); padding: var(--space-4); border-bottom: var(--line) solid var(--border); }
+    .work-toolbar-top { display: flex; align-items: start; justify-content: space-between; gap: var(--space-3); }
+    .work-toolbar h2 { font-size: var(--text-xl); }
+    .work-toolbar p { margin-top: var(--space-1); color: var(--muted); font-size: var(--text-sm); }
+    .search-field { position: relative; }
+    .search-field .icon { position: absolute; top: 13px; left: 13px; color: var(--muted); }
+    .search-input { width: 100%; min-height: 48px; padding: 0 var(--space-3) 0 44px; border: var(--line) solid var(--border); border-radius: var(--radius-sm); background: var(--background); color: var(--foreground); outline: none; }
+    .search-input::placeholder { color: var(--meta); opacity: 1; }
+    .search-input:focus-visible { border-color: var(--accent); }
+    .list-meta { color: var(--muted); font-family: var(--font-mono); font-size: var(--text-xs); }
+    .list { display: grid; gap: 1px; background: var(--border); }
+    .list-empty { padding: var(--space-8) var(--space-6); background: var(--surface-soft); }
+    .list-empty h3 { font-size: var(--text-lg); }
+    .list-empty p { margin-top: var(--space-2); max-width: 48ch; color: var(--muted); }
+    .target-item { width: 100%; display: grid; gap: var(--space-2); padding: var(--space-4); border: 0; background: var(--surface-soft); color: var(--foreground); text-align: left; transition: background-color var(--motion-fast) ease, box-shadow var(--motion-fast) ease; }
+    .target-item:hover { background: var(--surface-gradient); }
+    .target-item[aria-current="true"] { background: var(--surface-gradient); box-shadow: inset 3px 0 0 var(--accent); }
+    .target-top, .target-bottom { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-3); }
+    .target-kicker { color: var(--muted); font-family: var(--font-mono); font-size: var(--text-xs); letter-spacing: 0.06em; text-transform: uppercase; }
+    .target-name { display: block; margin-top: 2px; font-family: var(--font-display); font-size: var(--text-base); font-weight: 700; line-height: 1.3; }
+    .target-contact { display: block; margin-top: 2px; color: var(--muted); font-size: var(--text-sm); }
+    .target-context { color: var(--foreground); font-size: var(--text-sm); line-height: 1.45; }
+    .target-meta { color: var(--muted); font-family: var(--font-mono); font-size: var(--text-xs); }
+    .target-right { display: grid; justify-items: end; gap: var(--space-1); flex: none; }
+    .status-badge { display: inline-flex; align-items: center; gap: var(--space-1); min-height: 28px; padding: 0 var(--space-2); border: var(--line) solid var(--border); border-radius: var(--radius-pill); background: var(--surface); color: var(--muted); font-family: var(--font-mono); font-size: var(--text-xs); white-space: nowrap; }
+    .status-badge::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+    .status-badge.is-active { border-color: var(--accent); background: var(--accent-soft-gradient); color: var(--accent); }
+    .status-badge.is-replied { color: var(--success); }
+    .status-badge.is-paused { color: var(--warning); }
+    .due-mark { color: var(--accent); font-family: var(--font-mono); font-size: var(--text-xs); }
+    .detail-panel { position: sticky; top: 80px; min-height: 540px; overflow: hidden; }
+    .detail-scroll { max-height: calc(100dvh - 104px); overflow-y: auto; }
+    .detail-header { display: grid; gap: var(--space-2); padding: var(--space-5); border-bottom: var(--line) solid var(--border); background: var(--surface); }
+    .detail-header h2 { font-size: clamp(1.5rem, 3vw, 2.25rem); overflow-wrap: anywhere; }
+    .detail-subtitle { color: var(--muted); font-size: var(--text-lg); }
+    .detail-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); padding-top: var(--space-2); }
+    .detail-body { display: grid; gap: var(--space-5); padding: var(--space-5); }
+    .detail-section { display: grid; gap: var(--space-2); }
+    .detail-section h3 { font-family: var(--font-mono); font-size: var(--text-xs); letter-spacing: 0.08em; text-transform: uppercase; }
+    .detail-section p { color: var(--muted); overflow-wrap: anywhere; }
+    .detail-section p.strong-copy { color: var(--foreground); }
+    .context-block { display: grid; gap: var(--space-3); padding: var(--space-3); border: var(--line) solid var(--border); border-radius: var(--radius-sm); background: var(--background); }
+    .context-row { display: grid; gap: var(--space-1); }
+    .context-row + .context-row { padding-top: var(--space-3); border-top: var(--line) solid var(--border); }
+    .context-label { color: var(--muted); font-family: var(--font-mono); font-size: var(--text-xs); text-transform: uppercase; letter-spacing: 0.06em; }
+    .contacts-list, .touch-list, .interaction-list, .record-list { display: grid; gap: var(--space-2); }
+    .contact-card, .touch-card, .interaction-card, .record-card { display: grid; gap: var(--space-2); padding: var(--space-3); border: var(--line) solid var(--border); border-radius: var(--radius-sm); background: var(--surface); }
+    .contact-top, .touch-top, .interaction-top, .record-top { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-2); }
+    .contact-card h4, .touch-card h4, .interaction-card h4, .record-card h4 { font-size: var(--text-base); }
+    .contact-card p, .touch-card p, .interaction-card p, .record-card p { color: var(--muted); font-size: var(--text-sm); overflow-wrap: anywhere; }
+    .contact-links { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+    .contact-links a { font-size: var(--text-sm); }
+    .state-label { color: var(--muted); font-family: var(--font-mono); font-size: var(--text-xs); text-transform: uppercase; }
+    .state-label.is-due, .state-label.is-overdue { color: var(--accent); }
+    .state-label.is-complete { color: var(--success); }
+    .touch-card.is-overdue { border-color: var(--accent); background: var(--accent-soft-gradient); }
+    .channel-label { color: var(--foreground); font-family: var(--font-mono); font-size: var(--text-xs); }
+    .draft-copy { padding: var(--space-2); border-left: 3px solid var(--accent); background: var(--accent-soft-gradient); color: var(--foreground); font-size: var(--text-sm); overflow-wrap: anywhere; white-space: pre-wrap; }
+    .outcome-label { color: var(--foreground); font-family: var(--font-mono); font-size: var(--text-xs); text-transform: uppercase; }
+    .empty-detail { display: grid; gap: var(--space-2); padding: var(--space-6); }
+    .empty-detail h2 { font-size: var(--text-lg); }
+    .empty-detail p { color: var(--muted); }
+    .unavailable { display: grid; gap: var(--space-2); padding: var(--space-5); border: var(--line) dashed var(--danger); border-radius: var(--radius-sm); background: var(--surface-soft); }
+    .unavailable h2 { font-size: var(--text-lg); }
+    .unavailable p { color: var(--muted); }
+    code { color: var(--foreground); font-family: var(--font-mono); font-size: var(--text-sm); overflow-wrap: anywhere; }
+    .toast { position: fixed; z-index: 20; right: var(--space-4); bottom: var(--space-4); max-width: min(420px, calc(100% - 32px)); padding: var(--space-3) var(--space-4); border: var(--line) solid var(--foreground); border-radius: var(--radius-sm); background: var(--foreground); color: var(--background); font-size: var(--text-sm); font-weight: 700; opacity: 0; pointer-events: none; transform: translateY(8px); transition: opacity var(--motion-fast) ease, transform var(--motion-fast) ease; }
+    .toast.is-visible { opacity: 1; transform: translateY(0); }
+    @media (max-width: 1280px) {
+      .target-grid { grid-template-columns: minmax(196px, 224px) minmax(0, 1fr); }
+      .detail-panel { position: static; grid-column: 1 / -1; }
+      .detail-scroll { max-height: none; }
+    }
+    @media (max-width: 900px) {
+      .metric-grid { --od-cols: 3; }
+    }
+    @media (max-width: 760px) {
+      .topbar { align-items: flex-start; flex-wrap: wrap; }
+      .top-nav { order: 3; width: 100%; margin-left: 0; }
+      .top-actions { margin-left: auto; }
+      .page-header { grid-template-columns: 1fr; align-items: start; }
+      .header-actions { justify-content: start; }
+      .metric-grid { --od-cols: 2; }
+      .target-grid { grid-template-columns: 1fr; }
+      .filter-panel { display: grid; grid-template-columns: 1fr; }
+      .filter-panel .panel-heading { border-bottom: 0; }
+      .filter-panel .filter-group { border-top: var(--line) solid var(--border); }
+    }
+    @media (max-width: 520px) {
+      .product-name, .top-actions .button-copy { display: none; }
+      .topbar { padding-inline: var(--space-2); }
+      .main-shell { padding-inline: var(--space-2); }
+      .metric-card { min-height: 96px; padding: var(--space-3); }
+      .work-toolbar-top, .target-top, .target-bottom { align-items: flex-start; flex-direction: column; }
+      .target-right { justify-items: start; }
+      .detail-header, .detail-body { padding: var(--space-4); }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { scroll-behavior: auto !important; transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; }
+    }
+  </style>
+</head>
+<body>
+  <a class="skip-link" href="#mainContent">Skip to main content</a>
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="brand" aria-label="Its a free tool, Career Fleet Targets">
+        <span class="brand-name">Its a free tool</span>
+        <span class="product-name">Career Fleet · Targets</span>
+      </div>
+      <nav class="top-nav" aria-label="Primary navigation">
+        <a class="nav-link" href="index.html">Matches</a>
+        <a class="nav-link" href="crm.html" aria-current="page">Targets</a>
+      </nav>
+      <div class="top-actions">
+        <button class="button button-quiet" id="themeButton" type="button" data-action="toggle-theme" aria-pressed="false" aria-label="Use dark mode">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18Zm0 0v18"></path></svg>
+          <span class="button-copy" id="themeButtonLabel">Dark mode</span>
+        </button>
+        <button class="button button-primary" id="refreshButton" type="button" data-action="refresh-data">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 0 0-14-4L4 9m0 0V5m0 4h4M4 13a8 8 0 0 0 14 4l2-2m0 0v4m0-4h-4"></path></svg>
+          <span class="button-copy">Refresh targets</span>
+        </button>
+      </div>
+    </header>
+
+    <main id="mainContent" class="main-shell" tabindex="-1">
+      <section class="page-header" aria-labelledby="pageTitle">
+        <div class="page-header-copy">
+          <span class="eyebrow">Career Fleet / committed targets</span>
+          <h1 id="pageTitle">Pursue the companies you chose.</h1>
+          <p>This is the follow-through workspace for targets you have already decided to pursue. Keep the relationship context, cadence, drafts, and outcomes together so every next touch has a reason.</p>
+        </div>
+        <div class="header-actions">
+          <span class="source-status" id="sourceStatus" aria-live="polite">Connecting to target records</span>
+          <a class="button button-quiet" href="index.html">Open matches</a>
+        </div>
+      </section>
+
+      <section class="od-grid metric-grid" aria-label="Target workspace overview">
+        <div class="od-stat metric-card is-emphasis"><strong id="metricTargets">—</strong><span>Target companies</span></div>
+        <div class="od-stat metric-card"><strong id="metricContacts">—</strong><span>People in scope</span></div>
+        <div class="od-stat metric-card"><strong id="metricSequences">—</strong><span>Active sequences</span></div>
+        <div class="od-stat metric-card is-alert"><strong id="metricDue">—</strong><span>Touches due</span></div>
+        <div class="od-stat metric-card"><strong id="metricReplies">—</strong><span>Replies or meetings</span></div>
+      </section>
+
+      <section class="target-grid" aria-label="Committed target workspace">
+        <aside class="panel filter-panel" aria-labelledby="filterTitle">
+          <div class="panel-heading">
+            <div><h2 id="filterTitle">Target set</h2><p>Companies already chosen for pursuit.</p></div>
+          </div>
+          <div class="filter-group">
+            <h3>Working set</h3>
+            <div class="filter-list">
+              <button class="filter-button" type="button" data-action="set-filter" data-filter="all" aria-pressed="true">All targets</button>
+              <button class="filter-button" type="button" data-action="set-filter" data-filter="needs_action" aria-pressed="false">Needs next step</button>
+              <button class="filter-button" type="button" data-action="set-filter" data-filter="active" aria-pressed="false">Active sequences</button>
+              <button class="filter-button" type="button" data-action="set-filter" data-filter="replied" aria-pressed="false">Replies and meetings</button>
+              <button class="filter-button" type="button" data-action="set-filter" data-filter="paused" aria-pressed="false">Paused targets</button>
+            </div>
+          </div>
+          <p class="filter-note">This workspace reads the persistent CRM snapshot. It does not discover new employers or send outreach on its own.</p>
+        </aside>
+
+        <section class="panel work-panel" aria-labelledby="targetListTitle">
+          <div class="work-toolbar">
+            <div class="work-toolbar-top">
+              <div><h2 id="targetListTitle">Committed companies</h2><p id="listSubtitle">Relationship context and next touches, together.</p></div>
+              <span class="list-meta" id="listCount" aria-live="polite">—</span>
+            </div>
+            <label class="search-field" for="targetSearch">
+              <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="m20 20-4-4"></path></svg>
+              <span class="visually-hidden">Search target companies</span>
+              <input class="search-input" id="targetSearch" type="search" placeholder="Search company, person, context, or status" autocomplete="off">
+            </label>
+          </div>
+          <div class="list" id="targetList" role="list" aria-label="Committed Career Fleet target companies"></div>
+        </section>
+
+        <aside class="panel detail-panel" aria-label="Selected target details">
+          <div class="detail-scroll" id="targetDetail"></div>
+        </aside>
+      </section>
+    </main>
+  </div>
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+  <script>
+    (function () {
+      "use strict";
+      var API_URL = "/api/crm";
+      var THEME_KEY = "career-fleet-theme";
+      var elements = {
+        themeButton: document.getElementById("themeButton"),
+        themeButtonLabel: document.getElementById("themeButtonLabel"),
+        refreshButton: document.getElementById("refreshButton"),
+        sourceStatus: document.getElementById("sourceStatus"),
+        metricTargets: document.getElementById("metricTargets"),
+        metricContacts: document.getElementById("metricContacts"),
+        metricSequences: document.getElementById("metricSequences"),
+        metricDue: document.getElementById("metricDue"),
+        metricReplies: document.getElementById("metricReplies"),
+        search: document.getElementById("targetSearch"),
+        listSubtitle: document.getElementById("listSubtitle"),
+        listCount: document.getElementById("listCount"),
+        targetList: document.getElementById("targetList"),
+        targetDetail: document.getElementById("targetDetail"),
+        toast: document.getElementById("toast")
+      };
+      var state = { targets: [], touches: [], interactions: [], summary: {}, filter: "all", query: "", selectedKey: null, loading: false };
+      var toastTimer = null;
+
+      function applyTheme(theme, persist) {
+        var nextTheme = theme === "dark" ? "dark" : "light";
+        document.documentElement.dataset.theme = nextTheme;
+        if (persist) { try { localStorage.setItem(THEME_KEY, nextTheme); } catch (error) { /* Session-only fallback. */ } }
+        var darkMode = nextTheme === "dark";
+        elements.themeButton.setAttribute("aria-pressed", String(darkMode));
+        elements.themeButton.setAttribute("aria-label", darkMode ? "Use light mode" : "Use dark mode");
+        elements.themeButtonLabel.textContent = darkMode ? "Light mode" : "Dark mode";
+        document.getElementById("themeColorMeta").setAttribute("content", darkMode ? "#26251e" : "#f2f1ed");
+      }
+
+      function initializeTheme() {
+        var storedTheme = null;
+        try { storedTheme = localStorage.getItem(THEME_KEY); } catch (error) { storedTheme = null; }
+        var media = window.matchMedia("(prefers-color-scheme: dark)");
+        applyTheme(storedTheme === "dark" || storedTheme === "light" ? storedTheme : (media.matches ? "dark" : "light"), false);
+        if (typeof media.addEventListener === "function") {
+          media.addEventListener("change", function (event) {
+            try { if (localStorage.getItem(THEME_KEY)) return; } catch (error) { /* Follow system. */ }
+            applyTheme(event.matches ? "dark" : "light", false);
+          });
+        }
+      }
+
+      function make(tagName, className, textValue) {
+        var item = document.createElement(tagName);
+        if (className) item.className = className;
+        if (textValue !== undefined && textValue !== null) item.textContent = String(textValue);
+        return item;
+      }
+      function clear(node) { while (node.firstChild) node.removeChild(node.firstChild); }
+      function text(value, fallback) { return value === undefined || value === null || String(value).trim() === "" ? (fallback || "") : String(value); }
+      function key(value) { return text(value, "").trim().toLowerCase(); }
+      function formatDate(value) {
+        if (!value) return "Not recorded";
+        var date = new Date(String(value).length === 10 ? String(value) + "T12:00:00" : value);
+        return Number.isNaN(date.getTime()) ? String(value) : new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", year: "numeric" }).format(date);
+      }
+      function formatCount(value) { return typeof value === "number" ? String(value) : text(value, "0"); }
+      function unique(items) {
+        var seen = new Set();
+        return (items || []).filter(function (item) {
+          var value = text(item, "");
+          var identity = key(value);
+          if (!identity || seen.has(identity)) return false;
+          seen.add(identity);
+          return true;
+        });
+      }
+      function firstValue(items, field) {
+        for (var index = 0; index < items.length; index += 1) {
+          var value = items[index] && items[index][field];
+          if (value !== undefined && value !== null && String(value).trim()) return String(value);
+        }
+        return "";
+      }
+      function statusRank(status) {
+        return { meeting: 6, replied: 5, drafted: 4, sent: 3, active: 2, paused: 1, opt_out: 0 }[key(status)] || 0;
+      }
+      function statusLabel(status) {
+        return { meeting: "Meeting", replied: "Replied", drafted: "Drafted", sent: "In motion", active: "Active", paused: "Paused", opt_out: "Opted out" }[key(status)] || text(status, "Unstated");
+      }
+      function statusClass(status) {
+        var normalized = key(status);
+        if (normalized === "replied" || normalized === "meeting") return "is-replied";
+        if (normalized === "paused" || normalized === "opt_out") return "is-paused";
+        if (normalized === "sent" || normalized === "drafted" || normalized === "active") return "is-active";
+        return "";
+      }
+      function outcomeLabel(value) {
+        return text(value, "Recorded").replace(/_/g, " ");
+      }
+      function isOpenTouch(touch) {
+        return !["sent", "completed_manually", "skipped", "paused", "cancelled"].includes(key(touch && touch.state));
+      }
+      function touchesFor(target) {
+        return state.touches.filter(function (touch) {
+          return target.relationshipIds.has(text(touch.relationship_id, "")) || key(touch.company_name) === target.companyKey;
+        });
+      }
+      function interactionsFor(target) {
+        return state.interactions.filter(function (interaction) { return key(interaction.company_name) === target.companyKey; });
+      }
+
+      function normalizeSnapshot(payload) {
+        if (!payload || typeof payload !== "object") throw new Error("The persistent CRM response was not a target snapshot.");
+        var rows = Array.isArray(payload.targets) ? payload.targets : [];
+        var grouped = new Map();
+        rows.forEach(function (row, index) {
+          var company = text(row.company_name, "Target company not recorded");
+          var companyKey = key(company);
+          var target = grouped.get(companyKey);
+          if (!target) {
+            target = {
+              key: companyKey + "::" + index,
+              companyKey: companyKey,
+              company: company,
+              rows: [],
+              contacts: [],
+              contactKeys: new Set(),
+              relationshipIds: new Set(),
+              status: text(row.status, "active"),
+              latestStatusRank: statusRank(row.status),
+              whyMatters: "",
+              observedContext: "",
+              nextStep: "",
+              lastInteraction: "",
+              sequenceStatus: "",
+              sequenceIds: new Set()
+            };
+            grouped.set(companyKey, target);
+          }
+          target.rows.push(row);
+          var rowStatusRank = statusRank(row.status);
+          if (rowStatusRank >= target.latestStatusRank) {
+            target.status = text(row.status, target.status);
+            target.latestStatusRank = rowStatusRank;
+          }
+          if (row.relationship_id !== undefined && row.relationship_id !== null) target.relationshipIds.add(String(row.relationship_id));
+          if (row.sequence_id !== undefined && row.sequence_id !== null) target.sequenceIds.add(String(row.sequence_id));
+          if (!target.whyMatters) target.whyMatters = text(row.why_matters, "");
+          if (!target.observedContext) target.observedContext = text(row.observed_context, "");
+          if (!target.nextStep) target.nextStep = text(row.next_step, "");
+          if (!target.lastInteraction) target.lastInteraction = text(row.last_meaningful_interaction_at, "");
+          if (!target.sequenceStatus) target.sequenceStatus = text(row.sequence_status, "");
+          var contactKey = key(row.contact_id || row.email || row.founder_name);
+          if (contactKey && !target.contactKeys.has(contactKey)) {
+            target.contactKeys.add(contactKey);
+            target.contacts.push({
+              name: text(row.founder_name, "Contact not recorded"),
+              email: text(row.email, ""),
+              title: text(row.role_title, ""),
+              affiliation: text(row.affiliation, ""),
+              linkedinUrl: text(row.linkedin_url, ""),
+              status: text(row.contact_status, "")
+            });
+          }
+        });
+        return {
+          targets: Array.from(grouped.values()),
+          touches: Array.isArray(payload.touches) ? payload.touches : [],
+          interactions: Array.isArray(payload.interactions) ? payload.interactions : [],
+          summary: payload.summary && typeof payload.summary === "object" ? payload.summary : {},
+          asOf: payload.as_of || ""
+        };
+      }
+
+      function showToast(message) {
+        elements.toast.textContent = message;
+        elements.toast.classList.add("is-visible");
+        window.clearTimeout(toastTimer);
+        toastTimer = window.setTimeout(function () { elements.toast.classList.remove("is-visible"); }, 3200);
+      }
+      function setSourceStatus(label, kind) {
+        elements.sourceStatus.textContent = label;
+        elements.sourceStatus.classList.toggle("is-live", kind === "live");
+        elements.sourceStatus.classList.toggle("is-error", kind === "error");
+      }
+      function setLoading(loading) {
+        state.loading = loading;
+        elements.refreshButton.disabled = loading;
+        elements.refreshButton.querySelector(".button-copy").textContent = loading ? "Reading targets" : "Refresh targets";
+      }
+      function filteredTargets() {
+        var query = state.query.toLowerCase();
+        return state.targets.filter(function (target) {
+          var targetTouches = touchesFor(target);
+          var targetInteractions = interactionsFor(target);
+          var hasDue = targetTouches.some(function (touch) { return Boolean(touch.is_due || touch.is_overdue); });
+          var hasReply = targetInteractions.some(function (interaction) { return ["reply", "meeting"].includes(key(interaction.outcome)); }) || ["replied", "meeting"].includes(key(target.status));
+          var isActive = key(target.sequenceStatus) === "active" || ["sent", "drafted", "active"].includes(key(target.status));
+          var isPaused = ["paused", "opt_out"].includes(key(target.status)) || key(target.sequenceStatus) === "paused";
+          if (state.filter === "needs_action" && !hasDue && !target.nextStep) return false;
+          if (state.filter === "active" && !isActive) return false;
+          if (state.filter === "replied" && !hasReply) return false;
+          if (state.filter === "paused" && !isPaused) return false;
+          if (!query) return true;
+          var contactText = target.contacts.map(function (contact) { return [contact.name, contact.email, contact.title, contact.affiliation].join(" "); }).join(" ");
+          return [target.company, target.status, target.whyMatters, target.observedContext, target.nextStep, contactText].join(" ").toLowerCase().indexOf(query) !== -1;
+        }).sort(function (a, b) {
+          var aDue = touchesFor(a).filter(function (touch) { return touch.is_due || touch.is_overdue; }).length;
+          var bDue = touchesFor(b).filter(function (touch) { return touch.is_due || touch.is_overdue; }).length;
+          return bDue - aDue || statusRank(b.status) - statusRank(a.status) || a.company.localeCompare(b.company);
+        });
+      }
+      function statusNode(target) {
+        return make("span", "status-badge " + statusClass(target.status), statusLabel(target.status));
+      }
+      function renderTargetItem(target) {
+        var item = make("button", "target-item");
+        item.type = "button";
+        item.dataset.action = "select-target";
+        item.dataset.key = target.key;
+        item.setAttribute("role", "listitem");
+        item.setAttribute("aria-current", String(target.key === state.selectedKey));
+        var top = make("div", "target-top");
+        var copy = make("div");
+        copy.appendChild(make("span", "target-kicker", target.sequenceStatus === "active" ? "Sequence active" : "Committed target"));
+        copy.appendChild(make("strong", "target-name", target.company));
+        copy.appendChild(make("span", "target-contact", target.contacts.length ? target.contacts.map(function (contact) { return contact.name; }).join(" · ") : "No contact linked"));
+        top.appendChild(copy);
+        var right = make("div", "target-right");
+        right.appendChild(statusNode(target));
+        var due = touchesFor(target).filter(function (touch) { return touch.is_due || touch.is_overdue; }).length;
+        if (due) right.appendChild(make("span", "due-mark", due + (due === 1 ? " touch due" : " touches due")));
+        top.appendChild(right);
+        item.appendChild(top);
+        item.appendChild(make("p", "target-context od-clamp-2", target.nextStep || target.whyMatters || "No next step recorded yet."));
+        var bottom = make("div", "target-bottom");
+        bottom.appendChild(make("span", "target-meta", target.rows.length + (target.rows.length === 1 ? " outreach record" : " outreach records")));
+        bottom.appendChild(make("span", "target-meta", target.contacts.length + (target.contacts.length === 1 ? " person" : " people")));
+        item.appendChild(bottom);
+        return item;
+      }
+      function appendSection(parent, heading, content) {
+        var section = make("section", "detail-section");
+        section.appendChild(make("h3", "", heading));
+        if (typeof content === "string") section.appendChild(make("p", "", content));
+        else section.appendChild(content);
+        parent.appendChild(section);
+      }
+      function renderContext(target, parent) {
+        var block = make("div", "context-block");
+        [["Why this company matters", target.whyMatters], ["Observed context", target.observedContext], ["Next step", target.nextStep], ["Last meaningful interaction", formatDate(target.lastInteraction)]].forEach(function (pair) {
+          var row = make("div", "context-row");
+          row.appendChild(make("span", "context-label", pair[0]));
+          row.appendChild(make("p", pair[1] || "Not recorded"));
+          block.appendChild(row);
+        });
+        parent.appendChild(block);
+      }
+      function renderContacts(target, parent) {
+        var list = make("div", "contacts-list");
+        if (!target.contacts.length) {
+          list.appendChild(make("p", "", "No person is linked to this target yet."));
+          parent.appendChild(list);
+          return;
+        }
+        target.contacts.forEach(function (contact) {
+          var card = make("article", "contact-card");
+          var top = make("div", "contact-top");
+          top.appendChild(make("h4", "", contact.name));
+          if (contact.status) top.appendChild(make("span", "state-label", contact.status));
+          card.appendChild(top);
+          var role = [contact.title, contact.affiliation].filter(Boolean).join(" · ");
+          if (role) card.appendChild(make("p", "", role));
+          var links = make("div", "contact-links");
+          if (contact.email) { var email = make("a", "", contact.email); email.href = "mailto:" + contact.email; links.appendChild(email); }
+          if (contact.linkedinUrl) { var linkedin = make("a", "", "Open LinkedIn"); linkedin.href = contact.linkedinUrl; linkedin.target = "_blank"; linkedin.rel = "noreferrer"; links.appendChild(linkedin); }
+          if (links.childNodes.length) card.appendChild(links);
+          list.appendChild(card);
+        });
+        parent.appendChild(list);
+      }
+      function renderTouches(target, parent) {
+        var list = make("div", "touch-list");
+        var touches = touchesFor(target);
+        if (!touches.length) {
+          list.appendChild(make("p", "", "No cadence touches are linked to this target yet."));
+          parent.appendChild(list);
+          return;
+        }
+        touches.forEach(function (touch) {
+          var card = make("article", "touch-card" + (touch.is_overdue ? " is-overdue" : ""));
+          var top = make("div", "touch-top");
+          top.appendChild(make("h4", "", "Step " + text(touch.step_number, "—") + " · " + text(touch.purpose, "Untitled touch")));
+          var stateClassName = touch.is_overdue ? "is-overdue" : touch.is_due ? "is-due" : ["sent", "completed_manually"].includes(key(touch.state)) ? "is-complete" : "";
+          top.appendChild(make("span", "state-label " + stateClassName, outcomeLabel(touch.state)));
+          card.appendChild(top);
+          var meta = make("p", "", text(touch.channel, "Channel not recorded") + " · Due " + formatDate(touch.due_date));
+          meta.className = "channel-label";
+          card.appendChild(meta);
+          if (touch.notes) card.appendChild(make("p", "", touch.notes));
+          if (touch.draft_text) {
+            var details = document.createElement("details");
+            var summary = document.createElement("summary");
+            summary.textContent = touch.draft_fell_back ? "Open fallback draft" : "Open draft";
+            details.appendChild(summary);
+            details.appendChild(make("p", "draft-copy", touch.draft_text));
+            card.appendChild(details);
+          }
+          list.appendChild(card);
+        });
+        parent.appendChild(list);
+      }
+      function renderRecords(target, parent) {
+        var list = make("div", "record-list");
+        target.rows.forEach(function (row) {
+          var card = make("article", "record-card");
+          var top = make("div", "record-top");
+          top.appendChild(make("h4", "", text(row.subject, text(row.channel, "Outreach record"))));
+          top.appendChild(make("span", "state-label", statusLabel(row.status)));
+          card.appendChild(top);
+          var dates = [row.sent_at ? "Sent " + formatDate(row.sent_at) : "", row.followup_due_at ? "Follow-up " + formatDate(row.followup_due_at) : ""].filter(Boolean).join(" · ");
+          if (dates) card.appendChild(make("p", "", dates));
+          if (row.notes) card.appendChild(make("p", "", row.notes));
+          list.appendChild(card);
+        });
+        parent.appendChild(list);
+      }
+      function renderInteractions(target, parent) {
+        var list = make("div", "interaction-list");
+        var interactions = interactionsFor(target);
+        if (!interactions.length) {
+          list.appendChild(make("p", "", "No interaction outcomes are recorded for this target yet."));
+          parent.appendChild(list);
+          return;
+        }
+        interactions.forEach(function (interaction) {
+          var card = make("article", "interaction-card");
+          var top = make("div", "interaction-top");
+          top.appendChild(make("h4", "", outcomeLabel(interaction.outcome)));
+          top.appendChild(make("span", "state-label", formatDate(interaction.occurred_at)));
+          card.appendChild(top);
+          card.appendChild(make("p", "", [interaction.contact_name, interaction.channel].filter(Boolean).join(" · ") || "Contact context not recorded"));
+          if (interaction.notes) card.appendChild(make("p", "", interaction.notes));
+          list.appendChild(card);
+        });
+        parent.appendChild(list);
+      }
+      function renderDetail() {
+        clear(elements.targetDetail);
+        var target = state.targets.find(function (item) { return item.key === state.selectedKey; });
+        if (!target) {
+          if (!state.targets.length && !state.loading) {
+            var empty = make("div", "empty-detail");
+            empty.appendChild(make("h2", "", "Choose a target company."));
+            empty.appendChild(make("p", "", "When persistent CRM targets are available, this panel will show the reason to pursue the company, the people in scope, cadence state, drafts, and recorded outcomes."));
+            elements.targetDetail.appendChild(empty);
+          }
+          return;
+        }
+        var header = make("header", "detail-header");
+        header.appendChild(make("span", "eyebrow", "Committed target"));
+        header.appendChild(make("h2", "", target.company));
+        header.appendChild(make("p", "detail-subtitle", target.contacts.length ? target.contacts.map(function (contact) { return contact.name; }).join(" · ") : "No linked contact"));
+        header.appendChild(statusNode(target));
+        var actions = make("div", "detail-actions");
+        var primaryContact = target.contacts[0] || {};
+        if (primaryContact.email) { var email = make("a", "button button-primary button-small", "Email contact"); email.href = "mailto:" + primaryContact.email; actions.appendChild(email); }
+        if (primaryContact.linkedinUrl) { var linkedin = make("a", "button button-quiet button-small", "Open LinkedIn"); linkedin.href = primaryContact.linkedinUrl; linkedin.target = "_blank"; linkedin.rel = "noreferrer"; actions.appendChild(linkedin); }
+        header.appendChild(actions);
+        elements.targetDetail.appendChild(header);
+        var body = make("div", "detail-body");
+        var context = make("div");
+        renderContext(target, context);
+        appendSection(body, "Pursuit brief", context);
+        var contacts = make("div");
+        renderContacts(target, contacts);
+        appendSection(body, "People in scope", contacts);
+        var touches = make("div");
+        renderTouches(target, touches);
+        appendSection(body, "Cadence and next touches", touches);
+        var records = make("div");
+        renderRecords(target, records);
+        appendSection(body, "Outreach records", records);
+        var interactions = make("div");
+        renderInteractions(target, interactions);
+        appendSection(body, "Outcome ledger", interactions);
+        body.appendChild(make("p", "safety-note", "This view reads the persistent CRM snapshot. Email and LinkedIn links open your existing tools; nothing is marked sent from this page."));
+        elements.targetDetail.appendChild(body);
+      }
+      function renderSummary() {
+        var contacts = state.targets.reduce(function (total, target) { return total + target.contacts.length; }, 0);
+        var replies = state.interactions.filter(function (interaction) { return ["reply", "meeting"].includes(key(interaction.outcome)); }).length;
+        elements.metricTargets.textContent = formatCount(state.summary.targets !== undefined ? state.summary.targets : state.targets.length);
+        elements.metricContacts.textContent = formatCount(state.summary.contacts !== undefined ? state.summary.contacts : contacts);
+        elements.metricSequences.textContent = formatCount(state.summary.active_sequences !== undefined ? state.summary.active_sequences : state.targets.filter(function (target) { return key(target.sequenceStatus) === "active"; }).length);
+        elements.metricDue.textContent = formatCount(state.summary.due !== undefined ? state.summary.due : state.touches.filter(function (touch) { return touch.is_due || touch.is_overdue; }).length);
+        elements.metricReplies.textContent = formatCount(state.summary.replies !== undefined ? state.summary.replies : replies);
+      }
+      function renderList() {
+        clear(elements.targetList);
+        var targets = filteredTargets();
+        elements.listSubtitle.textContent = state.filter === "needs_action" ? "Targets with an open next step or due touch." : state.filter === "active" ? "Targets with a live cadence sequence." : state.filter === "replied" ? "Targets with a reply or meeting outcome." : state.filter === "paused" ? "Targets currently paused or opted out." : "Relationship context and next touches, together.";
+        elements.listCount.textContent = targets.length + (targets.length === 1 ? " target" : " targets");
+        if (!targets.length) {
+          var empty = make("div", "list-empty");
+          empty.appendChild(make("h3", "", state.targets.length ? "No targets match this view" : "No persistent targets loaded"));
+          empty.appendChild(make("p", "", state.targets.length ? "Change the search or target filter to widen the working set." : "Start server.py with CAREER_RESEARCH_DB pointing to the persistent Career Fleet CRM database, then refresh targets."));
+          elements.targetList.appendChild(empty);
+          renderDetail();
+          return;
+        }
+        if (!targets.some(function (target) { return target.key === state.selectedKey; })) state.selectedKey = targets[0].key;
+        targets.forEach(function (target) { elements.targetList.appendChild(renderTargetItem(target)); });
+        renderDetail();
+      }
+      function renderAll() {
+        renderSummary();
+        document.querySelectorAll("[data-action='set-filter']").forEach(function (button) { button.setAttribute("aria-pressed", String(button.dataset.filter === state.filter)); });
+        renderList();
+      }
+      async function loadTargets() {
+        setLoading(true);
+        setSourceStatus("Reading persistent target records", "");
+        try {
+          var response = await fetch(API_URL, { headers: { "Accept": "application/json" }, cache: "no-store" });
+          var payload;
+          try { payload = await response.json(); } catch (error) { throw new Error("The CRM bridge returned an unreadable response."); }
+          if (!response.ok) throw new Error(payload && payload.message ? payload.message : "The persistent CRM targets could not be read.");
+          var normalized = normalizeSnapshot(payload);
+          state.targets = normalized.targets;
+          state.touches = normalized.touches;
+          state.interactions = normalized.interactions;
+          state.summary = normalized.summary;
+          state.selectedKey = null;
+          setSourceStatus("Live persistent targets", "live");
+          document.title = "Career Fleet Targets — " + state.targets.length + (state.targets.length === 1 ? " company" : " companies");
+          renderAll();
+          showToast("Target workspace refreshed.");
+        } catch (error) {
+          state.targets = [];
+          state.touches = [];
+          state.interactions = [];
+          state.summary = {};
+          state.selectedKey = null;
+          setSourceStatus("Persistent targets unavailable", "error");
+          renderAll();
+          showToast(error instanceof Error ? error.message : "The persistent CRM targets could not be read.");
+        } finally { setLoading(false); }
+      }
+      document.addEventListener("click", function (event) {
+        var control = event.target.closest("[data-action]");
+        if (!control) return;
+        var action = control.dataset.action;
+        if (action === "toggle-theme") {
+          applyTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark", true);
+        } else if (action === "refresh-data") {
+          loadTargets();
+        } else if (action === "set-filter") {
+          state.filter = control.dataset.filter || "all";
+          renderAll();
+        } else if (action === "select-target") {
+          state.selectedKey = control.dataset.key || null;
+          renderList();
+        }
+      });
+      elements.search.addEventListener("input", function () { state.query = elements.search.value; renderAll(); });
+      initializeTheme();
+      renderAll();
+      loadTargets();
+    }());
+  </script>
+</body>
+</html>

@@ -18,6 +18,17 @@ import pytest
 
 REPO = Path(__file__).resolve().parents[1]
 OWN_BINARY = "harness-fleet"
+
+
+def _shipped_binaries() -> set[str]:
+    """Every command this distribution installs, from its own packaging."""
+    import tomllib
+
+    data = tomllib.loads((REPO / "pyproject.toml").read_text(encoding="utf-8"))
+    return set(data.get("project", {}).get("scripts", {}))
+
+
+SHIPPED_BINARIES = _shipped_binaries()
 #: True only where this CLI does not provide the engine commands
 #: (career-fleet ships the engine skill but not the engine CLI).
 ENGINE_CLI_IS_SEPARATE = False
@@ -50,7 +61,27 @@ FOREIGN_ALLOWED = {
 }
 
 
-def _parser() -> argparse.ArgumentParser:
+def _parser(binary: str = "") -> argparse.ArgumentParser:
+    """The parser for a surface this repo ships."""
+    if binary == "career-fleet" and (REPO / "career_fleet").is_dir():
+        from career_fleet import cli as career_cli
+
+        captured: dict[str, argparse.ArgumentParser] = {}
+        real = argparse.ArgumentParser.parse_args
+
+        def spy(self, *args, **kwargs):
+            captured["parser"] = self
+            raise SystemExit(0)
+
+        argparse.ArgumentParser.parse_args = spy  # type: ignore[method-assign]
+        try:
+            career_cli.main()
+        except SystemExit:
+            pass
+        finally:
+            argparse.ArgumentParser.parse_args = real  # type: ignore[method-assign]
+        return captured["parser"]
+
     if OWN_BINARY == "career-fleet":
         from career_fleet import cli as career_cli
 
@@ -119,9 +150,9 @@ def test_the_docs_actually_contain_commands():
 
 @pytest.mark.parametrize("relative,line,argv", DOCUMENTED, ids=lambda v: str(v)[:60])
 def test_every_documented_command_parses(relative, line, argv):
-    if argv[0] != OWN_BINARY:
+    if argv[0] not in SHIPPED_BINARIES:
         pytest.skip(f"{relative} documents the {argv[0]} distribution")
-    parser = _parser()
+    parser = _parser(argv[0])
     stderr = io.StringIO()
     with contextlib.redirect_stderr(stderr), contextlib.redirect_stdout(io.StringIO()):
         try:
@@ -142,7 +173,7 @@ def _allowed_foreign(relative: str) -> set[str]:
 
 @pytest.mark.parametrize("relative,line,argv", DOCUMENTED, ids=lambda v: str(v)[:60])
 def test_no_documented_command_uses_another_products_binary(relative, line, argv):
-    if argv[0] == OWN_BINARY or argv[0] == "free-fleet":
+    if argv[0] in SHIPPED_BINARIES or argv[0] == "free-fleet":
         return  # free-fleet appears only as the pre-rename CLI in migration notes
     if argv[0] in _allowed_foreign(relative):
         return

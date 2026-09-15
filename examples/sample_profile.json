@@ -1,0 +1,47 @@
+{
+  "profile_name": "Founding Systems & GTM Operator",
+  "version": "1.0.0",
+  "wedge_capabilities": [
+    "0-to-1 go-to-market systems & field architecture",
+    "Technical translation & buyer conviction",
+    "Challenger positioning against legacy incumbents",
+    "AI-assisted systems and platform development"
+  ],
+  "required_stack": [
+    "Python",
+    "PostgreSQL",
+    "Kafka",
+    "Modern Cloud / Kubernetes"
+  ],
+  "negative_stack": [
+    "Legacy Mainframe",
+    "Salesforce Apex Only"
+  ],
+  "dealbreakers": {
+    "max_headcount": 80,
+    "require_verified_headcount": false,
+    "policy": "any",
+    "disallowed_locations": [
+      "San Francisco in-office mandate",
+      "New York in-office mandate"
+    ],
+    "reject_thin_wrappers": true,
+    "reject_pure_quota": true,
+    "min_timezone_overlap_hours": 4.0,
+    "candidate_timezone": null
+  },
+  "hiring_catalysts": [
+    "Scaling beyond founder-led sales",
+    "Architectural migration off legacy systems",
+    "Hitting throughput or latency limits on existing platform"
+  ],
+  "target_leadership": [
+    "Low-ego technical builders",
+    "Engineering-led founders seeking blunt commercial truth"
+  ],
+  "anchor_companies": [
+    "Stripe",
+    "Linear",
+    "Tailscale"
+  ]
+}

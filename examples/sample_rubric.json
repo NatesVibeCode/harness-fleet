@@ -1,0 +1,10 @@
+{
+  "rubric_name": "Technical Systems & Leadership Fit",
+  "version": "1.0.0",
+  "tiers": {
+    "tier1_high_fit": {"min_score": 0.8, "action": "Immediate executive recon & reachout"},
+    "tier2_strong_fit": {"min_score": 0.6, "action": "Queue for cadence planning"},
+    "tier3_marginal": {"min_score": 0.4, "action": "Hold for secondary review"},
+    "tier4_disqualified": {"min_score": 0.0, "action": "Drop from pipeline"}
+  }
+}

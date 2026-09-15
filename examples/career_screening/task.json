@@ -1,0 +1,109 @@
+{
+  "schema_uri": "https://raw.githubusercontent.com/NatesVibeCode/harness-fleet/master/schemas/task-v1.schema.json",
+  "format_version": "harness_fleet_task_v1",
+  "name": "career-screening",
+  "instructions": "Screen this employer and role against the candidate's stated criteria by answering the evidence checklist, name the specific problem the role exists to solve, and cite verbatim evidence. The pipeline computes the fit score and tier.",
+  "batch_size": 5,
+  "max_slice_chars": 6000,
+  "min_quote_chars": 15,
+  "claims_schema": {
+    "type": "object",
+    "properties": {
+      "checklist": {
+        "type": "object",
+        "description": "Evidence-bound checklist: answer every item true or false; each true item must be supported by a cited quote. The pipeline computes the score.",
+        "properties": {
+          "wedge_alignment": {
+            "type": "boolean",
+            "description": "True only when the source names a concrete problem the candidate's wedge solves, not a generic role summary."
+          },
+          "stack_confirmed": {
+            "type": "boolean",
+            "description": "True only when the source evidences the required technologies running in production."
+          },
+          "hiring_catalyst": {
+            "type": "boolean",
+            "description": "True only when the source names the operational failure, milestone, or transition creating the mandate."
+          },
+          "leadership_signal": {
+            "type": "boolean",
+            "description": "True only when the source shows the target leader persona: low-ego technical builders."
+          },
+          "workplace_match": {
+            "type": "boolean",
+            "description": "True only when the source states a workplace arrangement matching the profile's selected policy."
+          }
+        },
+        "required": [
+          "hiring_catalyst",
+          "leadership_signal",
+          "stack_confirmed",
+          "wedge_alignment",
+          "workplace_match"
+        ],
+        "additionalProperties": false
+      },
+      "score": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 100,
+        "description": "Computed by the pipeline from the checklist; omit it. Fit: 85-100 every signal evidenced with a named catalyst, 70-84 required stack plus strong wedge alignment, 50-69 acceptable stack but unclear defensibility or one missing requirement, 0-49 a hard dealbreaker or a missing required-stack entry."
+      },
+      "identified_wedge": {
+        "type": "string",
+        "description": "The specific problem this role exists to solve, named exactly as the source names it."
+      },
+      "fit_tier": {
+        "enum": [
+          "tier_1",
+          "tier_2",
+          "tier_3",
+          "unfit"
+        ],
+        "description": "Score band, derived by the pipeline: tier_1 85-100, tier_2 70-84, tier_3 50-69, unfit below 50. Omit it."
+      },
+      "reasoning": {
+        "type": "string",
+        "description": "Short explanation grounded in the cited quotes, naming the evidence behind the checklist and the wedge."
+      }
+    },
+    "required": [
+      "checklist",
+      "identified_wedge",
+      "reasoning"
+    ],
+    "additionalProperties": false
+  },
+  "checklist": {
+    "wedge_alignment": 25,
+    "stack_confirmed": 25,
+    "hiring_catalyst": 25,
+    "leadership_signal": 15,
+    "workplace_match": 10
+  },
+  "pass_score": null,
+  "evidence_terms": [
+    "hiring",
+    "founding",
+    "scaling",
+    "migration",
+    "architecture",
+    "platform",
+    "latency",
+    "reliability",
+    "infrastructure",
+    "roadmap",
+    "ownership",
+    "series"
+  ],
+  "candidate_top_n": 6,
+  "source_weights": {},
+  "default_source_weight": 1.0,
+  "recency_half_lives": {
+    "wedge_alignment": 180.0,
+    "stack_confirmed": 180.0,
+    "hiring_catalyst": 21.0,
+    "leadership_signal": 365.0,
+    "workplace_match": 90.0
+  }
+}

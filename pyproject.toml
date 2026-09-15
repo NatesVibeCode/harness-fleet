@@ -59,11 +59,18 @@ js = [
 
 [project.scripts]
 harness-fleet = "harness_fleet.cli:main"
+# The career surface ships from this repo too: its skills and docs are part of
+# the same distribution, so the commands they document have to exist.
+career-fleet = "career_fleet.cli:main"
 
 [tool.setuptools.packages.find]
-include = ["harness_fleet*"]
+include = ["harness_fleet*", "career_fleet*"]
 
 [tool.setuptools.package-data]
+career_fleet = [
+    "resources/skill/career-fleet/*.md",
+    "resources/skill/career-fleet/references/*.md",
+]
 harness_fleet = [
     "migrations/*.sql",
     "resources/lanes/*.json",

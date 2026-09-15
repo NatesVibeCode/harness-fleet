@@ -62,3 +62,22 @@ Notes:
   Use plain `python3 -m pytest` and repo scripts; treat `uvx ruff` / `uvx mypy` as
   escalation-required rather than broken.
 - `python3 scripts/check_harness_drift.py` is fast (~2 s) and safe to run anytime.
+
+## Coordinate by the drift check, not by a lock
+
+The engine ships as three checkouts that must agree — this one, `../account-fleet`, and
+`career-fleet/` — and `scripts/check_harness_drift.py` compares an allowlist of files
+byte-for-byte across all three. There is no lock file, no claim branch, and no journal: the
+check is the coordination.
+
+**A shared-file change is not landed until `check_harness_drift.py` exits 0 across all three
+checkouts.** Landing in the baseline alone is drift, not progress. Propagation is manual, and
+that manual step is the one that has failed before — when a feature lands here and reaches two
+of the three checkouts, the tree is red until someone finishes the job.
+
+Two things worth knowing before you edit a shared file:
+
+- **`account-fleet` is a git worktree of this repo**, so the two share `.git` and
+  `refs/heads/`. A branch you create here also exists there; do not read that as a peer's work.
+- Run the check from the engine, and again after propagating: `python3 scripts/check_harness_drift.py`
+  (~2 s). If you only touched one checkout, expect it to fail — that is the signal, not a bug.

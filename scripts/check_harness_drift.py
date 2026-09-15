@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import re
 import subprocess
 import sys
@@ -91,6 +92,56 @@ EXACT_FILES = (
     "skills/harness-fleet/references/operations.md",
     ".agents/skills/harness-fleet/references/operations.md",
 )
+
+
+#: The handoff collection's machine-readable contract, generated into each skill tree
+#: by harness-handoff/scripts/build_skills.py from the same source that generates the
+#: seven SKILL.md files. Each adapter below cites its <harness>-harness-handoff skill.
+HANDOFF_CONTRACT = "skills-src/contracts.json"
+
+#: Compared field-for-field between an adapter's HarnessSpec/build_argv and the contract.
+HANDOFF_CONTRACT_FIELDS = (
+    "binary",
+    "prompt_delivery",
+    "prompt_file_flag",
+    "parser",
+    "model_from_route",
+    "discovery_argv",
+    "call_workdir",
+    "task_config_strategy",
+    "oneshot_argv",
+)
+
+#: Executed in the target checkout. Sentinel inputs make argv reproducible: the
+#: placeholders below are exactly the ones skills-src/contracts.json documents.
+_ADAPTER_PROBE = r"""
+import json
+from pathlib import Path
+from harness_fleet.providers.registry import HARNESS_SPECS, ProviderRegistry
+
+registry = ProviderRegistry()
+contracts = {}
+for spec in HARNESS_SPECS:
+    provider = registry.get(spec.name)
+    contracts[spec.name] = {
+        "binary": spec.binary,
+        "prompt_delivery": spec.prompt_delivery,
+        "prompt_file_flag": spec.prompt_file_flag,
+        "parser": spec.parser,
+        "model_from_route": spec.model_from_route,
+        "discovery_argv": spec.discovery_argv,
+        "call_workdir": spec.call_workdir,
+        "task_config_strategy": spec.task_config_strategy,
+        "oneshot_argv": provider.build_argv(
+            model="<model>",
+            prompt="<prompt>",
+            prompt_file="<prompt-file>",
+            workspace=Path("<workspace>"),
+            workdir=Path("<workdir>"),
+        ),
+    }
+print(json.dumps(contracts))
+"""
 
 
 def _default_repos(cwd: Path) -> list[Path]:
@@ -172,6 +223,89 @@ def _run_contract(repo: Path) -> bool:
     return True
 
 
+def _default_handoff_repos(cwd: Path) -> list[Path]:
+    """Locate a harness-handoff checkout that carries skills-src/contracts.json."""
+    candidates = (
+        cwd.parent / "harness-handoff",
+        cwd / "harness-handoff",
+        cwd.parent.parent / "harness-handoff",
+    )
+    return [
+        resolved
+        for resolved in (candidate.resolve() for candidate in candidates)
+        if (resolved / HANDOFF_CONTRACT).is_file()
+    ]
+
+
+def _probe_adapters(repo: Path) -> tuple[dict | None, str]:
+    """Read every CLI-harness adapter's effective contract, in a subprocess.
+
+    Run out-of-process so each checkout's own ``harness_fleet`` package is the one
+    imported, and so a provider that cannot import degrades to a reported skip
+    instead of taking this checker down with it.
+    """
+    result = subprocess.run(
+        [sys.executable, "-c", _ADAPTER_PROBE],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return None, (result.stderr or result.stdout or "probe failed")[-400:].strip()
+    try:
+        return json.loads(result.stdout), ""
+    except json.JSONDecodeError as exc:
+        return None, f"probe emitted unparseable JSON: {exc}"
+
+
+def _check_handoff_contract(repo: Path, handoff: Path, required: bool) -> bool:
+    """Assert every adapter still matches the handoff skill that documents it.
+
+    Each ``harness_fleet/providers/<harness>.py`` names its ``<harness>-harness-handoff``
+    skill as the source of its CLI contract, but nothing used to compare the two, so a
+    handoff recipe and the adapter claiming to implement it could diverge in silence.
+    ``skills-src/contracts.json`` is the single source those skills are generated from;
+    this executes each adapter's ``build_argv`` with sentinel inputs and compares the
+    result with the documented argv template.
+    """
+    contract_path = handoff / HANDOFF_CONTRACT
+    try:
+        document = json.loads(contract_path.read_text(encoding="utf-8"))
+        expected = document["harnesses"]
+    except (OSError, KeyError, json.JSONDecodeError) as exc:
+        print(f"INVALID handoff contract {contract_path}: {exc}")
+        return False
+
+    probe, problem = _probe_adapters(repo)
+    if probe is None:
+        message = f"SKIP   handoff contract: cannot import adapters in {repo}: {problem}"
+        print(message)
+        return not required
+
+    ok = True
+    for name in sorted(expected):
+        entry = expected[name]
+        actual = probe.get(name)
+        if actual is None:
+            print(f"MISSING adapter for handoff contract: {name} (in {repo})")
+            ok = False
+            continue
+        for field in HANDOFF_CONTRACT_FIELDS:
+            if entry.get(field) != actual.get(field):
+                print(
+                    f"DRIFT  {name}.{field} (adapter vs {contract_path.name}): "
+                    f"adapter={actual.get(field)!r} contract={entry.get(field)!r}"
+                )
+                ok = False
+    for name in sorted(set(probe) - set(expected)):
+        print(f"MISSING handoff contract for adapter: {name} (add it to {HANDOFF_CONTRACT})")
+        ok = False
+    if ok:
+        print(f"PASS   handoff contract: {len(expected)} adapter(s) match {contract_path}")
+    return ok
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -191,6 +325,23 @@ def main() -> int:
         action="store_true",
         help="Compare exact files without running the contract test",
     )
+    parser.add_argument(
+        "--handoff-repo",
+        dest="handoff",
+        action="append",
+        type=Path,
+        help=f"harness-handoff checkout holding {HANDOFF_CONTRACT}; repeat for several",
+    )
+    parser.add_argument(
+        "--no-handoff",
+        action="store_true",
+        help="Skip the adapter-vs-handoff-contract check",
+    )
+    parser.add_argument(
+        "--require-handoff",
+        action="store_true",
+        help="Fail instead of skipping when no harness-handoff checkout is available",
+    )
     args = parser.parse_args()
 
     repos = [path.expanduser().resolve() for path in (args.repos or [])]
@@ -199,12 +350,26 @@ def main() -> int:
     if not repos:
         parser.error("no Git repositories found; pass --repo or run inside a checkout")
 
+    handoff_repos = [path.expanduser().resolve() for path in (args.handoff or [])]
+    if not handoff_repos and not args.no_handoff:
+        handoff_repos = _default_handoff_repos(Path.cwd())
+
     ok = True
     if len(repos) > 1:
         ok = _check_exact_files(repos) and ok
     if not args.no_tests:
         for repo in repos:
             ok = _run_contract(repo) and ok
+    if not args.no_handoff:
+        # The exact-file check above already proves the adapters are identical across
+        # the fleets, so the baseline is representative; --self checks its own checkout.
+        for repo in ([repos[0]] if len(repos) > 1 else repos):
+            for handoff in handoff_repos:
+                ok = _check_handoff_contract(repo, handoff, args.require_handoff) and ok
+        if not handoff_repos:
+            message = "SKIP   handoff contract: no harness-handoff checkout found"
+            print(message)
+            ok = not args.require_handoff and ok
     return 0 if ok else 1
 
 
