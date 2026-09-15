@@ -1,9 +1,9 @@
 """Codex CLI-harness adapter: spec + JSONL parser over the shared base.
 
-CLI contract (codex-harness-handoff skill): ``codex exec -C WORKSPACE
+CLI contract (verified against the installed CLI): ``codex exec -C WORKSPACE
 --json -o OUTFILE -`` with the prompt on stdin from a prompt file; JSONL
 events stream on stdout while the final message lands in OUTFILE. Event
-shapes beyond the JSON envelope are not pinned by the skill, so text is
+shapes beyond the JSON envelope are not pinned by the CLI contract, so text is
 extracted conservatively per line and a turn with no text fails closed.
 Approval-bypass flags are deliberately absent: fleet workers run tool-less
 JSON prompts unattended, and anything demanding approvals fails closed

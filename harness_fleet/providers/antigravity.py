@@ -1,6 +1,6 @@
 """Antigravity CLI-harness adapter: spec + parser over the shared base.
 
-CLI contract (antigravity-harness-handoff skill): ``agy --output-format
+CLI contract (verified against the installed CLI): ``agy --output-format
 json --print TASK`` with the prompt as ONE argv element (this CLI does not
 use ``--workspace`` or ``--prompt-file`` syntax). Discovery is binary plus
 ``--version`` only, so no models command exists. ``--conversation``

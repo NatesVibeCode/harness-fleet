@@ -1,6 +1,6 @@
 """Muse CLI-harness adapter: spec + parser over the shared base.
 
-CLI contract (muse-harness-handoff skill): ``muse exec --json --workspace
+CLI contract (verified against the installed CLI): ``muse exec --json --workspace
 W --worktree off --prompt-file FILE``. Discovery is binary plus
 ``--version`` only, so no models command exists. History continuation is
 interactive-only, so fresh-only execution holds by design: the engine

@@ -1,6 +1,6 @@
 """Grok Build CLI-harness adapter: spec + parser over the shared base.
 
-CLI contract (grok-harness-handoff skill): ``grok --cwd WORKSPACE
+CLI contract (verified against the installed CLI): ``grok --cwd WORKSPACE
 --prompt-file FILE --output-format json``. Discovery is binary plus
 ``--version`` only, so no models command exists. ``--resume`` continues an
 exact conversation and is documented but never executed: the engine

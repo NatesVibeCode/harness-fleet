@@ -1,6 +1,6 @@
 """OpenCode CLI-harness adapter: spec + parser over the shared base.
 
-CLI contract (opencode-harness-handoff skill): ``opencode run --dir W
+CLI contract (verified against the installed CLI): ``opencode run --dir W
 --format json [--model M] [--file F] MSG`` with the prompt as the trailing
 argv message; JSONL ``text`` / ``step_finish`` / ``error`` events; discovery
 via ``opencode models``.

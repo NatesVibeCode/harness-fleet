@@ -1,6 +1,6 @@
 """Cursor CLI-harness adapter: spec + parser over the shared base.
 
-CLI contract (cursor-harness-handoff skill): ``cursor-agent --workspace W
+CLI contract (verified against the installed CLI): ``cursor-agent --workspace W
 --print --output-format json TASK`` with the prompt as ONE argv element
 (the CLI advertises no prompt-file flag; long prompts travel as a single
 argument, never shell text). ``--model`` selects an explicit model from

@@ -1,6 +1,6 @@
 """Claude Code CLI-harness adapter: spec + parser over the shared base.
 
-CLI contract (claude-harness-handoff skill): ``claude -p --output-format
+CLI contract (verified against the installed CLI): ``claude -p --output-format
 json`` with the prompt on stdin from a prompt file; one headless turn
 returns a single JSON object (result + usage). Discovery is binary plus
 ``--version`` only, so no models command exists. ``--resume`` continues an
