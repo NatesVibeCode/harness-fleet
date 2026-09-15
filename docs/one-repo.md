@@ -95,7 +95,7 @@ repo turned out to buy nothing the archive does not.
 | career-fleet absorbed | **done** — `career_fleet/`, its skill (3 copies), examples and 9 test files moved in; `career-fleet` declared as a second entry point so the commands its docs describe exist; repository archived |
 | Docs guard | **strengthened** — it reads this distribution's console scripts and checks each surface's documented commands with that surface's own parser |
 | Career's data | **stayed out** — databases, profile and target files are refused by `test_shipped_lanes.py` |
-| One skill (S7) | **not done** — career's skill moved across intact; collapsing the three into one procedure plus a lanes table is the remaining piece |
+| One skill (S7) | **done** — the `harness-fleet` skill is the single procedure and now carries the lanes table; each product skill opens by declaring its lane (`This is the `career` lane`) and defers the workflow to it, keeping only what is lane-specific |
 | Single release | **not done** — deliberately; see versioning.md |
 
 Harness carries everything: **1301 passed, 78 skipped**, ruff and mypy clean.

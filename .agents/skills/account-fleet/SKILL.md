@@ -5,6 +5,20 @@ description: Turn conversational ICPs into scored target account deliverables us
 
 # Account Fleet: Target Account Research & Scoring Skill
 
+## This is the `account` lane
+
+The workflow is the shared one — read the `harness-fleet` skill for the
+procedure (discover, bundle per entity, score, read the evidence with its
+confidence, export, then `lane report` to see what it produced). This file only
+carries what is specific to the `account` lane:
+
+- **Lane config:** `lanes/account.json` — seeds, queries, sources, filters.
+- **Preset:** `account-research` · **Bar:** `tier_2` · **Output:** top 25.
+- **Looks for:** companies doing the work, and companies hiring for it.
+
+Run it with `harness-fleet research --lane account`, or over MCP by passing
+`lane: "account"` to the pipeline tools.
+
 Turn a founder or seller's conversational Ideal Customer Profile (ICP) into a ranked pipeline of qualified target accounts, where every single qualification is backed by a verbatim quote from an active job post or engineering document.
 
 The account-side profile is a typed `IdealCompanyProfile`. Keep its editable JSON

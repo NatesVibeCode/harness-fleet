@@ -5,6 +5,20 @@ description: Turn target ecosystem requirements into a scored deliverable of qua
 
 # Partner Fleet: Implementation Partner Research & Scoring Skill
 
+## This is the `partner` lane
+
+The workflow is the shared one — read the `harness-fleet` skill for the
+procedure (discover, bundle per entity, score, read the evidence with its
+confidence, export, then `lane report` to see what it produced). This file only
+carries what is specific to the `partner` lane:
+
+- **Lane config:** `lanes/partner.json` — seeds, queries, sources, filters.
+- **Preset:** `partner-research` · **Bar:** `tier_1` · **Output:** top 25.
+- **Looks for:** vendor-published stories about partners, which is independent evidence about the partner.
+
+Run it with `harness-fleet research --lane partner`, or over MCP by passing
+`lane: "partner"` to the pipeline tools.
+
 Turn an ecosystem strategy or partner profile into a ranked pipeline of qualified implementation partners, systems integrators (SIs), and digital consultancies, where every single qualification is backed by a verbatim quote from an active job post, case study, or partner directory listing.
 
 The partner-side profile is a typed `IdealPartnerProfile`. Keep its editable JSON in `ideal_partner_profile.json`. Task revisions remain the execution rubric; each run records the selected profile revision when one is available.

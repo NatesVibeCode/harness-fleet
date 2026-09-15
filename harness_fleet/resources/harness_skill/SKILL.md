@@ -9,6 +9,32 @@ Deliver a validated `harness_fleet_v2` packet from typed input while SQLite reta
 
 Start with `command -v harness-fleet`. On a fresh system, run `harness-fleet setup --workspace-root "$PWD" --refresh-routes --json`, then execute its typed `next_commands` in order.
 
+## Lanes: pick your product
+
+There is one procedure. What differs between products is a **lane** — a config
+file, not a different tool:
+
+| Lane | What it is for | Preset | Bar |
+| --- | --- | --- | --- |
+| `account` | target accounts for a technical ICP | `account-research` | tier_2 |
+| `career` | enterprise sales/ops roles, remote, by title | `triage` | tier_3 |
+| `partner` | implementation partners from vendor stories | `partner-research` | tier_1 |
+
+```bash
+harness-fleet research --lane career          # the whole pipeline for one lane
+harness-fleet lane report <run_id> --lane career   # what it actually produced
+```
+
+Over MCP: `harness_fleet_lanes` lists what this install can run, and every
+pipeline tool takes `lane`, so the assistant picks the product for the task.
+
+A lane carries seeds, queries, sources, title/remote filters, the preset it
+scores with, its tier bar and its output shape. Add your own by dropping
+`lanes/<name>.json` in the workspace; it overrides a shipped lane of the same
+name. What a lane may **not** do is change a mechanism — the evidence bar,
+confidence levels, tier minimums or the scoring pipeline are shared by every
+lane, on purpose.
+
 ## Choose the operation
 
 - To define or change extraction fields, read [references/task-contracts.md](references/task-contracts.md).
