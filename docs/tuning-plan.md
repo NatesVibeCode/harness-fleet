@@ -123,8 +123,8 @@ time, for the same reason the registry growth pass does not.
 | Step | State | Evidence |
 | --- | --- | --- |
 | S1 Surface the capabilities | **done** | CLI (`sources list\|propose\|promote\|channels`) and MCP (`harness_fleet_sources`, `harness_fleet_promote_source`) both drive the registry and channels; the live smoke promoted a domain and showed it classifying as evidence, and an unknown category is refused with the valid list. Tests: `test_sources_cli.py` (6) + an MCP round trip through the stdio server, including the refusal. Suites: harness 1062 / account 1056 / career 1048, drift PASS. |
-| S2 Lane file | not started | — |
-| S3 lane report | not started | — |
+| S2 Lane file | **done** | `harness_fleet/lanes.py`: closed-schema `Lane` (seeds, queries, backends, channels, title filters, remote, preset, tier, require_kinds, top, min_score, revision); unknown keys refused so a lane cannot smuggle in a mechanism override; each bad field is named. `--lane` on `research` supplies queries/sources/preset/output and *applies* the lane's filters, reporting the drop count. Locked in drift; `tests/test_lanes.py` (6) + `tests/test_lane_flow.py` (4). |
+| S3 lane report | **done** | `harness_fleet/lane_report.py` + `lane report <run_id>` (CLI) and `harness_fleet_lane_report` (MCP): yield, coverage vs the lane's bar, support quality with the engine's own refusal reasons, a seeded truth sample (exact offsets / live / addressed; fetcher injectable so tests stay offline), and cost. Writes `runs/<id>/lane_report.json`; `--freeze DIR` saves the input + registry snapshot for like-for-like comparison. `research` now persists `discovery_report.json`, which is what gives yield a real denominator. Verified on a live lane run; 19 tests. |
 | S4 Reference lanes | not started | first real runs probed the surfaces: account/harness built dossiers; career's community lane produced 25 signals / 0 postings, which is the tuning case this plan exists for |
 | S5 Per-product proof | not started | — |
 | S6 Lock | not started | drift `PASS 3/3` today with mechanisms locked |

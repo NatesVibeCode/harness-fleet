@@ -1,4 +1,9 @@
-# Partner Finder — extraction into its own public product
+# Partner Finder — the first surface under the one-repo model
+
+> **Superseded in shape by [one-repo.md](one-repo.md).** Partner does not need its
+> own repo, distribution or version: it becomes a lane, a preset and a paragraph in
+> the one skill. The inventory below is still the checklist of what has to move;
+> the P-steps are replaced by "Adding a surface" in that document.
 
 Goal: `partner-fleet` becomes its own public distribution, renamed, with its own
 skill, built the same way as the other two products: **one shared engine, one
