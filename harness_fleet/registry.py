@@ -28,6 +28,17 @@ from typing import Any
 from urllib.parse import urlparse
 
 DEFAULT_REGISTRY = Path("source_registry.json")
+#: Where a run records what it sees. The environment variable exists so a test
+#: suite (or any hosted runner) can keep a workspace registry out of the repo it
+#: is running in — the registry is a person's data, never the repository's.
+REGISTRY_ENV = "HARNESS_FLEET_REGISTRY"
+
+
+def default_registry_path() -> Path:
+    import os
+
+    configured = os.environ.get(REGISTRY_ENV)
+    return Path(configured).expanduser() if configured else DEFAULT_REGISTRY
 #: A domain must be seen this often before it is proposed for a category.
 MIN_SIGHTINGS_FOR_PROPOSAL = 2
 #: Automatic promotion: nobody is going to sit and promote domains, so the
@@ -63,7 +74,7 @@ def _domain(identifier: str) -> str:
 
 def load(path: Path | str | None = None) -> dict[str, Any]:
     """The registry as it stands, or an empty one."""
-    target = Path(path) if path else DEFAULT_REGISTRY
+    target = Path(path) if path else default_registry_path()
     if not target.is_file():
         return {"domains": {}, "candidates": {}}
     try:
@@ -76,7 +87,8 @@ def load(path: Path | str | None = None) -> dict[str, Any]:
 
 
 def save(registry: dict[str, Any], path: Path | str | None = None) -> Path:
-    target = Path(path) if path else DEFAULT_REGISTRY
+    target = Path(path) if path else default_registry_path()
+    target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(registry, indent=2, sort_keys=True), encoding="utf-8")
     return target
 

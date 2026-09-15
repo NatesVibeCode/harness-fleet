@@ -1,0 +1,17 @@
+{
+  "name": "career",
+  "description": "Enterprise sales and operations roles, remote",
+  "seeds": ["enterprise software"],
+  "queries": [
+    "\"enterprise sales\" remote hiring",
+    "\"sales operations\" remote hiring"
+  ],
+  "backends": ["ddgs", "hn"],
+  "title_include": ["enterprise sales", "sales ops", "sales operations"],
+  "title_exclude": ["intern", "apprentice"],
+  "remote": true,
+  "preset": "triage",
+  "tier": "tier_3",
+  "top": 50,
+  "revision": 1
+}

@@ -117,3 +117,43 @@ def load_lanes(root: str | Path = ".", *, channels: set[str] | None = None,
             raise LaneError(f"duplicate lane '{lane.name}'")
         lanes[lane.name] = lane
     return lanes
+
+#: Lanes that ship with the package. A workspace may override a shipped lane by
+#: defining one with the same name in <workspace>/lanes/.
+SHIPPED_LANE_DIR = Path(__file__).resolve().parent / "resources" / "lanes"
+
+
+def shipped_lanes() -> dict[str, Lane]:
+    """The products that come with the tool, as installed."""
+    return load_lanes_dir(SHIPPED_LANE_DIR)
+
+
+def load_lanes_dir(directory: Path) -> dict[str, Lane]:
+    lanes: dict[str, Lane] = {}
+    if not directory.is_dir():
+        return lanes
+    for path in sorted(directory.glob("*.json")):
+        lane = load_lane(path)
+        if lane.name != path.stem:
+            raise LaneError(f"{path.name}: lane name '{lane.name}' must match the file name")
+        lanes[lane.name] = lane
+    return lanes
+
+
+def load_available_lanes(root: str | Path = ".", *, channels: set[str] | None = None,
+                         backends: set[str] | None = None) -> dict[str, Lane]:
+    """Shipped lanes, with any workspace lane of the same name taking precedence."""
+    available = shipped_lanes()
+    workspace_dir = Path(root) / LANE_DIRNAME
+    if workspace_dir.is_dir():
+        for path in sorted(workspace_dir.glob("*.json")):
+            lane = load_lane(path, channels=channels, backends=backends)
+            if lane.name != path.stem:
+                raise LaneError(f"{path.name}: lane name '{lane.name}' must match the file name")
+            available[lane.name] = lane
+    return available
+
+
+def lane_source(root: str | Path = ".", name: str = "") -> str:
+    """Where a lane came from: the workspace or the package."""
+    return "workspace" if (Path(root) / LANE_DIRNAME / f"{name}.json").is_file() else "shipped"

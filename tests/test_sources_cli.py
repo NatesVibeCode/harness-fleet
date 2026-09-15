@@ -73,10 +73,13 @@ def test_a_broken_channel_is_reported_not_swallowed(tmp_path):
         cli.cmd_sources(_ns(tmp_path, "channels"))
 
 
-def test_a_promotion_changes_what_counts_as_evidence(tmp_path, capsys):
+def test_a_promotion_changes_what_counts_as_evidence(tmp_path, capsys, monkeypatch):
     """The loop a person actually cares about: promote, then it is evidence."""
     from harness_fleet import sources
 
+    # The registry resolves through the environment, so point it here before
+    # promoting and the classification below will see the same file.
+    monkeypatch.setenv("HARNESS_FLEET_REGISTRY", str(tmp_path / "source_registry.json"))
     cli.cmd_sources(_ns(tmp_path, "promote", domain="vendorhub.example", category="vendor_registry"))
     capsys.readouterr()
     import os

@@ -1364,3 +1364,24 @@ class LaneReport(ClosedModel):
     cost: LaneCost = LaneCost()
     frozen: dict[str, str] = {}
     notes: list[str] = []
+
+class LaneSummary(ClosedModel):
+    """One lane a person or an assistant can pick."""
+
+    name: str
+    description: str = ""
+    preset: str = ""
+    tier: str = ""
+    top: int = 0
+    title_include: list[str] = []
+    remote: bool = False
+    source: str = "shipped"
+
+
+class LanesReport(ClosedModel):
+    """What this install can be asked to do, without installing anything else."""
+
+    default: str = ""
+    lanes: list[LaneSummary] = []
+    workspace_lanes_dir: str = ""
+

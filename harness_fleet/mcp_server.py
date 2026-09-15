@@ -27,6 +27,8 @@ from .models import (
     EntityHistoryReport,
     InputItem,
     LaneReport,
+    LanesReport,
+    LaneSummary,
     ModelOutput,
     ProfileResult,
     RegistryDomain,
@@ -157,6 +159,32 @@ def create_mcp_server(workspace_root: str | Path, db_path: str | Path | None = N
         """Validate and register one immutable, declarative task revision."""
         revision = store.register_task(task)
         return TaskRegistrationResult(task=task.name, revision=revision)
+
+    @server.tool(structured_output=True)
+    def harness_fleet_lanes() -> LanesReport:
+        """The products this install can run: pick one with the `lane` argument.
+
+        A lane carries what differs between products — what to search for, where,
+        which checklist scores it, the bar it demands and how it presents — so an
+        assistant chooses the product for the task instead of the user choosing a
+        binary. A workspace may override any shipped lane by defining one with the
+        same name in <workspace>/lanes/.
+        """
+        from .lanes import LANE_DIRNAME, lane_source, load_available_lanes
+
+        lanes = load_available_lanes(workspace.root)
+        return LanesReport(
+            default="account",
+            workspace_lanes_dir=str(workspace.root / LANE_DIRNAME),
+            lanes=[
+                LaneSummary(
+                    name=lane.name, description=lane.description, preset=lane.preset,
+                    tier=lane.tier, top=lane.top, title_include=list(lane.title_include),
+                    remote=lane.remote, source=lane_source(workspace.root, lane.name),
+                )
+                for lane in sorted(lanes.values(), key=lambda item: item.name)
+            ],
+        )
 
     @server.tool(structured_output=True)
     def harness_fleet_lane_report(
@@ -333,9 +361,10 @@ def create_mcp_server(workspace_root: str | Path, db_path: str | Path | None = N
 
     @server.tool(structured_output=True)
     def harness_fleet_run(
-        task: Annotated[str, Field(description="Registered task name or workspace-relative TaskSpec JSON")],
         input_path: Annotated[str, Field(description="Workspace-relative JSON, JSONL, or CSV input")],
         run_id: Annotated[str, Field(description="Stable run identifier", pattern=ID_PATTERN, max_length=128)],
+        task: Annotated[str | None, Field(description="Registered task name or workspace-relative TaskSpec JSON; a lane supplies one when omitted")] = None,
+        lane: Annotated[str | None, Field(description="Lane to run (see harness_fleet_lanes); supplies the task when none is named")] = None,
         sessions: Annotated[int, Field(ge=1, le=64)] = 4,
         max_attempts: Annotated[int, Field(ge=1, le=100_000)] = 300,
         output_packet: Annotated[str | None, Field(description="Optional workspace-relative packet path")] = None,
@@ -347,8 +376,28 @@ def create_mcp_server(workspace_root: str | Path, db_path: str | Path | None = N
         use_active_profile: Annotated[bool, Field(description="Explicitly attach the active Ideal Company Profile from SQLite")] = False,
         parent_run_id: Annotated[str | None, Field(description="Optional parent run for rescore lineage")] = None,
     ) -> CleanPacket:
-        """Create and execute a bounded, resumable SQLite-backed bulk campaign."""
-        task_spec = resolve_task(task)
+        """Create and execute a bounded, resumable SQLite-backed bulk campaign.
+
+        Name a lane instead of a task to run one of the products this install
+        ships (or a lane the workspace defines); the lane's preset is used.
+        """
+        if not task and not lane:
+            raise ValueError("pass task, or lane to use one of the shipped products")
+        task_ref = task
+        if not task_ref and lane:
+            from .lanes import LaneError, load_available_lanes
+
+            try:
+                resolved_lane = load_available_lanes(workspace.root).get(lane)
+            except LaneError as exc:
+                raise ValueError(str(exc)) from exc
+            if resolved_lane is None:
+                available = ", ".join(sorted(load_available_lanes(workspace.root)))
+                raise ValueError(f"no lane '{lane}' (have: {available})")
+            task_ref = resolved_lane.preset
+        if not task_ref:
+            raise ValueError("pass task, or lane to use one of the shipped products")
+        task_spec = resolve_task(task_ref)
         input_file = workspace.path(input_path, exists=True)
         resolved_only_ids: Path | str | None = None
         if only_ids:

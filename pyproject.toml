@@ -66,6 +66,7 @@ include = ["harness_fleet*"]
 [tool.setuptools.package-data]
 harness_fleet = [
     "migrations/*.sql",
+    "resources/lanes/*.json",
     "data/*.json",
     "resources/harness_skill/*.md",
     "resources/harness_skill/references/*.md",

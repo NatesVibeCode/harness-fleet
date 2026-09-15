@@ -116,6 +116,8 @@ def test_discovery_records_unknown_hosts_as_candidates(tmp_path, monkeypatch):
     from harness_fleet import discover, registry
 
     monkeypatch.chdir(tmp_path)
+    # Read the registry where the run resolves it, not at a hardcoded path.
+    monkeypatch.setenv("HARNESS_FLEET_REGISTRY", str(tmp_path / "source_registry.json"))
     monkeypatch.setattr(discover, "search_hn", lambda q, **kw: [
         discover.SearchHit(url="https://brandnew.example/careers/1", title="Jobs", snippet="s", backend="hn"),
     ])

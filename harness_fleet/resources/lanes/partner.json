@@ -1,0 +1,13 @@
+{
+  "name": "partner",
+  "description": "Implementation partners and consultancies, from vendor-published stories",
+  "queries": [
+    "\"partner of the year\" implementation \"case study\"",
+    "\"premier partner\" (\"systems integrator\" OR consultancy) \"case study\""
+  ],
+  "backends": ["ddgs", "hn"],
+  "preset": "partner-research",
+  "tier": "tier_1",
+  "top": 25,
+  "revision": 1
+}
