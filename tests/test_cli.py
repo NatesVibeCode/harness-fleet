@@ -23,6 +23,162 @@ def test_init_registers_task_and_writes_typed_sample(tmp_path, monkeypatch):
     assert (tmp_path / "demo.sample.jsonl").is_file()
 
 
+def _run_namespace(**overrides):
+    base = dict(
+        task="demo", input=None, id_column=None, text_column=None, uri_column=None,
+        run_id=None, output=None, db=None, workspace_root=None, json=True,
+        route=None, exclude_route=None, provider=None, exclude_provider=None,
+        free_only=False, zdr=False, no_data_collection=False,
+        max_cost_in=None, max_cost_out=None, max_request_cost=None,
+        openrouter_providers=None, openrouter_order=None, openrouter_ignore=None,
+        profile=None, use_active_profile=False, from_studio=False,
+        sessions=1, max_attempts=5, timeout=None, only_ids=None, only_ids_fuzzy=None,
+        limit=None, sample=None,
+    )
+    base.update(overrides)
+    return Namespace(**base)
+
+
+def test_run_explains_a_database_with_no_verified_free_routes(tmp_path, monkeypatch):
+    """The generic engine message hid the fix; the CLI must name it."""
+    import pytest
+
+    monkeypatch.chdir(tmp_path)
+    db = tmp_path / "state.db"
+    cli.cmd_init(Namespace(name="demo", preset="classify", batch_size=1, sample=None, db=str(db), json=True))
+    input_path = tmp_path / "in.csv"
+    input_path.write_text("item_id,text\na.com,Some source text about a company.\n", encoding="utf-8")
+
+    with pytest.raises(ValueError) as err:
+        cli.cmd_run(_run_namespace(
+            db=str(db), workspace_root=str(tmp_path), input=str(input_path),
+            id_column="item_id", text_column="text",
+        ))
+
+    message = str(err.value)
+    assert "no verified-free route is registered" in message
+    assert "routes refresh" in message
+
+
+def test_run_registers_the_demo_route_when_it_is_pinned(tmp_path, monkeypatch):
+    """`run --route demo/fake` is the offline path and must work on a fresh DB."""
+    monkeypatch.chdir(tmp_path)
+    db = tmp_path / "state.db"
+    cli.cmd_init(Namespace(name="demo", preset="classify", batch_size=1, sample=None, db=str(db), json=True))
+    input_path = tmp_path / "in.csv"
+    input_path.write_text("item_id,text\na.com,Some source text about a company.\n", encoding="utf-8")
+
+    cli.cmd_run(_run_namespace(
+        db=str(db), workspace_root=str(tmp_path), input=str(input_path),
+        id_column="item_id", text_column="text", run_id="offline-1", route=["demo/fake"],
+    ))
+
+    assert HarnessStore(db).run_snapshot("offline-1")["status"] == "completed"
+
+
+def test_run_rejects_a_pinned_route_this_database_does_not_know(tmp_path, monkeypatch):
+    import pytest
+
+    monkeypatch.chdir(tmp_path)
+    db = tmp_path / "state.db"
+    cli.cmd_init(Namespace(name="demo", preset="classify", batch_size=1, sample=None, db=str(db), json=True))
+    input_path = tmp_path / "in.csv"
+    input_path.write_text("item_id,text\na.com,Some source text about a company.\n", encoding="utf-8")
+
+    with pytest.raises(ValueError) as err:
+        cli.cmd_run(_run_namespace(
+            db=str(db), workspace_root=str(tmp_path), input=str(input_path),
+            id_column="item_id", text_column="text", route=["opencode/made-up-free"],
+        ))
+
+    assert "is not registered" in str(err.value)
+    assert "routes refresh" in str(err.value)
+
+
+def test_version_reports_the_running_code(monkeypatch, capsys):
+    """A PYTHONPATH checkout next to an older install must report its own version."""
+    import harness_fleet
+
+    monkeypatch.setattr("sys.argv", ["harness-fleet"])
+    value = cli._package_version()
+    assert value == harness_fleet.__version__
+
+
+def test_single_only_ids_value_selects_that_id(tmp_path, monkeypatch):
+    """The help promises a comma-separated list, so one ID must work without a comma."""
+    args = Namespace(only_ids="acme.dev", input="in.csv", workspace_root=str(tmp_path))
+    _path, options = cli._input_source(args)
+    assert options["only_ids"] == ["acme.dev"]
+
+    # A real filter file still resolves as a file, and a missing one still errors.
+    filter_file = tmp_path / "ids.csv"
+    filter_file.write_text("item_id\nacme.dev\n", encoding="utf-8")
+    _path, options = cli._input_source(Namespace(only_ids="ids.csv", input="in.csv", workspace_root=str(tmp_path)))
+    assert options["only_ids"] == filter_file
+    _path, options = cli._input_source(Namespace(only_ids="missing.csv", input="in.csv", workspace_root=str(tmp_path)))
+    assert options["only_ids"] == tmp_path / "missing.csv"
+
+
+def test_export_refuses_to_overwrite_the_runs_own_packet(tmp_path, monkeypatch, capsys):
+    import pytest
+
+    monkeypatch.chdir(tmp_path)
+    db = tmp_path / "state.db"
+    cli.cmd_init(Namespace(name="demo", preset="classify", batch_size=1, sample=None, db=str(db), json=True))
+    input_path = tmp_path / "in.csv"
+    input_path.write_text("item_id,text\na.com,Some source text about a company.\n", encoding="utf-8")
+    cli.cmd_run(_run_namespace(
+        db=str(db), workspace_root=str(tmp_path), input=str(input_path),
+        id_column="item_id", text_column="text", run_id="packet-run", route=["demo/fake"],
+    ))
+    packet = tmp_path / "runs/packet-run/clean_packet.json"
+    before = packet.read_bytes()
+    capsys.readouterr()
+
+    # The default export writes a different file and leaves the packet alone.
+    cli.cmd_export(Namespace(
+        run_id="packet-run", db=str(db), format="json", output=None, top=1, rank=False,
+        sort_by=None, desc=True, filter=None, adjust_scores=False, score_field="score",
+        json=True, workspace_root=str(tmp_path), force=False,
+    ))
+    assert packet.read_bytes() == before
+    assert (tmp_path / "runs/packet-run/export.json").is_file()
+
+    # Pointing it at the packet is refused unless forced.
+    with pytest.raises(ValueError) as err:
+        cli.cmd_export(Namespace(
+            run_id="packet-run", db=str(db), format="json", output=str(packet), top=1, rank=False,
+            sort_by=None, desc=True, filter=None, adjust_scores=False, score_field="score",
+            json=True, workspace_root=str(tmp_path), force=False,
+        ))
+    assert "stored packet" in str(err.value)
+    assert packet.read_bytes() == before
+
+
+def test_partners_fails_when_every_backend_is_unavailable(tmp_path, monkeypatch):
+    """A missing dependency must not read as 'found nothing'."""
+    import pytest
+
+    from harness_fleet.partner_sourcing import SourcingReport
+
+    monkeypatch.chdir(tmp_path)
+
+    def fake_find(**kwargs):
+        report = SourcingReport(stage="find", searched=5)
+        report.skipped = [{"backend": "ddgs", "query": "q", "reason": "ddgs is not installed"}]
+        report.skipped *= 5
+        return [], report
+
+    monkeypatch.setattr("harness_fleet.partner_sourcing.find_partners", fake_find)
+    with pytest.raises(ValueError) as err:
+        cli.cmd_partners(Namespace(
+            partners_command="find", tech="Kafka", vertical="", subreddit=None, backend=["ddgs"],
+            max=2, delay=0.0, snippets_only=True, plan=None, output=str(tmp_path / "p.csv"),
+            db=str(tmp_path / "p.db"), json=True, domain=None, max_pages=1, no_fetch=False,
+        ))
+    assert "every search backend was unavailable" in str(err.value)
+
+
 def test_validate_is_offline_and_strict(tmp_path, capsys):
     db = tmp_path / "state.db"
     input_path = tmp_path / "input.jsonl"

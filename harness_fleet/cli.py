@@ -173,7 +173,17 @@ def _workspace_path(value: str | Path, workspace_root: str | Path = ".") -> Path
 def _input_source(args: argparse.Namespace) -> tuple[Path, dict[str, Any]]:
     only_ids = getattr(args, "only_ids", None)
     if isinstance(only_ids, str) and not any(separator in only_ids for separator in (",", ";", "\n")):
-        only_ids = _workspace_path(only_ids, getattr(args, "workspace_root", "."))
+        # The help promises "a file (CSV, JSONL, TXT) or a comma-separated list",
+        # so a single bare value is an ID unless it really is a filter file. It
+        # used to be welded to the workspace root unconditionally, which made
+        # `--only-ids acme.dev` a missing file instead of one selected ID.
+        candidate = _workspace_path(only_ids, getattr(args, "workspace_root", "."))
+        if candidate.is_file():
+            only_ids = candidate
+        elif candidate.suffix.lower() in {".csv", ".json", ".jsonl", ".txt"}:
+            only_ids = candidate  # let the loader report the missing file
+        else:
+            only_ids = [only_ids]
     return _workspace_path(args.input, getattr(args, "workspace_root", ".")), {
         "id_column": getattr(args, "id_column", None),
         "text_column": getattr(args, "text_column", None),
@@ -210,6 +220,16 @@ def _package_version() -> str:
         "career-fleet": "career-fleet",
         "career-lanes": "career-fleet",
     }.get(executable)
+    # The code that is running knows its version; installed metadata can be
+    # stale or belong to a different distribution on the path (a PYTHONPATH
+    # checkout next to an older install is the common case).
+    try:
+        from . import __version__
+
+        if __version__ and __version__ != "0.0.0":
+            return __version__
+    except ImportError:
+        pass
     package_names = [preferred] if preferred else []
     package_names.extend(
         name for name in ("harness-fleet", "account-fleet", "career-fleet")
@@ -220,12 +240,7 @@ def _package_version() -> str:
             return importlib.metadata.version(name)
         except importlib.metadata.PackageNotFoundError:
             pass
-    try:
-        from . import __version__
-
-        return __version__
-    except ImportError:
-        return "0.0.0"
+    return "0.0.0"
 
 
 def _emit(value: Any, json_mode: bool, human: str | None = None) -> None:
@@ -593,6 +608,64 @@ def cmd_test(args: argparse.Namespace) -> None:
         raise SystemExit(1)
 
 
+def _check_routes_for_run(store: HarnessStore, policy: RoutePolicy | None) -> None:
+    """Fail early, and helpfully, when the run has no route it could use.
+
+    Two cases used to surface as one misleading engine error ("No enabled route
+    has observed zero pricing or matches active policy"):
+
+    * the database has no routes at all yet — a fresh workspace needs
+      ``routes refresh`` before anything can run;
+    * a ``--route`` was pinned to something this database does not know.
+
+    The offline demo route is a third case, and it is registered on demand:
+    ``quickstart`` always did that, so ``run --route demo/fake`` failing on a
+    fresh database was a trap for exactly the users who wanted no keys at all.
+    """
+    from .catalog import RouteCatalog
+
+    pinned = list(getattr(policy, "allowed_routes", None) or [])
+    catalog = RouteCatalog(db_path=store.path)
+    known = {route["id"] for route in catalog.data.get("routes", [])}
+
+    for route_id in pinned:
+        if route_id in known:
+            continue
+        if route_id.startswith("demo/"):
+            catalog.add_route(
+                route_id=route_id,
+                provider="demo",
+                cost_per_1k_input=0.0,
+                cost_per_1k_output=0.0,
+                enabled=True,
+                price_state="price_observed_zero",
+                verification_source="explicit --route (synthetic, deterministic)",
+            )
+            known.add(route_id)
+            continue
+        raise ValueError(
+            f"route '{route_id}' is not registered in {store.path}. "
+            "Run `harness-fleet routes refresh` to discover free routes, or "
+            "`harness-fleet routes add` to register this one."
+        )
+
+    if pinned:
+        return
+    # The catalog ships hints, not evidence: on a fresh database every route is
+    # a candidate and nothing is verified free, so the run has nothing to lease.
+    usable = [
+        route for route in catalog.data.get("routes", [])
+        if route.get("enabled") and route.get("price_state") == "price_observed_zero"
+    ]
+    if not usable:
+        raise ValueError(
+            f"no verified-free route is registered in {store.path} yet "
+            f"({len(known)} hint(s), none priced at zero). Run "
+            "`harness-fleet routes refresh` to discover free routes, or use "
+            "`harness-fleet quickstart` for the offline demo."
+        )
+
+
 def cmd_run(args: argparse.Namespace) -> None:
     store = _store(args)
     task = _resolve_task(args.task, store, getattr(args, "workspace_root", "."))
@@ -601,6 +674,7 @@ def cmd_run(args: argparse.Namespace) -> None:
         return iter_input_items(input_path, **input_options)
 
     policy = _extract_policy(args)
+    _check_routes_for_run(store, policy)
     profile, profile_revision_id = _resolve_profile(args, store)
     run_id = args.run_id or f"{task.name}-{time.time_ns()}-{uuid.uuid4().hex[:8]}"
     output = _workspace_path(args.output or f"runs/{run_id}/clean_packet.json", getattr(args, "workspace_root", "."))
@@ -859,8 +933,21 @@ def cmd_export(args: argparse.Namespace) -> None:
     store = _store(args)
     snapshot = store.run_snapshot(args.run_id)
     fmt = getattr(args, "format", "json") or "json"
-    default_name = f"runs/{args.run_id}/clean_packet.{fmt}"
+    # `run` stores its packet at runs/<run_id>/clean_packet.json. Exporting to
+    # the same name with a subset silently rewrote the run's own record (and its
+    # audit) — the default is a distinct name, and an explicit path that lands
+    # on the stored packet is refused unless --force says otherwise.
+    stored_packet = Path(
+        (snapshot.get("run") or {}).get("output_path")
+        or _workspace_path(f"runs/{args.run_id}/clean_packet.json", getattr(args, "workspace_root", "."))
+    )
+    default_name = f"runs/{args.run_id}/export.{fmt}"
     output = Path(args.output or default_name)
+    if not getattr(args, "force", False) and output.resolve() == stored_packet.resolve():
+        raise ValueError(
+            f"{output} is this run's stored packet; exporting over it would rewrite the run's "
+            "own record. Choose another --output, or pass --force to overwrite it deliberately."
+        )
     bias_map: dict[str, float] | None = None
     score_field = getattr(args, "score_field", "score") or "score"
     if getattr(args, "adjust_scores", False):
@@ -1148,6 +1235,15 @@ def cmd_partners(args: argparse.Namespace) -> None:
             snippets_only=snippets_only,
             max_pages=int(getattr(args, "max_pages", 8) or 8),
             include_fetch=not bool(getattr(args, "no_fetch", False)),
+        )
+    # Every backend skipped means the run could not search at all: reporting
+    # "Found 0 partner dossier(s)" with exit 0 hides a missing dependency.
+    backend_skips = [entry for entry in report.skipped if entry.get("backend")]
+    if not items and backend_skips and len(backend_skips) >= max(1, report.searched):
+        first = backend_skips[0].get("reason", "no backend could be reached")
+        raise ValueError(
+            f"every search backend was unavailable ({len(backend_skips)} of {report.searched} "
+            f"searches skipped): {first}"
         )
     path = export_bundled_csv(items, output)
     payload = {"output": str(path), "partners": len(items), "report": report.as_dict()}
@@ -1915,6 +2011,10 @@ def build_parser() -> argparse.ArgumentParser:
     export = commands.add_parser("export", help="Export a validated packet from a run")
     export.add_argument("run_id")
     export.add_argument("--output")
+    export.add_argument(
+        "--force", action="store_true",
+        help="Allow writing over this run's stored packet (refused by default)",
+    )
     export.add_argument("--format", choices=["json", "csv", "jsonl"], default="json", help="Output format: json, csv, or jsonl (one record per line)")
     export.add_argument("--sort-by", help="Claim key to sort records by (e.g. score, priority)")
     export.add_argument("--desc", action="store_true", default=True, help="Sort descending (default: True)")
