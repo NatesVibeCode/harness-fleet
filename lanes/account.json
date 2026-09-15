@@ -1,0 +1,13 @@
+{
+  "name": "account",
+  "description": "Target accounts for a technical ICP: who is doing the work, and who is hiring for it",
+  "queries": [
+    "\"Kafka\" (\"migration\" OR \"case study\") -site:reddit.com",
+    "(\"Snowflake\" OR \"Databricks\" OR \"Confluent\") partner \"case study\" streaming"
+  ],
+  "backends": ["ddgs", "hn"],
+  "preset": "account-research",
+  "tier": "tier_2",
+  "top": 25,
+  "revision": 1
+}

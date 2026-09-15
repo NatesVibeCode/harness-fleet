@@ -1,0 +1,64 @@
+{
+  "candidates": {
+    "a.example": {
+      "domain": "a.example",
+      "first_seen": "2026-09-15T22:50:03.481086+00:00",
+      "sample_urls": [
+        "https://a.example/",
+        "https://a.example/1"
+      ],
+      "sightings": 8,
+      "signals": {}
+    },
+    "academic.oup.com": {
+      "domain": "academic.oup.com",
+      "first_seen": "2026-09-15T22:50:04.624152+00:00",
+      "sample_urls": [
+        "https://academic.oup.com/ppmg/article/5/1/22/6486463"
+      ],
+      "sightings": 2,
+      "signals": {}
+    },
+    "acme.com": {
+      "domain": "acme.com",
+      "first_seen": "2026-09-15T22:50:04.624409+00:00",
+      "sample_urls": [
+        "https://acme.com/case-studies/kafka"
+      ],
+      "sightings": 2,
+      "signals": {
+        "first_party_case_study": 0.5,
+        "vendor_registry": 0.4
+      }
+    },
+    "b.example": {
+      "domain": "b.example",
+      "first_seen": "2026-09-15T22:50:03.486364+00:00",
+      "sample_urls": [
+        "https://b.example/"
+      ],
+      "sightings": 2,
+      "signals": {}
+    },
+    "bad.example": {
+      "domain": "bad.example",
+      "first_seen": "2026-09-15T22:50:03.483603+00:00",
+      "sample_urls": [
+        "https://bad.example/"
+      ],
+      "sightings": 2,
+      "signals": {}
+    },
+    "example.com": {
+      "domain": "example.com",
+      "first_seen": "2026-09-15T22:50:00.928649+00:00",
+      "sample_urls": [
+        "https://example.com/questions/1/when-kafka",
+        "https://example.com/from-ddgs"
+      ],
+      "sightings": 4,
+      "signals": {}
+    }
+  },
+  "domains": {}
+}
