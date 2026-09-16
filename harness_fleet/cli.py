@@ -1919,6 +1919,121 @@ def _lane_items(items: list[Any], lane: Any) -> tuple[list[Any], int]:
         kept.append(item)
     return kept, len(items) - len(kept)
 
+
+def _funnel_profile(args: argparse.Namespace, workspace: Path, lane: Any) -> Any:
+    """The firmographics this run gates on, from the profile and the lane.
+
+    A profile says what this engagement needs; a lane says what the product
+    accepts. Both bind, so they are intersected rather than one winning. When no
+    profile is authored yet the lane's own gates still apply, which is what lets
+    a first run with no setup eliminate the obviously wrong companies.
+    """
+    from .gates import GateProfile
+
+    lane_gates = GateProfile.from_object(
+        lane.funnel.gate_profile() if lane is not None else None
+    )
+    explicit = getattr(args, "profile", None)
+    candidates = [Path(explicit).expanduser()] if explicit else []
+    if not explicit:
+        candidates = [
+            workspace / "ideal_partner_profile.json",
+            workspace / "profiles" / "ideal_partner_profile.json",
+        ]
+    for path in candidates:
+        if not path.is_file():
+            continue
+        try:
+            from .partner import IdealPartnerProfile
+
+            profile = IdealPartnerProfile.load(path)
+        except Exception as exc:
+            print(f"Funnel: ignoring {path} ({exc})")
+            continue
+        print(f"Funnel gates from profile '{profile.profile_name}' ({path})")
+        return lane_gates.intersect(GateProfile.from_object(profile))
+    if explicit:
+        raise ValueError(f"profile not found: {candidates[0]}")
+    return lane_gates
+
+
+def _funnel_note(counts: dict[str, Any]) -> str:
+    """Where the world shrank, in one line, naming the worst offender."""
+    if not counts.get("candidates"):
+        return ""
+    parts = []
+    for gate, number in sorted(
+        counts.get("eliminated_at", {}).items(), key=lambda row: -row[1]
+    ):
+        who = (counts.get("eliminated", {}).get(gate) or [{}])[0].get("candidate", "")
+        parts.append(f"{number} at {gate}" + (f" (e.g. {who})" if who else ""))
+    for gate, number in sorted(counts.get("unresolved_at", {}).items()):
+        parts.append(f"{number} unresolved on {gate}")
+    survived = counts.get("verdicts", {}).get("needing_retrieval", 0)
+    detail = f"Funnel: {counts['candidates']} candidates -> {survived} needing retrieval"
+    if parts:
+        detail += " (" + ", ".join(parts) + ")"
+    return detail
+
+
+def _run_funnel(
+    items: list[Any], *, args: argparse.Namespace, workspace: Path, lane: Any
+) -> tuple[list[Any], dict[str, Any], dict[str, int]]:
+    """Eliminate before spending: the candidates left, the counts, what they await.
+
+    This is the gate between searching and fetching. Everything before it costs
+    one search per query; everything after it costs a page fetch per entity and a
+    model call per batch. A product vendor, a five-person shop, a firm in the
+    wrong country is ruled out here on the search result that named it, and the
+    counts are returned so the run can report the shape of what it did instead
+    of leaving a person to infer it from a shorter list.
+    """
+    from .gates import funnel_entities
+
+    profile = _funnel_profile(args, workspace, lane)
+    escaped, counts, all_reports = funnel_entities(
+        items, profile=profile, ladder=lane.funnel.rungs() if lane is not None else None
+    )
+    survivors = {report.candidate for report in escaped}
+    dropped = len({str(getattr(item, "item_id", "") or "") for item in items}) - len(survivors)
+    if dropped:
+        note = _funnel_note(counts)
+        print(
+            f"Funnel eliminated {dropped} candidate(s): {note}"
+            if note else f"Funnel eliminated {dropped} candidate(s)"
+        )
+    kept = [
+        item for item in items
+        if str(getattr(item, "item_id", "") or "") in survivors
+    ]
+    return kept, _funnel_data(counts), _earned_counts(all_reports)
+
+
+def _earned_counts(reports: list[Any]) -> dict[str, int]:
+    """What the survivors are still owed: how many wait on each rung.
+
+    A run that fetched nothing leaves every lead waiting on the same rung, and
+    that number is the honest answer to "did this run do the retrieval it said
+    it would" — better than a dossier count, which rises for either reason.
+    """
+    earned: dict[str, int] = {}
+    for report in reports:
+        if report.eliminated or not report.earned:
+            continue
+        earned[report.earned] = earned.get(report.earned, 0) + 1
+    return earned
+
+
+def _funnel_data(counts: dict[str, Any]) -> dict[str, Any]:
+    """The funnel's counts, with the names trimmed to what a report can carry."""
+    trimmed = dict(counts)
+    for bucket in ("eliminated", "unresolved"):
+        trimmed[bucket] = {
+            gate: rows[:10] for gate, rows in (counts.get(bucket) or {}).items()
+        }
+    return trimmed
+
+
 def cmd_research(args: argparse.Namespace) -> None:
     """One command from a question to a ranked deliverable.
 
@@ -2061,6 +2176,28 @@ def cmd_research(args: argparse.Namespace) -> None:
             "repositories that credit nobody), so there is no entity to score"
             + _skip_reasons_note(report.get("skipped"))
         )
+    # 1a-bis. Shrink the world before spending anything on it. Everything above
+    # this line costs searches; everything below it costs page fetches and model
+    # calls. A product vendor, a five-person shop or a firm in the wrong country
+    # is gone here, having cost one search result to rule out, and the funnel's
+    # counts go into the run's report so the shape of the run is visible rather
+    # than inferred from a shorter dossier list.
+    if not getattr(args, "no_funnel", False) and keyed:
+        keyed, funnel, earned = _run_funnel(
+            keyed, args=args, workspace=workspace, lane=lane
+        )
+        report["funnel"] = funnel
+        # What the survivors have earned, once fetched, tells a reader whether
+        # the run collected the evidence the leads were waiting for.
+        report["funnel_earned"] = earned
+        _write_discovery_report(workspace, run_id, report)
+        if not keyed:
+            raise DiscoverError(
+                "the funnel eliminated every candidate: every entity captured was "
+                "the wrong kind of company, the wrong size, or outside the "
+                "territory the lane and profile name. "
+                f"Reasons recorded: {report_path}"
+            )
     dossiers = bundle_records(keyed)
     print(f"Captured {len(keyed)} sources into {len(dossiers)} account dossiers")
 
@@ -3000,6 +3137,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--enrich-entities", type=_non_negative_int, default=0,
         help="Most entities to walk per run (default 0: every entity short of the bar; "
              "each one is bounded by --enrich-pages)",
+    )
+    research.add_argument(
+        "--profile",
+        help="Ideal Partner Profile JSON whose firmographics gate this run "
+             "(default: ideal_partner_profile.json in the workspace, when it exists)",
+    )
+    research.add_argument(
+        "--no-funnel", action="store_true",
+        help="Skip elimination: keep every captured candidate, however wrong its "
+             "kind, size or country (default: the funnel runs and reports its counts)",
     )
     research.add_argument("--workspace-root", default=".", help="Workspace root for relative paths")
     _policy_options(research)

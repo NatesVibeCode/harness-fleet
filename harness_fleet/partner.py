@@ -10,6 +10,16 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 from .profile import IdealCompanyProfile
 
 
+def _size_phrase(minimum: int, maximum: int) -> str:
+    if minimum and maximum:
+        return f"{minimum}-{maximum} people"
+    if minimum:
+        return f"at least {minimum} people"
+    if maximum:
+        return f"up to {maximum} people"
+    return "Not specified"
+
+
 class IdealPartnerProfile(BaseModel):
     """The durable Ideal Partner Profile (IPP) contract for partner research.
 
@@ -24,6 +34,20 @@ class IdealPartnerProfile(BaseModel):
 
     profile_name: str = Field(default="My Ideal Partner Profile")
     version: str = Field(default="1.0.0")
+    #: Firmographics first, because they are what the funnel runs on. The
+    #: cheapest gates — what kind of company this is, how big, where, serving
+    #: whom — decide most of a candidate set for almost nothing, so a profile
+    #: that leads with semantics leaves its own first four gates unanswerable
+    #: and pays a page fetch to learn what a size range would have said.
+    #:
+    #: A partner lane wants delivery firms: a product vendor is never the
+    #: partner implementing somebody's platform.
+    partner_kind: str = Field(default="services", description="What this lane looks for: 'services' (delivery firms) or 'any'")
+    partner_size_min: int = Field(default=0, description="Headcount floor; 0 leaves it unbounded (e.g. 20)")
+    partner_size_max: int = Field(default=0, description="Headcount ceiling; 0 leaves it unbounded (e.g. 500)")
+    target_territories: list[str] = Field(default_factory=list, description="Where they must be (e.g. United Kingdom, Ireland)")
+    target_industries: list[str] = Field(default_factory=list, description="Industries they must serve (e.g. fintech, healthcare)")
+    #: Then the semantics.
     target_ecosystem: str = Field(default="", description="Platform or technology to be implemented (e.g. Snowflake, Kafka, Supabase, Datadog)")
     service_models: list[str] = Field(default_factory=list, description="Target partner delivery models (e.g. Systems Integration, Migration, Managed Services)")
     required_adjacent_competencies: list[str] = Field(default_factory=list, description="Pre-requisite or complementary tech stack (e.g. AWS, Terraform, Kubernetes)")
@@ -61,6 +85,21 @@ class IdealPartnerProfile(BaseModel):
         profile_path.parent.mkdir(parents=True, exist_ok=True)
         profile_path.write_text(self.model_dump_json(indent=2), encoding="utf-8")
 
+    def funnel_profile(self) -> dict[str, Any]:
+        """The firmographics the gate engine runs on, in the shape it reads.
+
+        This is the bridge that was missing: the engine existed and nothing
+        handed it a profile, because the profile had no size range, no
+        territory and no vertical list to hand over.
+        """
+        return {
+            "allows": self.partner_kind or "services",
+            "size_min": self.partner_size_min,
+            "size_max": self.partner_size_max,
+            "locations": tuple(self.target_territories),
+            "verticals": tuple(self.target_industries),
+        }
+
     def to_company_profile(self) -> IdealCompanyProfile:
         """Map to IdealCompanyProfile for persistence in the SQLite store."""
         trigger_phrases = [
@@ -82,9 +121,20 @@ class IdealPartnerProfile(BaseModel):
         )
 
     def to_prompt_context(self) -> str:
-        """Render explicit partner context for task runs."""
+        """Render explicit partner context for task runs.
+
+        Firmographics lead, because they are the gates a candidate meets first;
+        a reader tuning thresholds sees the fields the funnel actually ran on
+        before the ones it only scores with.
+        """
+        size = _size_phrase(self.partner_size_min, self.partner_size_max)
         return (
             f"IDEAL PARTNER PROFILE: {self.profile_name} (v{self.version})\n"
+            f"Firmographics (the funnel's first gates)\n"
+            f"  Company kind: {'delivery firms, not product vendors' if (self.partner_kind or 'services') == 'services' else 'any kind'}\n"
+            f"  Size: {size}\n"
+            f"  Territory: {', '.join(self.target_territories) or 'Not specified'}\n"
+            f"  Industries served: {', '.join(self.target_industries) or 'Not specified'}\n"
             f"Target ecosystem / technology: {self.target_ecosystem or 'Not specified'}\n"
             f"Service delivery models: {', '.join(self.service_models) or 'Not specified'}\n"
             f"Required adjacent competencies: {', '.join(self.required_adjacent_competencies) or 'None specified'}\n"

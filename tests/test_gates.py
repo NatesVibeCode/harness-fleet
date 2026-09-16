@@ -31,7 +31,11 @@ def test_a_snippet_may_eliminate_but_never_qualify():
     assert report.verdict == "lead", "not qualified on a snippet"
     locations = {r.gate: r for r in report.results}
     assert locations["location"].outcome == "pass", "Boston is in the United States"
-    assert report.unresolved == ["kind"], "only the gate a snippet cannot settle"
+    # The gates a snippet cannot settle, and the one no snippet could ever
+    # settle: the vertical only the case studies name. Both are reported, so a
+    # lead says what actually stands between it and a pass.
+    assert set(report.unresolved) == {"kind", "vertical"}
+    assert "fintech" not in report.because(), "an unresolved vertical is not a failure"
 
 
 def test_a_product_company_is_eliminated_at_the_first_gate():

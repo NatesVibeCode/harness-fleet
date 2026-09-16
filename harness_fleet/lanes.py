@@ -17,6 +17,9 @@ import re
 from pathlib import Path
 from typing import Any
 
+from pydantic import field_validator
+
+from .gates import SNIPPET, LadderRung, validate_ladder
 from .models import ClosedModel
 from .task import PRESETS
 
@@ -26,6 +29,56 @@ SLUG = re.compile(r"^[a-z][a-z0-9_-]{1,31}$")
 
 class LaneError(ValueError):
     """A lane file is unusable, naming the field that has to change."""
+
+
+class LaneFunnel(ClosedModel):
+    """How this lane shrinks its world before it spends anything.
+
+    The funnel is one engine for every lane; what differs is which rungs this
+    lane climbs, what each rung reads, and the firmographics it accepts. A role
+    posting and an implementation partner are gated on different things, and
+    that difference belongs in the lane file rather than in a branch inside the
+    engine.
+    """
+
+    #: What kind of company this lane wants: ``services`` rules out product
+    #: vendors at the first gate, ``any`` gates only on size and place.
+    allows: str = "services"
+    #: Headcount the lane accepts. Zero means unbounded on that side.
+    size_min: int = 0
+    size_max: int = 0
+    #: Territory, in the lane's own words. Synonym matching means "United
+    #: Kingdom" also accepts a page that says "London".
+    locations: list[str] = []
+    #: Industries the lane's candidates have to serve.
+    verticals: list[str] = []
+    #: Which rung fetches what, and what a candidate must satisfy to earn the
+    #: next. Empty means the engine's default ladder.
+    ladder: list[LadderRung] = []
+
+    @field_validator("ladder", mode="before")
+    @classmethod
+    def rungs_from_data(cls, value: Any) -> Any:
+        """Read the rungs a lane file writes as JSON objects."""
+        if not isinstance(value, list):
+            return value
+        return [
+            rung if isinstance(rung, LadderRung) else LadderRung(**dict(rung))
+            for rung in value
+        ]
+
+    def gate_profile(self) -> dict[str, Any]:
+        """The shape the gate engine reads, so a lane needs no adapter."""
+        return {
+            "allows": self.allows,
+            "size_min": self.size_min,
+            "size_max": self.size_max,
+            "locations": tuple(self.locations),
+            "verticals": tuple(self.verticals),
+        }
+
+    def rungs(self) -> list[LadderRung]:
+        return list(self.ladder)
 
 
 class Lane(ClosedModel):
@@ -76,6 +129,9 @@ class Lane(ClosedModel):
     #: ``require_kinds``.
     tier: str | None = "tier_2"
     require_kinds: list[str] = []
+    #: The elimination half: what this lane accepts, and what a candidate has to
+    #: satisfy to earn the next page visit. Defaults to the engine's ladder.
+    funnel: LaneFunnel = LaneFunnel()
     #: Presentation.
     top: int = 25
     min_score: float | None = None
@@ -120,6 +176,32 @@ def validate_lane(lane: Lane, *, channels: set[str] | None = None, backends: set
             raise LaneError(f"query_terms: '{term}' must be a non-empty list of values")
     if lane.min_score is not None and not 0 <= lane.min_score <= 100:
         raise LaneError("min_score: must be between 0 and 100")
+    _validate_funnel(lane.funnel)
+
+
+def _validate_funnel(funnel: LaneFunnel) -> None:
+    """A lane whose gate vocabulary the engine cannot run is a lane that lies."""
+    if funnel.allows not in ("services", "any"):
+        raise LaneError(f"funnel.allows: '{funnel.allows}' is not a gate (have: services, any)")
+    if funnel.size_min < 0 or funnel.size_max < 0:
+        raise LaneError("funnel: size bounds cannot be negative")
+    if funnel.size_max and funnel.size_min > funnel.size_max:
+        raise LaneError(
+            f"funnel: size_min {funnel.size_min} is above size_max {funnel.size_max}"
+        )
+    if funnel.ladder:
+        try:
+            validate_ladder(funnel.ladder)
+        except ValueError as exc:
+            raise LaneError(f"funnel.{exc}") from exc
+        first = funnel.ladder[0]
+        if first.evidence != SNIPPET:
+            raise LaneError(
+                "funnel.ladder[0]: the first rung reads what the search already "
+                "returned; a lane may not open by fetching everything"
+            )
+        if "kind" not in {gate for rung in funnel.ladder for gate in rung.gates}:
+            raise LaneError("funnel.ladder: no rung gates on the kind of company")
 
 
 def load_lane(path: Path | str, *, channels: set[str] | None = None,

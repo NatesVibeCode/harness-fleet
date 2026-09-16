@@ -55,6 +55,43 @@ class IdealCompanyProfile(BaseModel):
         profile_path.parent.mkdir(parents=True, exist_ok=True)
         profile_path.write_text(self.model_dump_json(indent=2), encoding="utf-8")
 
+    def funnel_profile(self) -> dict[str, Any]:
+        """The firmographics the gate engine runs on, as far as this profile has them.
+
+        An ICP authored before the funnel existed carries no size range and no
+        territory, so it gates on what it does say. That is not a gap to paper
+        over with invented bounds: a profile that names no territory leaves the
+        location gate unknown, which is the honest reading and tells the author
+        exactly which field to add.
+
+        The rubric is free-form JSON, so these are read defensively: a size that
+        is not a number, or a territory that is not a list, is treated as unset
+        rather than crashing a run before it starts.
+        """
+        rubric = self.calibrated_scoring_rubric
+
+        def whole(key: str) -> int:
+            try:
+                return int(str(rubric.get(key) or 0))
+            except (TypeError, ValueError):
+                return 0
+
+        def terms(key: str) -> tuple[str, ...]:
+            value = rubric.get(key)
+            if isinstance(value, str):
+                value = [value]
+            if not isinstance(value, list):
+                return ()
+            return tuple(str(item) for item in value if str(item).strip())
+
+        return {
+            "allows": "services" if self.anchor_logos or self.target_roles else "any",
+            "size_min": whole("size_min"),
+            "size_max": whole("size_max"),
+            "locations": terms("locations"),
+            "verticals": terms("verticals"),
+        }
+
     def to_prompt_context(self) -> str:
         """Render explicit ICP context for an account task when requested."""
         return (

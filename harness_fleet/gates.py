@@ -25,6 +25,7 @@ eliminated (a gate failed, with the reason).
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -34,6 +35,14 @@ Outcome = Literal["pass", "fail", "unknown"]
 #: eliminate; resolving one *for* a candidate requires a page we actually read.
 SNIPPET = "snippet"
 FETCHED = "fetched"
+
+#: The gates that exist, in the order a lane runs them. A ladder rung naming a
+#: gate outside this tuple is a lane that lies, and is rejected when it loads.
+GATE_ORDER = ("kind", "size", "location", "vertical")
+
+#: The semantic gates need prose only their own site or its case studies carry,
+#: so no search-result text may settle them.
+_SEMANTIC_GATES = frozenset({"vertical"})
 
 #: Firmographic vocabulary. The words an SI uses about itself, and the words a
 #: product company uses — the first distinction the funnel has to make, because
@@ -194,6 +203,26 @@ def read_location(text: str) -> str:
     return ""
 
 
+#: The synonym groups that name an industry a firm can serve. Kept apart from
+#: PLACE_GROUPS because the vertical gate must not read "chatting in San
+#: Francisco" as "serves fintech".
+VERTICAL_GROUPS = ("fintech", "healthcare", "retail", "logistics")
+
+
+def read_verticals(text: str) -> tuple[str, ...]:
+    """Which industries a text names. Empty when it names none we know.
+
+    The absence of a vertical is not the same as the absence of *evidence*
+    about verticals: a page that names no industry we recognise leaves the gate
+    unresolved, because the case studies may simply not be in this text.
+    """
+    found = []
+    for group in VERTICAL_GROUPS:
+        if any(variant in (text or "").lower() for variant in variants(group)):
+            found.append(group)
+    return tuple(found)
+
+
 def read_kind(text: str) -> str:
     """Whether a text reads as a delivery firm, a product company, or neither.
 
@@ -213,6 +242,183 @@ def read_firmographics(text: str) -> Firmographics:
     return Firmographics(
         kind=read_kind(text), size=read_size(text), location=read_location(text),
     )
+
+
+def read_grade(metadata: Any) -> str:
+    """The evidence grade a source carries, in this funnel's two-value alphabet.
+
+    Discovery publishes three grades (``fetched``, ``profile``, ``indicator``),
+    and the distinction that decides what a text may settle is a binary one: was
+    this a page we actually read, or somebody's summary of one? ``profile`` is
+    structured directory text — real, but not a page read — so it grades as a
+    snippet here. Anything unrecognised is the weakest grade, because assuming
+    the strongest is how a summary gets to qualify a candidate.
+    """
+    if not isinstance(metadata, dict):
+        return SNIPPET
+    return FETCHED if str(metadata.get("evidence") or "").strip().lower() == FETCHED else SNIPPET
+
+
+@dataclass(frozen=True)
+class GateProfile:
+    """The funnel's view of a profile, however that profile was authored.
+
+    The engine stays lane-agnostic: it is handed an object or a plain dict and
+    reads the four fields the cheap gates need. A profile type with firmographic
+    fields adapts itself through ``funnel_profile()``; everything else already
+    speaks this shape.
+    """
+
+    allows: str = "services"
+    size_min: int = 0
+    size_max: int = 0
+    locations: tuple[str, ...] = ()
+    verticals: tuple[str, ...] = ()
+
+    @classmethod
+    def from_object(cls, profile: Any) -> GateProfile:
+        if profile is None:
+            return cls()
+        if isinstance(profile, GateProfile):
+            return profile
+        # A typed profile states the firmographics in its own vocabulary — the
+        # partner document says "target_territories", the funnel says
+        # "locations" — so ask it to translate rather than guessing its fields.
+        adapt = getattr(profile, "funnel_profile", None)
+        if callable(adapt):
+            try:
+                adapted = adapt()
+            except Exception:
+                adapted = None
+            if isinstance(adapted, dict):
+                return cls.from_object(adapted)
+
+        def get(key: str) -> Any:
+            return profile.get(key) if isinstance(profile, dict) else getattr(profile, key, None)
+
+        def terms(key: str) -> tuple[str, ...]:
+            value = get(key)
+            if isinstance(value, str):
+                value = [value]
+            if not isinstance(value, (list, tuple, set, frozenset)):
+                return ()
+            return tuple(str(item) for item in value if str(item).strip())
+
+        def count(key: str) -> int:
+            try:
+                return int(get(key) or 0)
+            except (TypeError, ValueError):
+                return 0
+
+        return cls(
+            allows=str(get("allows") or "services"),
+            size_min=count("size_min"),
+            size_max=count("size_max"),
+            locations=terms("locations"),
+            verticals=terms("verticals"),
+        )
+
+    def intersect(self, other: GateProfile | None) -> GateProfile:
+        """Both profiles' gates, with the tighter bound of each.
+
+        A lane and a profile can each state firmographics, and a candidate has
+        to satisfy both: the lane says what the product accepts, the profile
+        says what this engagement needs. Neither silently overrides the other —
+        a lane's size floor does not erase a stricter one from the profile, and
+        a profile's territory does not widen the lane's.
+        """
+        if other is None:
+            return self
+        floors = [n for n in (self.size_min, other.size_min) if n]
+        ceilings = [n for n in (self.size_max, other.size_max) if n]
+        return GateProfile(
+            allows=self.allows if self.allows != "any" else other.allows,
+            size_min=max(floors) if floors else 0,
+            size_max=min(ceilings) if ceilings else 0,
+            locations=_narrow(self.locations, other.locations),
+            verticals=_narrow(self.verticals, other.verticals),
+        )
+
+
+def _narrow(left: tuple[str, ...], right: tuple[str, ...]) -> tuple[str, ...]:
+    """Two term lists, or whichever one is stated, or neither."""
+    if not left:
+        return right
+    if not right:
+        return left
+    shared = tuple(term for term in left if matches_any(term, right))
+    return shared or left
+
+
+@dataclass(frozen=True)
+class LadderRung:
+    """One rung of a lane's retrieval ladder.
+
+    A rung names the gates it is entitled to settle and the grade of evidence it
+    reads to settle them: a search result settles the cheap gates on what it
+    already says, and a rung marked ``fetched`` spends a page visit on the same
+    gates so they can be *passed* rather than merely left unknown. The surfaces
+    are what that rung reads on the candidate's own site.
+    """
+
+    name: str
+    evidence: str = SNIPPET
+    gates: list[str] = field(default_factory=lambda: ["kind", "size", "location"])
+    surfaces: list[str] = field(default_factory=list)
+    #: What this rung buys, in the lane's own words. A reader tunes by it.
+    earns: str = ""
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "name": self.name, "evidence": self.evidence, "gates": list(self.gates),
+            "surfaces": list(self.surfaces), "earns": self.earns,
+        }
+
+    def reachable(self, grade: str) -> bool:
+        """Whether evidence at this grade can settle what the rung gates on.
+
+        The semantic gates need a page; the cheap ones are readable from a
+        search result, which is why a snippet-only candidate has earned the
+        fetching rung and not the one beyond it.
+        """
+        if any(gate in _SEMANTIC_GATES for gate in self.gates):
+            return grade == FETCHED
+        return True
+
+
+#: The ladder that applies when a lane declares none: prove the cheap gates on
+#: their own pages, and leave the semantic gate to a later rung.
+DEFAULT_LADDER: tuple[LadderRung, ...] = (
+    LadderRung(
+        name="result", evidence=SNIPPET, gates=["kind", "size", "location"],
+        earns="eliminates, or earns one page visit",
+    ),
+    LadderRung(
+        name="surface", evidence=FETCHED, gates=["kind", "size", "location"],
+        surfaces=["home", "about", "services"],
+        earns="qualifies the cheap gates where a snippet could not",
+    ),
+    LadderRung(
+        name="stories", evidence=FETCHED, gates=["vertical"],
+        surfaces=["case_studies", "customers", "industries"],
+        earns="settles the vertical gate, the expensive one",
+    ),
+)
+
+
+def validate_ladder(ladder: Sequence[LadderRung]) -> None:
+    """Everything wrong with a lane's ladder, naming the rung and the gate."""
+    for index, rung in enumerate(ladder or ()):
+        where = f"ladder[{index}]"
+        if not str(rung.name or "").strip():
+            raise ValueError(f"{where}: every rung has a name")
+        if rung.evidence not in (SNIPPET, FETCHED):
+            raise ValueError(f"{where}: evidence must be '{SNIPPET}' or '{FETCHED}'")
+        if not rung.gates:
+            raise ValueError(f"{where}: a rung that settles no gate is not a rung")
+        for gate in rung.gates:
+            if gate not in GATE_ORDER:
+                raise ValueError(f"{where}: '{gate}' is not a gate (have: {', '.join(GATE_ORDER)})")
 
 
 @dataclass
@@ -238,6 +444,11 @@ class FunnelReport:
     candidate: str
     results: list[GateResult] = field(default_factory=list)
     fetched: bool = False
+    #: The ladder this candidate was run against, and the rung it has earned.
+    #: A lead that says only "unresolved" leaves a reader nowhere to go; one
+    #: that says "earned: surface" says what to fetch next.
+    rungs: list[LadderRung] = field(default_factory=list)
+    earned: str = ""
 
     @property
     def eliminated(self) -> bool:
@@ -275,6 +486,7 @@ class FunnelReport:
             "verdict": self.verdict,
             "because": self.because(),
             "fetched": self.fetched,
+            "earned": self.earned,
             "gates": [result.as_dict() for result in self.results],
         }
 
@@ -298,26 +510,48 @@ def check_kind(text: str, *, allows: str, evidence: str) -> GateResult:
     return _gate("kind", "unknown", "nothing here says what kind of company it is", evidence)
 
 
-def check_size(size: int | None, *, minimum: int = 0, maximum: int = 0) -> GateResult:
-    """Can they buy or partner at this scale. A wrong size is decisive."""
+def check_size(size: int | None, *, minimum: int = 0, maximum: int = 0,
+               evidence: str = SNIPPET) -> GateResult:
+    """Can they buy or partner at this scale. A wrong size is decisive.
+
+    A stated headcount is decisive at either grade: the number a page prints is
+    the same number a snippet quotes, so a wrong size eliminates without a fetch
+    — which is the whole point of running this rung first.
+    """
     if size is None:
-        return _gate("size", "unknown", "no headcount stated anywhere we have read", SNIPPET)
+        return _gate("size", "unknown", "no headcount stated anywhere we have read", evidence)
     if minimum and size < minimum:
-        return _gate("size", "fail", f"{size} people is below the profile's floor of {minimum}", SNIPPET)
+        return _gate("size", "fail", f"{size} people is below the profile's floor of {minimum}", evidence)
     if maximum and size > maximum:
-        return _gate("size", "fail", f"{size} people is above the profile's ceiling of {maximum}", SNIPPET)
-    return _gate("size", "pass", f"{size} people is within the profile's range", SNIPPET)
+        return _gate("size", "fail", f"{size} people is above the profile's ceiling of {maximum}", evidence)
+    # A stated headcount means the same thing at either grade, so a size inside
+    # the range passes on a snippet. The absolute asymmetry — a snippet may
+    # eliminate and never qualify — is enforced where it bites, on ``kind``.
+    return _gate("size", "pass", f"{size} people is within the profile's range", evidence)
 
 
-def check_location(location: str, *, allowed: tuple[str, ...]) -> GateResult:
+def _range_phrase(minimum: int, maximum: int) -> str:
+    if minimum and maximum:
+        return f"the profile's {minimum}-{maximum}"
+    if minimum:
+        return f"the profile's floor of {minimum}"
+    if maximum:
+        return f"the profile's ceiling of {maximum}"
+    return "the profile's range"
+
+
+def check_location(location: str, *, allowed: tuple[str, ...],
+                   evidence: str = SNIPPET) -> GateResult:
     """In territory, or out. An empty location is unknown, never a pass."""
     if not allowed:
-        return _gate("location", "unknown", "the profile names no territory", SNIPPET)
+        return _gate("location", "unknown", "the profile names no territory", evidence)
     if not location:
-        return _gate("location", "unknown", "no location stated anywhere we have read", SNIPPET)
+        return _gate("location", "unknown", "no location stated anywhere we have read", evidence)
     if matches_any(location, allowed):
-        return _gate("location", "pass", f"in territory ({location})", SNIPPET)
-    return _gate("location", "fail", f"{location} is outside the profile's territory", SNIPPET)
+        return _gate("location", "pass", f"in territory ({location})", evidence)
+    # Naming a place is what makes this decisive: the text itself said where the
+    # company is, and it said somewhere else. Silence is what stays unknown.
+    return _gate("location", "fail", f"{location} is outside the profile's territory", evidence)
 
 
 def check_vertical(verticals: tuple[str, ...], *, wanted: tuple[str, ...]) -> GateResult:
@@ -333,43 +567,109 @@ def check_vertical(verticals: tuple[str, ...], *, wanted: tuple[str, ...]) -> Ga
     matched = matches_any(joined, wanted)
     if matched:
         return _gate("vertical", "pass", f"serves {', '.join(matched)}", FETCHED)
-    return _gate("vertical", "fail", "serves none of the profile's verticals", FETCHED)
+    # The page names industries and none of them is ours. Before calling that a
+    # failure, ask whether it named an industry we know at all: a case-study
+    # index we did not reach reads exactly like a firm with no vertical, and
+    # eliminating those quietly discards the population the lane exists for.
+    known = read_verticals(joined)
+    if not known:
+        return _gate(
+            "vertical", "unknown",
+            "no vertical is named anywhere we have read; the case studies would say",
+            FETCHED,
+        )
+    return _gate(
+        "vertical", "fail",
+        f"serves {', '.join(sorted(known))} and none of the profile's verticals", FETCHED,
+    )
 
 
 def run_funnel(
     candidate: str,
     *,
     snippet: str = "",
-    profile: dict[str, Any] | None = None,
+    profile: Any = None,
+    evidence: str = SNIPPET,
+    ladder: Sequence[LadderRung] | None = None,
 ) -> FunnelReport:
-    """Gate one candidate on what a search result alone can tell us.
+    """Gate one candidate on the text we already have, and say what it earned.
 
-    The cheap rungs only. Evaluating the semantic gates needs pages this does
-    not fetch: a report that comes back a lead has earned those fetches, and one
-    that comes back eliminated never spends them.
+    The cheap rungs only, unless ``evidence`` says the text came from a page we
+    read — then the semantic gate runs too. A report that comes back a lead has
+    earned its next page visit, and one that comes back eliminated never spends
+    one.
+
+    ``snippet`` is the text, whatever its grade; the parameter keeps its name
+    because most callers are holding a search result. ``evidence`` is what the
+    caller knows about where that text came from, and it is the caller's to
+    state: the same prose earns a different verdict on a page than in a result.
     """
-    prof = profile or {}
-    report = FunnelReport(candidate=candidate)
-    report.results.append(
-        check_kind(snippet, allows=str(prof.get("allows") or "services"), evidence=SNIPPET)
-    )
+    prof = GateProfile.from_object(profile)
+    report = FunnelReport(candidate=candidate, fetched=bool(evidence == FETCHED))
+    report.results.append(check_kind(snippet, allows=prof.allows, evidence=evidence))
     if report.eliminated:
         return report
     report.results.append(
-        check_size(
-            read_size(snippet),
-            minimum=int(prof.get("size_min") or 0),
-            maximum=int(prof.get("size_max") or 0),
-        )
+        check_size(read_size(snippet), minimum=prof.size_min, maximum=prof.size_max)
     )
     if report.eliminated:
         return report
-    report.results.append(
-        check_location(
-            read_location(snippet), allowed=tuple(prof.get("locations") or ()),
+    report.results.append(check_location(read_location(snippet), allowed=prof.locations))
+    if report.eliminated:
+        return report
+    if prof.verticals:
+        # The vertical is gated on even when only a snippet is in hand, and it
+        # comes back unknown there. That is the point: leaving it out entirely
+        # made a candidate look blocked on the gate a fetch cannot settle, when
+        # what actually resolves it is the case studies this hasn't read yet.
+        report.results.append(
+            check_vertical(
+                read_verticals(snippet) if evidence == FETCHED else (),
+                wanted=prof.verticals,
+            )
         )
-    )
+    _set_earned(report, ladder)
     return report
+
+
+def _set_earned(report: FunnelReport, ladder: Sequence[LadderRung] | None) -> None:
+    """Name the rung a surviving candidate has earned, and record the ladder.
+
+    A ladder is climbed in order, so a rung is in play only once the rung below
+    it has nothing left unexplained. That is what makes "earned" mean something:
+    the candidate is standing on the furthest rung it has cleared, and what it
+    earns is the next one — the fetch that would settle what is still open.
+    A rung that cannot settle anything still open is not earned, and saying so
+    is how a run avoids sending somebody to fetch pages that cannot change the
+    verdict.
+    """
+    rungs = list(ladder or DEFAULT_LADDER)
+    report.rungs = rungs
+    if report.eliminated or report.qualified:
+        return
+    grade = FETCHED if report.fetched else SNIPPET
+    standing = -1
+    for index, rung in enumerate(rungs):
+        if not rung.reachable(grade):
+            # This rung needs evidence we do not hold. If it is carrying gates
+            # the candidate cannot settle without it, that is exactly the fetch
+            # it has earned; if it is not, sending anybody to fetch would be a
+            # page read for nothing.
+            if set(rung.gates) & set(report.unresolved):
+                report.earned = rung.name
+            return
+        if all(gate in report.unresolved or _settled(report, gate) for gate in rung.gates):
+            standing = index
+        else:
+            break
+    if standing + 1 < len(rungs):
+        report.earned = rungs[standing + 1].name
+
+
+def _settled(report: FunnelReport, gate: str) -> bool:
+    return any(
+        result.gate == gate and result.outcome in ("pass", "fail") for result in report.results
+    )
 
 
 def funnel_counts(reports: list[FunnelReport]) -> dict[str, Any]:
@@ -381,17 +681,28 @@ def funnel_counts(reports: list[FunnelReport]) -> dict[str, Any]:
     eliminated_at: dict[str, int] = {}
     unresolved_at: dict[str, int] = {}
     verdicts: dict[str, int] = {}
+    #: Who, not just how many. A count with no names cannot be tuned against:
+    #: a person sees "12 eliminated at kind" and still has to guess whether the
+    #: gate is right or the vocabulary is missing a word.
+    eliminated: dict[str, list[dict[str, str]]] = {}
+    unresolved: dict[str, list[dict[str, str]]] = {}
     for report in reports:
         verdicts[report.verdict] = verdicts.get(report.verdict, 0) + 1
         for result in report.results:
             if result.outcome == "fail":
                 eliminated_at[result.gate] = eliminated_at.get(result.gate, 0) + 1
+                eliminated.setdefault(result.gate, []).append({
+                    "candidate": report.candidate, "reason": result.reason,
+                })
             elif result.outcome == "unknown" and not report.eliminated:
                 # Only the candidates still standing. An eliminated candidate
                 # carries unknowns from the gates it cleared on the way to the
                 # gate that killed it, and counting those tells a reader that
                 # survivors are stuck when they are not.
                 unresolved_at[result.gate] = unresolved_at.get(result.gate, 0) + 1
+                unresolved.setdefault(result.gate, []).append({
+                    "candidate": report.candidate, "reason": result.reason,
+                })
         if not report.eliminated:
             verdicts["needing_retrieval"] = verdicts.get("needing_retrieval", 0) + 1
     return {
@@ -399,4 +710,69 @@ def funnel_counts(reports: list[FunnelReport]) -> dict[str, Any]:
         "verdicts": verdicts,
         "eliminated_at": eliminated_at,
         "unresolved_at": unresolved_at,
+        "eliminated": eliminated,
+        "unresolved": unresolved,
     }
+
+
+def run_evidence_funnel(
+    items: Iterable[Any],
+    *,
+    profile: Any = None,
+    candidate: str = "",
+    ladder: Sequence[LadderRung] | None = None,
+    snippet: str | None = None,
+) -> FunnelReport:
+    """Gate one candidate on the sources gathered for it.
+
+    The entity's grade is its best source's grade: a bundle carrying one page we
+    actually read is read as a page, because the gates read the bundle's text
+    and that text includes the fetch. Every other source stays what it was.
+    """
+    sources = [item for item in items]
+    grade = SNIPPET
+    for item in sources:
+        if read_grade(getattr(item, "metadata", None)) == FETCHED:
+            grade = FETCHED
+            break
+    text = snippet if snippet is not None else "\n".join(
+        str(getattr(item, "text", "") or "") for item in sources
+    )
+    name = candidate or _candidate_name(sources)
+    report = run_funnel(name, snippet=text, profile=profile, evidence=grade, ladder=ladder)
+    report.fetched = grade == FETCHED
+    return report
+
+
+def _candidate_name(sources: Sequence[Any]) -> str:
+    for item in sources:
+        name = str(getattr(item, "item_id", "") or "").strip()
+        if name:
+            return name
+    return ""
+
+
+def funnel_entities(
+    items: Iterable[Any],
+    *,
+    profile: Any = None,
+    ladder: Sequence[LadderRung] | None = None,
+) -> tuple[list[FunnelReport], dict[str, Any], list[FunnelReport]]:
+    """Run the funnel over sources grouped by the entity they are about.
+
+    Returns the reports for the candidates still standing, the counts, and every
+    report including the eliminated. The two views answer different questions: a
+    caller that keeps going needs the survivors, and a caller writing the run's
+    account of itself needs everyone it ruled out, by name and reason.
+    """
+    grouped: dict[str, list[Any]] = {}
+    for item in items:
+        key = str(getattr(item, "item_id", "") or "")
+        if key:
+            grouped.setdefault(key, []).append(item)
+    reports = [
+        run_evidence_funnel(sources, profile=profile, candidate=key, ladder=ladder)
+        for key, sources in grouped.items()
+    ]
+    counts = funnel_counts(reports)
+    return [report for report in reports if not report.eliminated], counts, reports

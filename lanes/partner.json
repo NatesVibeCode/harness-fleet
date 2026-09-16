@@ -12,5 +12,49 @@
   "preset": "partner-research",
   "tier": "tier_1",
   "top": 25,
-  "revision": 1
+  "revision": 1,
+  "funnel": {
+    "allows": "services",
+    "ladder": [
+      {
+        "name": "result",
+        "evidence": "snippet",
+        "gates": [
+          "kind",
+          "size",
+          "location"
+        ],
+        "earns": "eliminates a product vendor, or earns one page visit — it never qualifies"
+      },
+      {
+        "name": "surface",
+        "evidence": "fetched",
+        "gates": [
+          "kind",
+          "size",
+          "location"
+        ],
+        "surfaces": [
+          "about",
+          "services",
+          "careers"
+        ],
+        "earns": "qualifies the cheap gates on their own pages, where a snippet may not"
+      },
+      {
+        "name": "stories",
+        "evidence": "fetched",
+        "gates": [
+          "vertical"
+        ],
+        "surfaces": [
+          "case_studies",
+          "partners",
+          "blog",
+          "news"
+        ],
+        "earns": "settles the vertical gate, which only the case studies can answer"
+      }
+    ]
+  }
 }

@@ -465,6 +465,47 @@ harness-fleet lane report <run_id>                    # what that run actually p
   bar. A lane whose rows are pages rather than companies sets `"tier": null` and names
   the evidence it does demand in `require_kinds`.
 - **Find them with `harness-fleet lane list`** (add `--json` for scripts), which prints each lane's preset, evidence bar and where it came from.
+- **The funnel shrinks the world before anything is spent.** Every captured candidate
+  runs the cheapest gates first — what kind of company it is, how big, where, serving
+  whom — and stops at the first failure. A product vendor, a six-person shop or a firm
+  in the wrong country is gone for the cost of the search result that named it, before
+  a page fetch or a model call. The run reports where the world shrank, by gate and by
+  name; `--no-funnel` keeps everything:
+
+  ```
+  5 candidates -> 2 needing retrieval
+  (1 at kind (e.g. vendor.io), 1 at size, 1 at location, 1 unresolved on kind, 2 unresolved on vertical)
+  ```
+
+  Three rules make it honest rather than merely fast. A **snippet may eliminate; only a
+  fetched page may qualify** — a search result is somebody else's summary, so a
+  qualifier seen there leaves the gate unknown and the candidate alive, having earned a
+  page fetch rather than a pass. **Unknown is neither a pass nor a failure**, and is
+  recorded with what would resolve it. And **the gates match substance, not wording**:
+  one editable synonym vocabulary means a firm saying "advisory" matches a profile
+  saying "consultancy", "banking" matches "fintech", and "London" matches "United
+  Kingdom".
+- **Firmographics lead the profile.** `ideal_partner_profile.json` carries the size
+  range, territory and verticals the funnel runs on. The run gates on the profile and
+  the lane together — whichever bound is stricter wins, so a lane's floor cannot erase
+  a stricter one from the profile. Name a profile explicitly with `--profile PATH`; with
+  none authored, the lane's own gates still apply, so a first run with no setup
+  eliminates the obviously wrong companies.
+
+  ```json
+  {
+    "target_ecosystem": "Snowflake",
+    "partner_size_min": 50,
+    "partner_size_max": 400,
+    "target_territories": ["United Kingdom"],
+    "target_industries": ["fintech"]
+  }
+  ```
+- **Each lane states its own ladder**: which rung reads a search result, which rung
+  spends a page visit, and what a candidate must satisfy to earn the next. The shipped
+  lanes read the result first, then the firm's own `about`/`services`/`careers` pages to
+  confirm the cheap gates, then its `case_studies`/`partners` pages for the vertical —
+  the one gate no snippet can settle.
 - **Workspace overrides shipped.** A file at `<workspace>/lanes/<name>.json` replaces
   the packaged lane of the same name, and the run records which one it used.
   `harness-fleet lane report <run_id> --lane <name>` measures the result.

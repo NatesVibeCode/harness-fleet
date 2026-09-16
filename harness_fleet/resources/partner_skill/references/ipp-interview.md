@@ -52,6 +52,18 @@ The harness must systematically resolve these 6 core signals:
 ### Signal 4: Target Client Segment & Scale
 - **What it means**: What client size or industry does the partner typically serve? (e.g. Fortune 500 Enterprise, Mid-Market Scaleups, Regulated Fintech/Healthcare).
 - **How to gather it**: Match with the product's ICP and pricing tier.
+- **Gather the partner's own firmographics as values, not prose.** The funnel
+  eliminates on these before it reads anything semantic, so each one has to be
+  something a gate can compare rather than a sentence it would have to read:
+  - `partner_size_min` / `partner_size_max` — the headcount band that can
+    actually deliver this work. "Regional SI, 50-500 consultants" belongs in
+    these two fields; `target_partner_tier` keeps the prose label.
+  - `target_territories` — every country in scope, named as a country. Synonym
+    matching already accepts a page that says "London" for "United Kingdom", so
+    listing cities is unnecessary.
+  - `target_industries` — the verticals they must serve. Leave this empty rather
+    than guessing: no vertical leaves that gate *unknown*, which is honest, while
+    a wrong one eliminates a good partner.
 
 ### Signal 5: Key Delivery Roles & Hierarchy
 - **What it means**: The exact job titles of the engineers and consultants who design and deploy solutions for clients.
@@ -112,6 +124,17 @@ Output the confirmed profile into `ideal_partner_profile.json`:
     "profile_name": "Kafka Streaming Implementation Partners",
     "version": "1.0.0",
     "target_ecosystem": "Apache Kafka",
+    "partner_kind": "services",
+    "partner_size_min": 50,
+    "partner_size_max": 500,
+    "target_territories": [
+      "United States",
+      "United Kingdom"
+    ],
+    "target_industries": [
+      "fintech",
+      "healthcare"
+    ],
     "service_models": [
       "Systems Integration",
       "Enterprise Cloud Migration",

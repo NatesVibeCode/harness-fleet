@@ -25,5 +25,32 @@
   "preset": "triage",
   "tier": "tier_3",
   "top": 50,
-  "revision": 1
+  "revision": 1,
+  "funnel": {
+    "allows": "any",
+    "ladder": [
+      {
+        "name": "result",
+        "evidence": "snippet",
+        "gates": [
+          "kind",
+          "location"
+        ],
+        "earns": "drops a posting whose employer is not the kind of company this lane wants"
+      },
+      {
+        "name": "posting",
+        "evidence": "fetched",
+        "gates": [
+          "kind",
+          "location"
+        ],
+        "surfaces": [
+          "careers",
+          "about"
+        ],
+        "earns": "confirms the employer from the posting page itself"
+      }
+    ]
+  }
 }
