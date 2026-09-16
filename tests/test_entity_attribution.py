@@ -119,3 +119,32 @@ def test_a_posting_path_closes_the_hiring_gate():
     assert coverage(page, "https://x.test/job/enterprise-sales-executive")["delivery_hiring"] is True
     same_page_as_listing = page.replace("ATS_REQUISITIONS", "GENERAL_WEB")
     assert coverage(same_page_as_listing, "https://x.test/remote-sales-jobs")["delivery_hiring"] is False
+
+
+def test_an_article_slug_is_not_an_entity_name():
+    """snowflake.com/en/blog/<headline> is Snowflake, not the headline.
+
+    A run produced a dossier called "secrets_gen_ai_success_real_world_
+    stories.com" — a blog post wearing a domain suffix — which then scored as
+    an account and pulled the run's coverage down with it.
+    """
+    from harness_fleet.sources import canonicalize_entity_id
+
+    assert canonicalize_entity_id(
+        "https://www.snowflake.com/en/blog/secrets-gen-ai-success-real-world-stories/"
+    ) == "snowflake.com"
+    assert canonicalize_entity_id("https://acme.com/blog/we-shipped-a-thing") == "acme.com"
+    assert canonicalize_entity_id("https://acme.com/news/2026-07-01") == "acme.com"
+    # A vendor registry entry is the opposite case: the slug names the partner.
+    assert canonicalize_entity_id("https://partners.amazonaws.com/partners/trace3") == "trace3.com"
+    assert canonicalize_entity_id("https://www.snowflake.com/partners/accenture") == "accenture.com"
+
+
+def test_a_repository_is_not_an_account():
+    """github.com/<user>/<repo> names a person's project, not a company."""
+    from harness_fleet.sources import canonicalize_entity_id
+
+    assert canonicalize_entity_id(
+        "https://github.com/Yuvraj1507/-BankingSystem-Microservices-Kafka"
+    ) == "github.com"
+    assert canonicalize_entity_id("https://medium.com/@someone/some-post") == "medium.com"

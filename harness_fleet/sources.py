@@ -163,6 +163,31 @@ def looks_like_posting_path(source_uri: str) -> bool:
 
 
 
+#: Path segments that mean "this page is a directory entry or a post", not
+#: "this host is the subject": a blog slug and a story slug are headlines.
+_CONTENT_PATH_RE = re.compile(
+    r"/(?:blog|blogs|news|newsroom|press|insights?|stories|story|posts?|articles?|"
+    r"resources?|library|learn|guides?|docs?|documentation|events?|webinars?)/",
+    re.IGNORECASE,
+)
+def _is_registry_path(host: str, path: str) -> bool:
+    """A vendor's partner/customer directory entry, whose slug is the partner."""
+    if "partners.amazonaws.com" in host:
+        return True
+    return "partners" in path.split("/") and any(
+        domain in host for domain in REGISTRY_DOMAINS
+    )
+
+
+def _host_owns_content(host: str, path: str) -> bool:
+    """Whether a URL key here is the host itself rather than an article slug.
+
+    ``snowflake.com/en/blog/secrets-gen-ai-success-real-world-stories`` is
+    Snowflake; without this it became a dossier named after the headline.
+    """
+    return bool(_CONTENT_PATH_RE.search(path))
+
+
 def canonicalize_entity_id(identifier_or_url: str) -> str:
     """Extract clean, canonical domain/entity id from a URL or raw identifier."""
     raw = (identifier_or_url or "").strip().lower()
@@ -188,11 +213,31 @@ def canonicalize_entity_id(identifier_or_url: str) -> str:
                 return f"{slug}.com" if "." not in slug else slug
 
         # Handle vendor registry paths: e.g. partners.amazonaws.com/partners/trace3
-        if "partners.amazonaws.com" in host or "snowflake.com" in host:
+        # and snowflake.com/partners/<slug>. The slug names the partner, so the
+        # page is evidence *about* them; a blog post on the same host is the
+        # vendor's own content and keeps the vendor (see _host_owns_content).
+        if _is_registry_path(host, path):
             parts = [p for p in path.split("/") if p and p not in ("partners", "en-us", "marketplace")]
             if parts:
                 slug = parts[-1].replace("-", "_")
                 return f"{slug}.com" if "." not in slug else slug
+
+        # A platform or directory host is never the entity: what a page there
+        # names is. GitHub is the case that produced a dossier called
+        # "github.com-yuvraj1507-bankingsystem-microservices-kafka", which is
+        # nobody's account; a person's repository is evidence about a person.
+        # Attribution from the text is the caller's job (``entity_key_for``
+        # returns "" for exactly this), so a URL key on one of these hosts is
+        # the host, never the path.
+        if any(marker in host for marker in PLATFORM_HOSTS):
+            return host
+
+        # A company's own blog keeps the company: snowflake.com/en/blog/<slug>
+        # is Snowflake, and the slug is a headline, not a name. The known
+        # vendor hosts make this explicit; the general rule is that a marketing
+        # path on an otherwise-plain host names the host, not the article.
+        if _host_owns_content(host, path):
+            return host
 
         # Handle Clutch/G2 profiles: clutch.co/profile/trace3
         if any(rev in host for rev in ("clutch.co", "g2.com")):
