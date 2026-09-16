@@ -73,3 +73,41 @@ def test_spacing_is_per_host_not_global(monkeypatch):
     discover.run_discovery(["q"], backends=["hn"], delay=0.4)
     same_host = time.monotonic() - started
     assert same_host >= 0.4, f"the same host was hit faster than the delay: {same_host:.2f}s"
+
+
+def test_fetches_run_across_hosts_at_once(monkeypatch):
+    """Three hosts are fetched in parallel; none waits for the others."""
+    hits = [
+        discover.SearchHit(url=f"https://h{index}.example/1", title="t", snippet="s", backend="hn")
+        for index in range(3)
+    ]
+    monkeypatch.setattr(discover, "search_hn", lambda q, **kw: hits)
+
+    def slow_fetch(url, **kwargs):
+        time.sleep(0.30)
+        return _record(url)
+
+    monkeypatch.setattr(discover, "fetch_smart_url", slow_fetch)
+    started = time.monotonic()
+    items, _report = discover.run_discovery(["q"], backends=["hn"], delay=0)
+    elapsed = time.monotonic() - started
+    assert len(items) == 3
+    assert elapsed < 0.60, f"hosts were fetched one after another: {elapsed:.2f}s"
+
+
+def test_a_sources_queries_do_not_run_at_once(monkeypatch):
+    """One in-flight request per source: its queries are walked, not raced."""
+    seen: list[str] = []
+
+    def slow_search(query, **kwargs):
+        seen.append(query)
+        time.sleep(0.25)
+        return [discover.SearchHit(url=f"https://x.example/{len(seen)}", title="t", snippet="s", backend="hn")]
+
+    monkeypatch.setattr(discover, "search_hn", slow_search)
+    monkeypatch.setattr(discover, "fetch_smart_url", lambda url, **kw: _record(url))
+    started = time.monotonic()
+    discover.run_discovery(["one", "two"], backends=["hn"], delay=0)
+    elapsed = time.monotonic() - started
+    assert seen == ["one", "two"], "a source's queries must stay in order"
+    assert elapsed >= 0.50, f"two queries hit the same source concurrently: {elapsed:.2f}s"

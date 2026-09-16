@@ -37,7 +37,7 @@ import re
 import threading
 import time
 from collections.abc import Callable, Sequence
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from html.parser import HTMLParser
@@ -502,6 +502,30 @@ def _workspace_channels() -> dict[str, Any]:
 _host_locks: dict[str, threading.Lock] = {}
 _host_last: dict[str, float] = {}
 _host_guard = threading.Lock()
+
+
+
+_source_last: dict[str, float] = {}
+_source_locks: dict[str, threading.Lock] = {}
+_source_guard = threading.Lock()
+
+
+def _source_ready(source: str, delay: float) -> bool:
+    """Claim this source's turn. One request per source at a time, spaced.
+
+    Different sources proceed in parallel; a source is never hit twice at once,
+    which is the difference between breadth and getting rate-limited.
+    """
+    if delay <= 0 or not source:
+        return True
+    with _source_guard:
+        lock = _source_locks.setdefault(source, threading.Lock())
+    with lock:
+        gap = delay - (time.monotonic() - _source_last.get(source, 0.0))
+        if gap > 0:
+            time.sleep(gap)
+        _source_last[source] = time.monotonic()
+    return True
 
 
 def _space_host(host: str, delay: float) -> None:
@@ -3667,29 +3691,34 @@ def run_discovery(
             for index, query in enumerate(queries) if query.strip()
             for backend in backends
         ]
+        # One in-flight request per source: a source's queries are walked in order
+        # (spaced), while different sources run at once. Parallelising queries
+        # *within* a source is how a run gets itself rate-limited.
         for query in queries:
             if not query.strip():
                 skipped.append({"query": query, "reason": "empty query"})
         found: dict[tuple[int, str], list[SearchHit]] = {}
         failures: list[tuple[int, str, str]] = []
         if pairs:
-            workers = max(1, min(8, len(pairs)))
-            with ThreadPoolExecutor(max_workers=workers) as pool:
-                futures = {
-                    pool.submit(
-                        _run_backend, backend, query, max_results, searxng_url, client,
-                        reddit_subreddits, se_tagged, se_site, discourse_url, lemmy_instance,
-                    ): (index, query, backend)
-                    for index, query, backend in pairs
-                }
-                for future in as_completed(futures):
-                    index, query, backend = futures[future]
+            def probe_source(backend: str, source_queries: list[tuple[int, str]]) -> None:
+                for index, query in source_queries:
+                    if not _source_ready(backend, delay):
+                        continue
                     try:
-                        found[(index, backend)] = future.result()
+                        found[(index, backend)] = _run_backend(
+                            backend, query, max_results, searxng_url, client,
+                            reddit_subreddits, se_tagged, se_site, discourse_url, lemmy_instance,
+                        )
                     except DiscoverError as exc:
                         failures.append((index, backend, f"{query}: {exc}"))
                     except Exception as exc:  # a surface must not take the run down
                         failures.append((index, backend, f"{query}: {type(exc).__name__}: {exc}"))
+
+            by_source: dict[str, list[tuple[int, str]]] = {}
+            for index, query, backend in pairs:
+                by_source.setdefault(backend, []).append((index, query))
+            with ThreadPoolExecutor(max_workers=max(1, min(8, len(by_source)))) as pool:
+                list(pool.map(lambda item: probe_source(*item), by_source.items()))
 
         for index, query in enumerate(queries):
             if not query.strip():
@@ -3715,7 +3744,8 @@ def run_discovery(
                     skipped.append({"query": query, "backend": _backend, "reason": reason.split(": ", 1)[1]})
             if not ordered:
                 skipped.append({"query": query, "reason": "0 hits from backends"})
-            for hit in ordered:
+            pending: list[tuple[int, SearchHit]] = []
+            for position, hit in enumerate(ordered):
                 host = host_of(hit.url)
                 if host and not is_source_host(host):
                     # Unknown provenance is recorded, never guessed at: the
@@ -3755,25 +3785,59 @@ def run_discovery(
                         },
                     ))
                     continue
-                try:
-                    # Stack Exchange question pages answer 403 to non-browser
-                    # clients now; the API still serves the same body.
-                    if hit.backend == "stackexchange" and se_site_for_url(hit.url):
-                        fetched = fetch_stackexchange_question(hit.url, timeout=timeout, client=client)
-                    else:
-                        fetched = fetch_smart_url(hit.url, client=client, respect_robots=respect_robots,
-                                                   render_js=render_js)
-                    fetched.metadata.update({
+                pending.append((position, hit))
+
+            # Fetch many hosts at once, one request per host at a time. The record
+            # order stays the discovery order, so a run is reproducible however the
+            # network interleaves.
+            if pending:
+                outcomes: dict[int, Any] = {}
+                by_host: dict[str, list[tuple[int, SearchHit]]] = {}
+                for position, hit in pending:
+                    by_host.setdefault(host_of(hit.url) or "unknown", []).append((position, hit))
+
+                def fetch_one_host(
+                    host: str,
+                    entries: list[tuple[int, SearchHit]],
+                    _outcomes: dict[int, Any] = outcomes,
+                ) -> None:
+                    for position, hit in entries:
+                        _space_host(host, delay)
+                        try:
+                            # Stack Exchange question pages answer 403 to
+                            # non-browser clients now; the API still serves the
+                            # same body.
+                            if hit.backend == "stackexchange" and se_site_for_url(hit.url):
+                                _outcomes[position] = fetch_stackexchange_question(
+                                    hit.url, timeout=timeout, client=client)
+                            else:
+                                _outcomes[position] = fetch_smart_url(
+                                    hit.url, client=client, respect_robots=respect_robots,
+                                    render_js=render_js)
+                        except DiscoverError as exc:
+                            _outcomes[position] = exc
+
+                with ThreadPoolExecutor(max_workers=max(1, min(8, len(by_host)))) as pool:
+                    list(pool.map(lambda item: fetch_one_host(*item), by_host.items()))
+
+                for position, hit in pending:
+                    outcome = outcomes.get(position)
+                    metrics = backend_metrics.setdefault(
+                        hit.backend or "unknown",
+                        {"queries": 0, "hits": 0, "unique_hits": 0, "captured": 0, "skipped": 0},
+                    )
+                    if isinstance(outcome, DiscoverError):
+                        skipped.append({"url": hit.url, "reason": str(outcome)})
+                        metrics["skipped"] += 1
+                        continue
+                    if outcome is None:
+                        continue
+                    outcome.metadata.update({
                         "discovery_backend": hit.backend,
                         "discovery_query": query,
                         "discovered_from": hit.url,
                     })
-                    records.append(fetched)
-                except DiscoverError as exc:
-                    skipped.append({"url": hit.url, "reason": str(exc)})
-                    metrics["skipped"] += 1
-                if delay > 0:
-                    _space_host(host, delay)
+                    records.append(outcome)
     items = to_input_items(
         records,
         max_chars=max_chars,
