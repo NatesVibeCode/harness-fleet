@@ -22,7 +22,8 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -199,79 +200,107 @@ def vendor_story_urls(
     """
     configured = ((sources or load_surfaces()).get("vendor_stories") or {}).get("vendors") or {}
     wanted = [v for v in (vendors or configured) if v in configured]
+    # Vendors publish on their own hosts, so their indexes are walked at once:
+    # sequentially, six vendors' sitemap chains were six slow hosts in a row.
+    # Each chain stays sequential inside its own worker — every step depends on
+    # the last — and vendor order is preserved in what comes back.
+    specs = [(vendor, configured.get(vendor) or {}) for vendor in wanted]
+    if not specs:
+        return [], []
+    with ThreadPoolExecutor(max_workers=max(1, min(6, len(specs)))) as pool:
+        walked = list(pool.map(
+            lambda pair: _vendor_story_urls_one(
+                pair[0], pair[1], max_per_vendor=max_per_vendor,
+                timeout=timeout, respect_robots=respect_robots,
+            ),
+            specs,
+        ))
     urls: list[str] = []
     skipped: list[dict[str, str]] = []
-
-    for vendor in wanted:
-        spec = configured.get(vendor) or {}
-        hub = spec.get("hub")
-        prefix = spec.get("story_path_prefix") or ""
-        if hub:
-            try:
-                markup = fetch_markup(hub, timeout=timeout, respect_robots=respect_robots)
-            except Exception as exc:
-                skipped.append({"vendor": vendor, "reason": str(exc)[:200]})
-                continue
-            found = []
-            for match in re.finditer(r'href="([^"#?]+)"', markup):
-                link = match.group(1)
-                if prefix not in link:
-                    continue
-                # A story has a slug after the prefix; the hub itself (and its
-                # localized twins) does not, so those are not stories.
-                if not link.split(prefix, 1)[1].strip("/"):
-                    continue
-                found.append(link if link.startswith("http") else f"https://{urlparse(hub).netloc}{link}")
-            urls.extend(list(dict.fromkeys(found))[:max_per_vendor])
-            continue
-
-        sitemap = spec.get("sitemap")
-        if not sitemap:
-            continue
-        paths = tuple(spec.get("story_paths") or ())
-        # Walk the index only as far as it takes to fill this vendor's quota,
-        # and only into the nested sitemaps that can hold stories. Downloading
-        # every nested file of a large index and then keeping forty URLs is what
-        # turned a gather stage into most of an hour: a vendor's index can list
-        # hundreds of thousands of pages across dozens of files.
-        queue: list[str] = [sitemap]
-        visited_maps = 0
-        story_urls: list[str] = []
-        while queue and len(story_urls) < max_per_vendor and visited_maps < max_nested_maps:
-            sitemap_url = queue.pop(0)
-            try:
-                text = fetch_markup(sitemap_url, timeout=timeout, respect_robots=respect_robots)
-            except Exception as exc:
-                skipped.append({"vendor": vendor, "reason": str(exc)[:200]})
-                continue
-            visited_maps += 1
-            locs = re.findall(r"<loc>\s*(?:<!\[CDATA\[)?\s*([^<\s\]]+)\s*(?:\]\]>)?\s*</loc>", text)
-            nested = [loc for loc in locs if loc.endswith(".xml")]
-            pages = [loc for loc in locs if not loc.endswith(".xml")]
-            if nested and not pages:
-                # An index: queue the files that can hold stories, stories first.
-                # A vendor names them freely — Snowflake's 58 children carry none
-                # of the story words — so the named ones are a preference, not a
-                # filter, and the walk keeps opening files until the quota is met
-                # or the budget runs out.
-                named = [loc for loc in nested if any(str(path).strip("/").split("/")[0] in loc for path in paths)]
-                rest = [loc for loc in nested if loc not in named]
-                queue.extend((named + rest)[: max_nested_maps * 3])
-                continue
-            # A flat sitemap lists its pages directly — Elastic publishes 13,645
-            # of them in one 7MB file with nothing nested. Treating that as an
-            # index collected nothing at all.
-            story_urls.extend(
-                loc for loc in pages
-                if not paths or any(path in loc for path in paths)
-            )
-            if len(story_urls) >= max_per_vendor:
-                break
-        story_urls = list(dict.fromkeys(story_urls))
-        filtered = [u for u in story_urls if not any(hint in u.lower() for hint in _ASSET_HINTS)]
-        urls.extend(list(dict.fromkeys(filtered))[:max_per_vendor])
-
+    for found, vendor_skipped in walked:
+        urls.extend(found)
+        skipped.extend(vendor_skipped)
     return list(dict.fromkeys(urls)), skipped
+
+
+def _vendor_story_urls_one(
+    vendor: str,
+    spec: dict[str, Any],
+    *,
+    max_per_vendor: int,
+    timeout: float,
+    respect_robots: bool,
+) -> tuple[list[str], list[dict[str, str]]]:
+    """One vendor's story URLs, walked on its own host."""
+    urls: list[str] = []
+    skipped: list[dict[str, str]] = []
+    hub = spec.get("hub")
+    prefix = spec.get("story_path_prefix") or ""
+    if hub:
+        try:
+            markup = fetch_markup(hub, timeout=timeout, respect_robots=respect_robots)
+        except Exception as exc:
+            skipped.append({"vendor": vendor, "reason": str(exc)[:200]})
+            return urls, skipped
+        found = []
+        for match in re.finditer(r'href="([^"#?]+)"', markup):
+            link = match.group(1)
+            if prefix not in link:
+                continue
+            # A story has a slug after the prefix; the hub itself (and its
+            # localized twins) does not, so those are not stories.
+            if not link.split(prefix, 1)[1].strip("/"):
+                continue
+            found.append(link if link.startswith("http") else f"https://{urlparse(hub).netloc}{link}")
+        urls.extend(list(dict.fromkeys(found))[:max_per_vendor])
+        return urls, skipped
+
+    sitemap = spec.get("sitemap")
+    if not sitemap:
+        return urls, skipped
+    paths = tuple(spec.get("story_paths") or ())
+    # Walk the index only as far as it takes to fill this vendor's quota,
+    # and only into the nested sitemaps that can hold stories. Downloading
+    # every nested file of a large index and then keeping forty URLs is what
+    # turned a gather stage into most of an hour: a vendor's index can list
+    # hundreds of thousands of pages across dozens of files.
+    queue: list[str] = [sitemap]
+    visited_maps = 0
+    story_urls: list[str] = []
+    while queue and len(story_urls) < max_per_vendor and visited_maps < max_nested_maps:
+        sitemap_url = queue.pop(0)
+        try:
+            text = fetch_markup(sitemap_url, timeout=timeout, respect_robots=respect_robots)
+        except Exception as exc:
+            skipped.append({"vendor": vendor, "reason": str(exc)[:200]})
+            continue
+        visited_maps += 1
+        locs = re.findall(r"<loc>\s*(?:<!\[CDATA\[)?\s*([^<\s\]]+)\s*(?:\]\]>)?\s*</loc>", text)
+        nested = [loc for loc in locs if loc.endswith(".xml")]
+        pages = [loc for loc in locs if not loc.endswith(".xml")]
+        if nested and not pages:
+            # An index: queue the files that can hold stories, stories first.
+            # A vendor names them freely — Snowflake's 58 children carry none
+            # of the story words — so the named ones are a preference, not a
+            # filter, and the walk keeps opening files until the quota is met
+            # or the budget runs out.
+            named = [loc for loc in nested if any(str(path).strip("/").split("/")[0] in loc for path in paths)]
+            rest = [loc for loc in nested if loc not in named]
+            queue.extend((named + rest)[: max_nested_maps * 3])
+            continue
+        # A flat sitemap lists its pages directly — Elastic publishes 13,645
+        # of them in one 7MB file with nothing nested. Treating that as an
+        # index collected nothing at all.
+        story_urls.extend(
+            loc for loc in pages
+            if not paths or any(path in loc for path in paths)
+        )
+        if len(story_urls) >= max_per_vendor:
+            break
+    story_urls = list(dict.fromkeys(story_urls))
+    filtered = [u for u in story_urls if not any(hint in u.lower() for hint in _ASSET_HINTS)]
+    urls.extend(list(dict.fromkeys(filtered))[:max_per_vendor])
+    return urls, skipped
 
 
 def _pace_host(url: str, delay: float) -> None:
@@ -287,6 +316,68 @@ def _pace_host(url: str, delay: float) -> None:
     host = host_of(url)
     if host:
         _space_host(host, delay)
+
+
+def _fetch_pages_many(
+    urls: Sequence[str],
+    fetch: Callable[..., Any],
+    *,
+    timeout: float,
+    respect_robots: bool,
+    pace: float,
+    workers: int = 8,
+) -> list[tuple[str, bool, Any]]:
+    """Fetch independent pages at once; results arrive in input order.
+
+    Vendors publish on their own hosts, so one slow host must not serialize
+    every other host's pages: sequentially, a partner lane's story budget ran
+    for tens of minutes. Per-host pacing still applies inside each worker, so
+    breadth does not cost politeness, and input order is preserved so reports
+    read the same at any worker count.
+    """
+    targets = list(urls)
+
+    def fetch_one(url: str) -> tuple[str, bool, Any]:
+        try:
+            if pace > 0:
+                _pace_host(url, pace)
+            return (url, True, fetch(url, timeout=timeout, respect_robots=respect_robots))
+        except Exception as exc:
+            return (url, False, exc)
+
+    if not targets:
+        return []
+    with ThreadPoolExecutor(max_workers=max(1, min(workers, len(targets)))) as pool:
+        return list(pool.map(fetch_one, targets))
+
+
+def story_could_name(url: str, entity: str, *, sources: dict[str, Any] | None = None) -> bool:
+    """Whether a story URL could possibly be about this entity, before fetching it.
+
+    A vendor's index holds hundreds of stories and almost none of them are about
+    the company in hand: fetching all of them to test attribution reads a
+    hundred pages to keep one or two. The story's own address already names its
+    subject — that is how candidates are found in the first place — so it can be
+    compared with the entity before a single request is spent.
+
+    Deliberately permissive. A slug is a guess at a name, not a name: AWS files
+    its stories as ``<customer>-<partner>`` so any token may be the subject, and
+    a vendor may slug a story after the product rather than the company. So this
+    only rejects a story whose address has nothing of the entity in it, and the
+    caller falls back to reading everything when the filter would leave nothing
+    at all.
+    """
+    from .sources import host_of
+
+    domain = canonicalize_entity_id(entity) or entity
+    label = domain.split(".")[0].lower()
+    if not label:
+        return True
+    slug, _vendor = story_entity(url, sources=sources)
+    haystack = f"{slug} {urlparse(url).path} {host_of(url)}".lower()
+    # Compare on letters and digits only: "publicis-groupe" is publicisgroupe.
+    squashed = re.sub(r"[^a-z0-9]", "", haystack)
+    return label in haystack or re.sub(r"[^a-z0-9]", "", label) in squashed
 
 
 def fetch_vendor_stories(
@@ -320,17 +411,37 @@ def fetch_vendor_stories(
         )
     else:
         candidates, skipped = list(urls), []
+    # One request per story that could be about this entity, not one per story
+    # the vendor ever published. Reading the whole index to keep one or two was
+    # the single largest cost in a run; the address usually settles it.
+    plausible = [url for url in candidates if story_could_name(url, domain, sources=sources)]
+    if not plausible and candidates:
+        # Nothing in the index looks like them. That is more likely to be an
+        # unusual naming scheme than an absence of stories, so read the index
+        # rather than report a confident zero from a filter we cannot trust.
+        # Nothing is recorded as skipped: nothing was — every page is read.
+        plausible = list(candidates)
+    else:
+        ruled_out = len(candidates) - len(plausible)
+        if ruled_out:
+            skipped.append({
+                "source": "vendor_stories",
+                "reason": (
+                    f"{ruled_out} of {len(candidates)} stories do not name {domain} in their "
+                    "address, so they were not read"
+                ),
+            })
+    fetched = _fetch_pages_many(
+        plausible, fetch_text, timeout=timeout,
+        respect_robots=respect_robots, pace=pace,
+    )
     records: list[RawRecord] = []
-    for url in candidates:
-        try:
-            if pace > 0:
-                _pace_host(url, pace)
-            record = fetch_text(url, timeout=timeout, respect_robots=respect_robots)
-        except Exception as exc:
-            skipped.append({"url": url, "reason": str(exc)[:200]})
+    for url, ok, outcome in fetched:
+        if not ok:
+            skipped.append({"url": url, "reason": str(outcome)[:200]})
             continue
-        if is_attributed(record.text, record.source_uri, domain):
-            records.append(record)
+        if is_attributed(outcome.text, outcome.source_uri, domain):
+            records.append(outcome)
     return records, skipped
 
 
@@ -484,6 +595,7 @@ def story_candidates(
     max_pages: int | None = None,
     resolve_limit: int = 0,
     partner_half: bool = False,
+    pace: float = 1.0,
 ) -> tuple[list[Any], list[dict[str, str]]]:
     """Candidate entities from the stories vendors publish about their customers.
 
@@ -513,32 +625,63 @@ def story_candidates(
         plan, max_per_vendor=per_vendor, timeout=timeout, respect_robots=respect_robots,
     )
     budget = max_pages if max_pages is not None else per_vendor * 6
-    items: list[Any] = []
-    seen: set[str] = set()
-    resolved_count = 0
-    resolved_total = 0
+    # Attribute first (pure string work), then fetch the attributed pages at
+    # once: sequentially, hundreds of story fetches were the slowest part of a
+    # partner run. Only first occurrences are prefetched — a repeat slug is
+    # skipped once its first fetch lands, exactly as the sequential walk did —
+    # and the assembly below still walks every URL in order, so the budget,
+    # the dedupe and the skipped reasons read the same at any worker count.
+    attributed: list[tuple[str, str, str]] = []
+    first_urls: list[str] = []
+    first_occurrence: set[str] = set()
     for url in urls:
-        if len(items) >= budget:
-            skipped.append({
-                "source": "vendor_stories",
-                "reason": f"stopped after {budget} stories (the run's own page budget)",
-            })
-            break
         entity, vendor = story_entity(url, sources=plan, partner_half=partner_half)
-        story_slug = entity
         if not entity:
             skipped.append({
                 "url": url,
                 "reason": "the story's address does not name one company, so it cannot be attributed",
             })
             continue
+        attributed.append((url, entity, vendor))
+        if entity not in first_occurrence:
+            first_occurrence.add(entity)
+            first_urls.append(url)
+    prefetched: dict[str, tuple[bool, Any]] = {}
+    for url, ok, outcome in _fetch_pages_many(
+        first_urls, fetch_text, timeout=timeout,
+        respect_robots=respect_robots, pace=pace,
+    ):
+        prefetched[url] = (ok, outcome)
+    items: list[Any] = []
+    seen: set[str] = set()
+    resolved_count = 0
+    resolved_total = 0
+    for url, entity, vendor in attributed:
+        if len(items) >= budget:
+            skipped.append({
+                "source": "vendor_stories",
+                "reason": f"stopped after {budget} stories (the run's own page budget)",
+            })
+            break
+        story_slug = entity
         if entity in seen:
             continue
-        try:
-            record = fetch_text(url, timeout=timeout, respect_robots=respect_robots)
-        except Exception as exc:
-            skipped.append({"url": url, "reason": str(exc)[:200]})
+        if url in prefetched:
+            # A repeat slug whose first fetch failed has no prefetched result
+            # left for it, so it gets its own fetch below instead of none.
+            ok, outcome = prefetched.pop(url)
+        else:
+            try:
+                if pace > 0:
+                    _pace_host(url, pace)
+                outcome = fetch_text(url, timeout=timeout, respect_robots=respect_robots)
+                ok = True
+            except Exception as exc:
+                ok, outcome = False, exc
+        if not ok:
+            skipped.append({"url": url, "reason": str(outcome)[:200]})
             continue
+        record = outcome
         seen.add(entity)
         metadata = dict(getattr(record, "metadata", None) or {})
         # A name cannot be walked, and without walking there is no first-party
@@ -654,7 +797,15 @@ def discover_pages(
         entries = fetch_sitemap_entries(sitemap, timeout=timeout, max_urls=scan_cap)
     except Exception as exc:
         return {}, [{"surface": "sitemap", "url": sitemap, "reason": str(exc)[:200]}]
+    declares_home = "home" in (plan.get("first_party_paths") or {})
     for url, _lastmod in entries:
+        path = urlparse(url).path
+        if declares_home and path in ("", "/"):
+            # The domain root is the landing page, and a path-pattern classifier
+            # cannot see that: "/" matches no pattern by design. A lane that
+            # lists `home` gets it; one that does not is unaffected.
+            found.setdefault("home", []).append(url)
+            continue
         surface = classify_page(url, surfaces=plan)
         if surface:
             found.setdefault(surface, []).append(url)
@@ -758,6 +909,7 @@ def enrich_entity(
     vendor_story_limit: int = 20,
     story_urls: Sequence[str] | None = None,
     pace: float = 0.0,
+    surface_order: Sequence[str] = (),
 ) -> tuple[list[Any], EnrichReport]:
     """Walk the surfaces that carry the kinds this entity is missing.
 
@@ -782,7 +934,13 @@ def enrich_entity(
         return [], report
 
     wanted_kinds = [str(k) for k in (kinds or bar_kinds)]
-    wanted = contracts.surfaces_for_kinds(wanted_kinds)
+    # A lane's ladder may name surfaces beyond the ones its missing kinds map
+    # to — a landing page, a partner page — and the walk reads them in the
+    # lane's own rung order, landing first. The order is lane data; the walk
+    # itself stays lane-agnostic and only reads the names.
+    wanted = list(dict.fromkeys([
+        *surface_order, *contracts.surfaces_for_kinds(wanted_kinds),
+    ]))
     report.surfaces = list(wanted)
     if not wanted:
         report.skipped.append({

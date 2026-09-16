@@ -181,6 +181,37 @@ def test_the_walk_only_visits_the_surfaces_the_missing_kinds_need(monkeypatch):
     assert report.domain == "acme.com"
 
 
+def test_a_lane_ladder_reads_its_surfaces_in_rung_order(monkeypatch):
+    """A lane's rung surfaces extend the walk, landing page first.
+
+    The ladder is lane data — the walk only reads the names. A rung naming
+    `home` gets the domain root read even though no evidence kind maps to it,
+    and the root resolves to `home` rather than being unclassifiable.
+    """
+    _offline(monkeypatch, sitemap=[
+        "https://acme.com/",
+        "https://acme.com/services",
+        "https://acme.com/case-studies/acme-bank",
+    ], pages={
+        "https://acme.com/": "Acme is a data consultancy of 200 people in London.",
+        "https://acme.com/services": "We implement Kafka for banking clients.",
+    })
+    records, report = enrich_entity(
+        "acme.com", kinds=["stack_delivery"], vendor_stories=False,
+        surface_order=["home", "services"],
+    )
+    assert report.by_surface.get("home") == 1, "the landing page is read when the lane lists it"
+    assert "Acme is a data consultancy" in records[0].text, "home reads first, in rung order"
+
+
+def test_a_lane_without_rung_surfaces_walks_exactly_as_before(monkeypatch):
+    _offline(monkeypatch, sitemap=["https://acme.com/services"], pages={
+        "https://acme.com/services": "We implement Kafka for banking clients.",
+    })
+    _records, report = enrich_entity("acme.com", kinds=["stack_delivery"], vendor_stories=False)
+    assert "home" not in report.by_surface
+
+
 def test_a_hiring_board_is_read_through_its_api(monkeypatch):
     _offline(monkeypatch, greenhouse=[RawRecord(
         text="We are hiring a Staff Engineer to own our Kafka platform",
@@ -394,3 +425,62 @@ def test_a_name_is_resolved_to_a_domain_or_left_alone(monkeypatch):
     monkeypatch.setattr("harness_fleet.discover.web_search", lambda query, **kw: [])
     assert enrich.resolve_entity_domain("adinte") == "", "no result is not a domain"
     assert enrich.resolve_entity_domain("") == ""
+
+
+def test_a_story_index_is_read_once_not_once_per_company():
+    """A vendor's index holds hundreds of stories; almost none are about them.
+
+    Fetching every page to test attribution read a hundred pages to keep one or
+    two, and it was the largest cost in a run. The story's address already names
+    its subject — that is how candidates are found — so it settles most of them
+    before a request is spent.
+    """
+    from harness_fleet.enrich import story_could_name
+
+    # Their own story, filed under their name.
+    assert story_could_name("https://www.snowflake.com/en/customers/accenture/", "accenture.com")
+    # Punctuation is not a difference: publicis-groupe is publicisgroupe.
+    assert story_could_name("https://www.snowflake.com/customers/publicis-groupe/", "publicisgroupe.com")
+    # AWS files as <customer>-<partner>, so either half may be the subject.
+    assert story_could_name("https://aws.amazon.com/partners/success/biolytica-presidio/", "presidio.com")
+    # Somebody else's story.
+    assert not story_could_name("https://www.databricks.com/customers/comcast/", "accenture.com")
+    assert not story_could_name("https://www.elastic.co/customers/cvs/", "phdata.io")
+
+
+def test_only_plausible_stories_are_read_and_an_empty_filter_falls_back(monkeypatch):
+    """Read what could be about them; if nothing could, read everything.
+
+    A confident zero from a filter we cannot trust is a silent zero wearing a
+    reason, so an address scheme that matches nothing falls back to reading the
+    index rather than reporting that no story names the company.
+    """
+    from harness_fleet import enrich
+    from harness_fleet.discover import RawRecord
+
+    seen: list[list[str]] = []
+
+    def fake_many(urls_, fetch, **kwargs):
+        batch = list(urls_)
+        seen.append(batch)
+        return [(u, True, RawRecord(text="Acme delivered a thing", source_uri=u)) for u in batch]
+
+    monkeypatch.setattr(enrich, "_fetch_pages_many", fake_many)
+
+    matched = [
+        "https://www.snowflake.com/customers/accenture/",
+        "https://www.databricks.com/customers/comcast/",
+    ]
+    records, skipped = enrich.fetch_vendor_stories("accenture.com", urls=matched)
+    assert seen[0] == [matched[0]], "only the story whose address names them is read"
+    assert any("1 of 2 stories do not name accenture.com" in str(s.get("reason", "")) for s in skipped)
+    assert [r.source_uri for r in records] == [matched[0]]
+
+    seen.clear()
+    unmatched = [
+        "https://www.snowflake.com/customers/one/",
+        "https://www.snowflake.com/customers/two/",
+    ]
+    records, skipped = enrich.fetch_vendor_stories("accenture.com", urls=unmatched)
+    assert seen[0] == unmatched, "nothing resembles them, so the index is read rather than assumed"
+    assert skipped == [], "nothing was skipped, so nothing is reported as skipped"
