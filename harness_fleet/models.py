@@ -201,8 +201,10 @@ def score_to_fit_tier(score: Any) -> str:
 
 
 INSTRUCTION_TEMPLATE = (
-    "Form-fill contract: fill every required claim from the supplied source sections only. "
-    "Attach at least one exact quote per item. Never use outside knowledge. Return JSON only."
+    "Form-fill contract: return exactly one entry per input item, keyed by that item's own "
+    "item_id (never a slice_id), filling every required claim from the supplied source "
+    "sections only. Attach at least one exact quote per item, copied from a slice that "
+    "belongs to the same item. Never use outside knowledge. Return JSON only."
 )
 DEFAULT_INSTRUCTIONS = "Extract only facts supported by the supplied source slices."
 

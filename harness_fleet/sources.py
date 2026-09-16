@@ -289,14 +289,23 @@ def linked_domains(text: str | None) -> list[str]:
 def entity_key_for(source_uri: str, text: str = "", metadata: dict[str, Any] | None = None) -> str:
     """The entity a source belongs to, preferring real attribution over the host.
 
-    An explicit entity or website in the metadata wins. Otherwise the URL
-    decides — *unless* the URL only identifies a source host, which happens for
-    a vendor story or a platform page: those are about somebody else, so the
-    entity is a domain the text actually names. When the text names nobody the
-    page keeps its own host rather than inventing an attribution.
+    An explicit entity or website in the metadata wins, and so does an employer
+    the page itself names (a requisition's ``hiringOrganization``): a posting
+    republished on a board is about the company hiring, not about the board.
+    Otherwise the URL decides — *unless* the URL only identifies a source host,
+    which happens for a vendor story or a platform page: those are about
+    somebody else, so the entity is a domain the text actually names. When the
+    text names nobody the page keeps its own host rather than inventing an
+    attribution.
     """
     meta = metadata or {}
-    explicit = str(meta.get("entity") or meta.get("website") or "").strip()
+    explicit = str(
+        meta.get("entity")
+        or meta.get("website")
+        or meta.get("hiring_domain")
+        or meta.get("hiring_organization")
+        or ""
+    ).strip()
     if explicit:
         return explicit
     key = canonicalize_entity_id(source_uri or "")

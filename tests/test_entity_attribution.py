@@ -1,6 +1,7 @@
 """Who a source is about: the company, not the publisher or the platform."""
 from __future__ import annotations
 
+from harness_fleet.discover import _json_ld_employer
 from harness_fleet.evidence import coverage
 from harness_fleet.sources import entity_key_for
 
@@ -40,3 +41,42 @@ def test_a_real_posting_is_hiring_evidence():
                "We are hiring a Senior Enterprise Sales Director to own our largest accounts "
                "across the region, working remotely with our field team.")
     assert coverage(posting, "https://boards.greenhouse.io/acme")["delivery_hiring"] is True
+
+
+POSTING_HTML = """
+<html><head><script type="application/ld+json">
+{"@context":"https://schema.org","@type":"JobPosting",
+ "title":"Enterprise Sales Director",
+ "hiringOrganization":{"@type":"Organization","name":"WorkWave",
+                       "url":"https://www.workwave.com"},
+ "description":"Own enterprise accounts."}
+</script></head><body><h1>Enterprise Sales Director</h1></body></html>
+"""
+
+
+def test_a_syndicated_posting_is_filed_under_the_employer():
+    """A board republishing a requisition is not the company doing the hiring."""
+    employer, domain = _json_ld_employer(POSTING_HTML)
+    assert (employer, domain) == ("WorkWave", "workwave.com")
+    key = entity_key_for("https://www.simplyhired.com/job/abc", "the posting text",
+                         {"hiring_organization": employer, "hiring_domain": domain})
+    assert key == "workwave.com"
+
+
+def test_an_employer_named_without_a_domain_still_beats_the_board():
+    """The page's own statement outranks the host, even with no URL to lean on."""
+    html = ('<script type="application/ld+json">'
+            '{"@type":"JobPosting","hiringOrganization":{"name":"Acme Robotics"}}'
+            '</script>')
+    employer, domain = _json_ld_employer(html)
+    assert (employer, domain) == ("Acme Robotics", "")
+    assert entity_key_for("https://www.glassdoor.com/job/x", "", {
+        "hiring_organization": employer, "hiring_domain": domain}) == "Acme Robotics"
+
+
+def test_a_plain_page_names_no_employer():
+    """No structured posting, no invented attribution."""
+    assert _json_ld_employer("<html><body>hello</body></html>") == ("", "")
+    assert _json_ld_employer(
+        '<script type="application/ld+json">{"@type":"Article","headline":"x"}</script>'
+    ) == ("", "")

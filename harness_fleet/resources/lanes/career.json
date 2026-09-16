@@ -6,7 +6,9 @@
   ],
   "queries": [
     "\"enterprise sales\" remote (\"apply now\" OR \"job description\" OR \"join our team\")",
-    "\"sales operations\" remote hiring (\"apply now\" OR \"job description\")"
+    "\"sales operations\" remote hiring (\"apply now\" OR \"job description\")",
+    "\"enterprise sales\" \"responsibilities\" \"qualifications\" remote",
+    "\"sales operations\" \"what you'll do\" \"what we're looking for\" remote"
   ],
   "backends": [
     "ddgs",
@@ -25,5 +27,5 @@
   "preset": "triage",
   "tier": "tier_3",
   "top": 50,
-  "revision": 1
+  "revision": 2
 }

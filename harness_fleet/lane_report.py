@@ -124,6 +124,18 @@ def _yield_measurement(
                 reasons.append(f"{source or 'source'}: {reason[:160]}")
         if reasons:
             notes.append("skipped sources: " + "; ".join(reasons[:5]))
+        retried = [entry for entry in (report.get("retried") or []) if isinstance(entry, dict)]
+        if retried:
+            # A source that only answered after a retry is a fact about this
+            # run's breadth: the yield below came from a surface that was not
+            # answering first time, and the next run may not be so lucky.
+            notes.append(
+                "sources that answered only after a retry: "
+                + "; ".join(
+                    f"{entry.get('backend') or 'source'} took {entry.get('attempts')} attempts"
+                    for entry in retried[:5]
+                )
+            )
     else:
         notes.append(
             "the run did not record a discovery report, so attempted counts are unknown "

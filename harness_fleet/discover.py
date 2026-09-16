@@ -50,7 +50,7 @@ import httpx
 from . import branding
 from .channels import channel_hits, load_channels
 from .models import InputItem
-from .sources import host_of, is_noise_host, is_source_host
+from .sources import canonicalize_entity_id, host_of, is_noise_host, is_source_host
 
 USER_AGENT = f"{branding.CLI_NAME}-discover (+{branding.HOMEPAGE})"
 DISCOVER_EXTRA = f"pip install {branding.DIST_NAME}[discover]"
@@ -207,8 +207,19 @@ def search_ddgs(query: str, max_results: int = 10, timeout: float = 20.0) -> lis
     except DiscoverError:
         raise
     except Exception as exc:
+        if _is_empty_result(exc):
+            # "No results found" is an answer, not a failure. Treating it as an
+            # error made an empty query look like a dead source, retried it
+            # three times and reported the wrong reason for a zero.
+            return []
         raise DiscoverError(f"ddgs search failed for {query!r}: {exc}") from exc
     return hits
+
+
+def _is_empty_result(exc: BaseException) -> bool:
+    """Whether a backend is saying "nothing matched" rather than "I broke"."""
+    text = f"{type(exc).__name__}: {exc}".lower()
+    return "no results found" in text or "no results" == str(exc).strip().lower()
 
 
 def search_searxng(
@@ -541,6 +552,15 @@ def _space_host(host: str, delay: float) -> None:
         _host_last[host] = time.monotonic()
 
 
+#: A search surface is a network call to somebody else's service: rate limits,
+#: TLS hiccups and empty-result errors are the normal weather, not a verdict on
+#: the query. Retrying the same query a couple of times before recording it as a
+#: failed source is the difference between "this query found nothing" and "this
+#: run found nothing", which is the difference a person actually sees.
+SEARCH_ATTEMPTS = 3
+SEARCH_RETRY_WAIT_SEC = 2.0
+
+
 def _run_backend(
     backend: str,
     query: str,
@@ -581,6 +601,34 @@ def _run_backend(
     if backend == "hn":
         return search_hn(query, max_results=max_results, client=client)
     raise DiscoverError(f"search backend not wired: {backend!r}")
+
+
+def run_backend_retrying(
+    backend: str,
+    query: str,
+    *,
+    attempts: int = SEARCH_ATTEMPTS,
+    sleep: Callable[[float], None] = time.sleep,
+    **kwargs: Any,
+) -> tuple[list[SearchHit], int]:
+    """Ask one backend one query, retrying transient failures with backoff.
+
+    Returns the hits and how many attempts it took. The last failure is raised
+    with its own type intact, so the caller still records precisely why a query
+    produced nothing — a retry never turns a dead source into a live one, it
+    just stops treating weather as a verdict.
+    """
+    tries = max(1, attempts)
+    last: Exception | None = None
+    for attempt in range(tries):
+        try:
+            return _run_backend(backend, query, **kwargs), attempt + 1
+        except Exception as exc:  # noqa: BLE001 - re-raised below with its type intact
+            last = exc
+            if attempt + 1 < tries:
+                sleep(SEARCH_RETRY_WAIT_SEC * (attempt + 1))
+    assert last is not None
+    raise last
 
 
 def web_search(
@@ -971,6 +1019,70 @@ def _http_get(
     raise DiscoverError(f"too many redirects for {url}")
 
 
+def _json_ld_nodes(payload: Any) -> list[dict[str, Any]]:
+    """Every JSON-LD node in a payload, flattening ``@graph`` wrappers."""
+    if isinstance(payload, list):
+        nodes: list[dict[str, Any]] = []
+        for entry in payload:
+            nodes.extend(_json_ld_nodes(entry))
+        return nodes
+    if not isinstance(payload, dict):
+        return []
+    if "@graph" in payload:
+        return _json_ld_nodes(payload["@graph"])
+    return [payload]
+
+
+def _json_ld_employer(html: str) -> tuple[str, str]:
+    """The employer a posting page names, as (name, domain-or-empty).
+
+    A requisition syndicated onto a board carries its employer in the page's own
+    structured data — ``hiringOrganization`` on a JobPosting — and that name is
+    the attribution the page itself makes. Reading it is the difference between
+    filing a posting under the board that republished it and filing it under the
+    company doing the hiring, which is the entity a person asked about.
+
+    Returns ``("", "")`` when the page names no employer, so an unattributed
+    page keeps whatever attribution the URL gives it.
+    """
+    if "jobposting" not in html.lower():
+        return "", ""
+    blocks = re.findall(
+        r'<script[^>]+type=["\']application/ld\+json["\'][^>]*>(.*?)</script>',
+        html, re.IGNORECASE | re.DOTALL,
+    )
+    for block in blocks:
+        try:
+            payload = json.loads(block)
+        except ValueError:
+            continue
+        for node in _json_ld_nodes(payload):
+            types = node.get("@type", [])
+            types = [types] if isinstance(types, str) else list(types or [])
+            if "jobposting" not in {str(t).lower() for t in types}:
+                continue
+            org = node.get("hiringOrganization")
+            if isinstance(org, list):
+                org = org[0] if org else None
+            if isinstance(org, str):
+                name = _WS.sub(" ", org).strip()
+                if name:
+                    return name, ""
+                continue
+            if not isinstance(org, dict):
+                continue
+            name = _WS.sub(" ", str(org.get("name") or "")).strip()
+            url = str(org.get("url") or org.get("sameAs") or "").strip()
+            domain = ""
+            if url:
+                candidate = canonicalize_entity_id(url)
+                if candidate and not is_source_host(candidate):
+                    domain = candidate
+            if name or domain:
+                return name, domain
+    return "", ""
+
+
 def _json_ld_description(html: str) -> str:
     """Pull a description/articleBody out of JSON-LD script blocks.
 
@@ -1231,6 +1343,14 @@ def _record_from_response(final_url: str, raw_header: str, raw: bytes, source_ur
         raise DiscoverError(f"no extractable text for {source_url}")
     title = _extract_title(html) or domain_of(final_url)
     metadata: dict[str, Any] = {"evidence": "fetched", **archive}
+    employer, employer_domain = _json_ld_employer(html)
+    if employer_domain or employer:
+        # The posting names its own employer. Attribution prefers the domain the
+        # page gives (a stable id); a name with no domain is still the page's own
+        # statement and beats filing the posting under the board that carried it.
+        metadata["hiring_domain"] = employer_domain
+        metadata["hiring_organization"] = employer
+        metadata["hiring_attribution"] = "json-ld hiringOrganization"
     if structured and text == structured:
         metadata["format"] = "json-ld"
     return RawRecord(text=text, source_uri=final_url, title=title,
@@ -3699,16 +3819,30 @@ def run_discovery(
                 skipped.append({"query": query, "reason": "empty query"})
         found: dict[tuple[int, str], list[SearchHit]] = {}
         failures: list[tuple[int, str, str]] = []
+        #: Queries that only answered after a retry. Reported, never hidden: a
+        #: run whose breadth came from the third attempt is a different fact
+        #: from a run where every source answered first time.
+        retried: list[dict[str, Any]] = []
         if pairs:
             def probe_source(backend: str, source_queries: list[tuple[int, str]]) -> None:
                 for index, query in source_queries:
                     if not _source_ready(backend, delay):
                         continue
                     try:
-                        found[(index, backend)] = _run_backend(
-                            backend, query, max_results, searxng_url, client,
-                            reddit_subreddits, se_tagged, se_site, discourse_url, lemmy_instance,
+                        hits, used = run_backend_retrying(
+                            backend, query,
+                            max_results=max_results,
+                            searxng_url=searxng_url, client=client,
+                            reddit_subreddits=reddit_subreddits, se_tagged=se_tagged,
+                            se_site=se_site, discourse_url=discourse_url,
+                            lemmy_instance=lemmy_instance,
                         )
+                        found[(index, backend)] = hits
+                        if used > 1:
+                            retried.append({
+                                "query": query, "backend": backend, "attempts": used,
+                                "reason": f"source answered on attempt {used}",
+                            })
                     except DiscoverError as exc:
                         failures.append((index, backend, f"{query}: {exc}"))
                     except Exception as exc:  # a surface must not take the run down
@@ -3885,5 +4019,6 @@ def run_discovery(
         "hits": hits_seen,
         "items": len(items),
         "skipped": skipped,
+        "retried": retried,
         "source_quality": source_quality,
     }
