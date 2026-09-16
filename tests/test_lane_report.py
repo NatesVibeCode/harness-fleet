@@ -450,3 +450,49 @@ def test_a_bundled_dossier_keeps_the_surface_each_source_came_from(tmp_path):
     )
     by_source = {entry.source: entry.captured for entry in entries}
     assert by_source == {"ddgs": 1, "hn": 1}, by_source
+
+
+def test_lane_report_measures_against_the_lane_the_run_recorded(tmp_path, monkeypatch, capsys):
+    """A report should not need to be told what the run already knows.
+
+    `research --lane career` writes the lane next to the run; asking for the
+    report without repeating the name then measures against the wrong bar —
+    silently, which is the bad part.
+    """
+    db, workspace = _offline_run(tmp_path, monkeypatch)
+    runs = workspace / "runs" / "lane-run"
+    runs.mkdir(parents=True, exist_ok=True)
+    (runs / "discovery_report.json").write_text(
+        json.dumps({"lane": "career", "skipped": []}), encoding="utf-8"
+    )
+    parser = cli.build_parser()
+    args = parser.parse_args(["lane", "report", "lane-run", "--sample", "0", "--json",
+                              "--db", str(db), "--workspace-root", str(workspace)])
+    capsys.readouterr()
+    cli.cmd_lane(args)
+    captured = capsys.readouterr().out
+    payload = json.loads(captured)
+    assert payload["lane"] == "career"
+    assert payload["tier_bar"] == ["delivery_hiring"]
+
+
+def test_an_explicit_lane_still_wins_over_the_recorded_one(tmp_path, monkeypatch, capsys):
+    db, workspace = _offline_run(tmp_path, monkeypatch)
+    runs = workspace / "runs" / "lane-run"
+    runs.mkdir(parents=True, exist_ok=True)
+    (runs / "discovery_report.json").write_text(
+        json.dumps({"lane": "career", "skipped": []}), encoding="utf-8"
+    )
+    (workspace / "lanes").mkdir(exist_ok=True)
+    (workspace / "lanes" / "account.json").write_text(json.dumps({
+        "name": "account", "preset": "account-research", "tier": "tier_2",
+        "queries": ["q"], "backends": ["ddgs"],
+    }), encoding="utf-8")
+    parser = cli.build_parser()
+    args = parser.parse_args(["lane", "report", "lane-run", "--lane", "account", "--sample", "0",
+                              "--json", "--db", str(db), "--workspace-root", str(workspace)])
+    capsys.readouterr()
+    cli.cmd_lane(args)
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["lane"] == "account"
+    assert "delivery_proof" in payload["tier_bar"], "the explicit lane's bar, not the recorded one's"

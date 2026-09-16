@@ -1739,6 +1739,18 @@ def _load_lane_for_run(args: argparse.Namespace, workspace: Path) -> Any:
     return lane
 
 
+def _lane_name_from_run(workspace: Path, run_id: str) -> str:
+    """The lane a run recorded for itself, or "" when it recorded none."""
+    path = workspace / "runs" / run_id / "discovery_report.json"
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ""
+    if not isinstance(payload, dict):
+        return ""
+    return str(payload.get("lane") or "").strip()
+
+
 def _write_discovery_report(workspace: Path, run_id: str, report: dict[str, Any]) -> Path | None:
     """Keep discovery's own account of the run, next to the run.
 
@@ -2066,6 +2078,18 @@ def cmd_lane(args: argparse.Namespace) -> None:
 
     store = _store(args)
     lane = _load_lane_for_run(args, workspace)
+    if lane is None:
+        # A run records the lane that asked for it, so `lane report <run_id>` can
+        # measure against the right bar without the caller repeating themselves.
+        # An explicit --lane still wins.
+        implied = _lane_name_from_run(workspace, run_id)
+        if implied:
+            namespace = argparse.Namespace(**{**vars(args), "lane": implied})
+            lane = _load_lane_for_run(namespace, workspace)
+            if lane is not None:
+                # stdout carries the report itself (and JSON when --json is set),
+                # so this note goes to stderr like every other aside.
+                print(f"Measuring against the lane this run recorded: '{implied}'", file=sys.stderr)
     report = build_lane_report(
         store,
         run_id,
