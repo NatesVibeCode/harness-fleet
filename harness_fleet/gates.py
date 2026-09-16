@@ -375,12 +375,17 @@ class LadderRung:
         }
 
     def reachable(self, grade: str) -> bool:
-        """Whether evidence at this grade can settle what the rung gates on.
+        """Whether evidence at this grade can climb this rung.
 
-        The semantic gates need a page; the cheap ones are readable from a
-        search result, which is why a snippet-only candidate has earned the
-        fetching rung and not the one beyond it.
+        Two ways to be out of reach, and both are real. A rung marked
+        ``fetched`` needs a page nobody has read yet: the cheap gates *can* be
+        settled from a search result — that is what the rung below does — but
+        counting this one as climbed would credit a fetch the run never spent.
+        And a semantic gate needs prose only the firm's own case studies carry,
+        whatever the rung's declared grade.
         """
+        if self.evidence == FETCHED and grade != FETCHED:
+            return False
         if any(gate in _SEMANTIC_GATES for gate in self.gates):
             return grade == FETCHED
         return True
@@ -471,6 +476,18 @@ class FunnelReport:
         if self.qualified:
             return "qualified"
         return "lead"
+
+    @property
+    def exhausted(self) -> bool:
+        """A lead with nothing further to fetch.
+
+        Everything still unresolved needs evidence this report's own grade
+        cannot supply and no rung above it would: the pages are already read, so
+        fetching them again changes nothing. It is a distinct state from a lead
+        that has earned a fetch, and the difference is what stops a run from
+        reporting a next step that does not exist.
+        """
+        return self.verdict == "lead" and not self.earned
 
     def because(self) -> str:
         for result in self.results:
@@ -584,6 +601,28 @@ def check_vertical(verticals: tuple[str, ...], *, wanted: tuple[str, ...]) -> Ga
     )
 
 
+def _evaluable_gates(prof: GateProfile) -> frozenset[str]:
+    """Which gates this profile actually puts to a candidate.
+
+    ``kind`` always gates. The rest gate only when the profile states something
+    to gate on — no territory named means the location gate never runs — or, for
+    the semantic gate, when the profile names an industry to match. This is the
+    single answer both the ladder walk and the lane validator ask for, so a rung
+    that gates on something this profile never evaluates is idle on both sides
+    rather than live on one and idle on the other. Callers merge the lane's
+    defaults with the run's profile first, so a field left unset in a lane file
+    is still gated on once a person supplies it.
+    """
+    gates = {"kind"}
+    if prof.size_min or prof.size_max:
+        gates.add("size")
+    if prof.locations:
+        gates.add("location")
+    if prof.verticals:
+        gates.add("vertical")
+    return frozenset(gates)
+
+
 def run_funnel(
     candidate: str,
     *,
@@ -609,14 +648,21 @@ def run_funnel(
     report.results.append(check_kind(snippet, allows=prof.allows, evidence=evidence))
     if report.eliminated:
         return report
-    report.results.append(
-        check_size(read_size(snippet), minimum=prof.size_min, maximum=prof.size_max)
-    )
-    if report.eliminated:
-        return report
-    report.results.append(check_location(read_location(snippet), allowed=prof.locations))
-    if report.eliminated:
-        return report
+    # A gate the profile leaves unset is not put to the candidate at all: no
+    # size bounds means nothing to be outside of, and no territory named means
+    # nowhere to be outside of. Such a gate would come back `unknown` forever
+    # without standing between the candidate and a pass, and counting it as
+    # unresolved would name a blocker no page could ever clear.
+    if prof.size_min or prof.size_max:
+        report.results.append(
+            check_size(read_size(snippet), minimum=prof.size_min, maximum=prof.size_max)
+        )
+        if report.eliminated:
+            return report
+    if prof.locations:
+        report.results.append(check_location(read_location(snippet), allowed=prof.locations))
+        if report.eliminated:
+            return report
     if prof.verticals:
         # The vertical is gated on even when only a snippet is in hand, and it
         # comes back unknown there. That is the point: leaving it out entirely
@@ -628,46 +674,81 @@ def run_funnel(
                 wanted=prof.verticals,
             )
         )
-    _set_earned(report, ladder)
+    _set_earned(report, ladder, prof)
     return report
 
 
-def _set_earned(report: FunnelReport, ladder: Sequence[LadderRung] | None) -> None:
+def _set_earned(
+    report: FunnelReport,
+    ladder: Sequence[LadderRung] | None,
+    profile: GateProfile | None = None,
+) -> None:
     """Name the rung a surviving candidate has earned, and record the ladder.
 
-    A ladder is climbed in order, so a rung is in play only once the rung below
-    it has nothing left unexplained. That is what makes "earned" mean something:
-    the candidate is standing on the furthest rung it has cleared, and what it
-    earns is the next one — the fetch that would settle what is still open.
-    A rung that cannot settle anything still open is not earned, and saying so
-    is how a run avoids sending somebody to fetch pages that cannot change the
-    verdict.
+    The rule is: *earn the first rung carrying something open that this report's
+    evidence cannot settle, once everything below it is a grant.* The walk is
+    where the two halves of the engine meet — a candidate holding only a search
+    result is owed the page, and the same candidate holding the page is owed the
+    case studies. That movement is the number a person tunes thresholds by.
+
+    A rung is a *grant* when the evidence in hand answers it: either it is
+    already settled, or it carries a gate this profile still puts to candidates
+    and this grade can read. Grants are walked through, never reported, because
+    there is no fetch left to spend on them.
+
+    What remains is a rung carrying something open that a fetch would settle, and
+    that is what gets named. When no such rung exists, the lead has read
+    everything that could change the answer and ``earned`` stays empty — the
+    ``exhausted`` state, which is an answer rather than a failure to find one.
     """
     rungs = list(ladder or DEFAULT_LADDER)
     report.rungs = rungs
     if report.eliminated or report.qualified:
         return
     grade = FETCHED if report.fetched else SNIPPET
-    standing = -1
+    live = _evaluable_gates(profile) if profile is not None else None
+
+    def settleable_here(rung: LadderRung) -> bool:
+        """Whether any gate still open at this rung is one we could settle now.
+
+        Three qualifications, each load-bearing. The gate must be *open* — not
+        already settled, and not one this profile never puts to a candidate. It
+        must be a gate this rung actually carries, or the rung could be credited
+        for work it does not do. And the rung's own evidence grade must be one we
+        hold: a page answers a rung written for search results, and a search
+        result cannot answer one written for pages. That last one is the
+        asymmetry in miniature, and it is why a snippet-only candidate is owed a
+        fetch while a fetched candidate is not owed a summary.
+        """
+        if live is not None and not set(rung.gates) & live:
+            return False
+        open_gates = {gate for gate in rung.gates if not _settled(report, gate)}
+        if not open_gates:
+            return False
+        if live is not None and not open_gates & live:
+            return False
+        return rung.reachable(grade) and _rank(rung.evidence) <= _rank(grade)
+
     for index, rung in enumerate(rungs):
-        if not rung.reachable(grade):
-            # This rung needs evidence we do not hold. If it is carrying gates
-            # the candidate cannot settle without it, that is exactly the fetch
-            # it has earned; if it is not, sending anybody to fetch would be a
-            # page read for nothing.
-            if set(rung.gates) & set(report.unresolved):
-                report.earned = rung.name
-            return
-        if all(gate in report.unresolved or _settled(report, gate) for gate in rung.gates):
-            standing = index
-        else:
-            break
-    if standing + 1 < len(rungs):
-        report.earned = rungs[standing + 1].name
+        if settleable_here(rung) or all(_settled(report, gate) for gate in rung.gates):
+            # A grant: the evidence in hand settles this rung, or already has.
+            # No fetch is owed, so keep walking up.
+            continue
+        if any(settleable_here(other) for other in rungs[index + 1:]):
+            # Out of reach on evidence we do not hold, with something further up
+            # still open. Behind the candidate, not ahead of it.
+            continue
+        report.earned = rung.name
+        return
+    report.earned = ""
 
 
-def _settled(report: FunnelReport, gate: str) -> bool:
-    return any(
+def _rank(grade: str) -> int:
+    """How much evidence a grade is, so a rung can be ordered against a report."""
+    return 1 if grade == FETCHED else 0
+
+
+def _settled(report: FunnelReport, gate: str) -> bool:    return any(
         result.gate == gate and result.outcome in ("pass", "fail") for result in report.results
     )
 

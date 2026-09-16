@@ -9,14 +9,17 @@ from harness_fleet.channels import load_channels
 from harness_fleet.discover import BACKENDS
 
 REPO = Path(__file__).resolve().parents[1]
-SHIPPED = REPO / "lanes"
 
 
 def test_every_shipped_lane_validates():
     """A lane that ships must be runnable as installed, with no workspace setup.
 
     The lanes live in package data, so this asserts on what an *install* carries
-    — a product repo has no repo-root lanes directory and must still pass.
+    — a product repo has no repo-root lanes directory and must still pass. That
+    is now literally true: the repo-root `lanes/` directory was removed once it
+    was found to be shadowing the packaged lanes with stale content. The package
+    is the only copy, and `test_funnel_wiring.py` guards against a second one
+    reappearing.
     """
     loaded = lane_module.shipped_lanes()
     assert loaded

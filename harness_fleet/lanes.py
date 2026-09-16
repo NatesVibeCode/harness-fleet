@@ -200,8 +200,49 @@ def _validate_funnel(funnel: LaneFunnel) -> None:
                 "funnel.ladder[0]: the first rung reads what the search already "
                 "returned; a lane may not open by fetching everything"
             )
-        if "kind" not in {gate for rung in funnel.ladder for gate in rung.gates}:
-            raise LaneError("funnel.ladder: no rung gates on the kind of company")
+        # Every gate this lane's funnel will actually run has to be carried by
+        # some rung. Two gates can come back unresolved and never be settled,
+        # unlike an elimination: the semantic one, and the cheap ones on a
+        # candidate no fetch ever reached. A lane that carries neither leaves
+        # such a lead unable to name its next step — it would go quiet instead of
+        # saying what to fetch. The engine relies on this: it earns the first
+        # rung carrying something open, with no fallback for a gate no rung knows.
+        # A gate the profile leaves unset is not run at all, so it is not owed a
+        # rung: `location` with no territory named never gates.
+        # `kind` always gates. The rest gate only when the profile states
+        # something to gate on: no territory named means the location gate never
+        # runs, and a size range of zero means the size gate never runs. A lane
+        # loaded here carries only its own defaults, so a gate it leaves unset is
+        # still owed a rung — a person merges their profile in at run time.
+        declarable = ("size", "location", "vertical")
+        gated = {"kind"}
+        if funnel.size_min or funnel.size_max:
+            gated.add("size")
+        if funnel.locations:
+            gated.add("location")
+        if funnel.verticals:
+            gated.add("vertical")
+
+        carried = {gate for rung in funnel.ladder for gate in rung.gates}
+        unearnable = sorted(gated - carried)
+        if unearnable:
+            raise LaneError(
+                f"funnel.ladder: the funnel can leave {', '.join(unearnable)} "
+                "unresolved for this lane, but no rung carries it, so a lead "
+                "stalled on it could not name the fetch it had earned"
+            )
+        unknown_gates = sorted(carried - gated - set(declarable))
+        if unknown_gates:
+            raise LaneError(
+                f"funnel.ladder: {', '.join(unknown_gates)} is gated on but the "
+                "funnel never leaves it unresolved, so the rung settles nothing"
+            )
+        if "kind" not in {g for rung in funnel.ladder if rung.evidence == SNIPPET
+                          for g in rung.gates}:
+            raise LaneError(
+                "funnel.ladder: no rung gates on the kind of company at snippet "
+                "grade, which is the one elimination a search result settles alone"
+            )
 
 
 def load_lane(path: Path | str, *, channels: set[str] | None = None,

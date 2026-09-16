@@ -35,6 +35,10 @@ from harness_fleet.gates import (
 from harness_fleet.models import InputItem
 from harness_fleet.partner import IdealPartnerProfile
 
+#: The checkout itself, because which lanes a run loads depends on where it runs.
+REPO = Path(__file__).resolve().parents[1]
+
+
 # --------------------------------------------------------------------------
 # 1. Which evidence grade the text carried, and what that entitles it to
 # --------------------------------------------------------------------------
@@ -137,10 +141,11 @@ def test_the_ladder_tells_a_candidate_what_still_stands_between_it_and_a_pass():
     assert [rung.name for rung in step.rungs] == ["result", "surface", "stories"]
     # Two things stand between this candidate and a pass: the page that
     # confirms it is a delivery firm, and the case studies that name an
-    # industry. A lead that named only the first would send somebody to fetch
-    # pages that cannot settle the vertical.
+    # industry. It has earned the cheapest one, which is the next rung — not the
+    # furthest blocker, because telling somebody to fetch case studies for a
+    # candidate whose pages were never read sends them past the first gate.
     assert step.unresolved == ["kind", "vertical"]
-    assert step.earned == "stories", "the vertical is what no snippet can settle"
+    assert step.earned == "surface", "the next rung to climb is the page fetch"
     assert not snippet.eliminated and not snippet.qualified
 
 
@@ -163,6 +168,51 @@ def test_every_shipped_lane_carries_a_ladder_that_validates(tmp_path: Path):
             assert rung.name and rung.evidence in (SNIPPET, FETCHED)
             assert rung.earns, f"{name}:{rung.name} says what it buys"
         lane_module.validate_lane(lane)
+
+
+# --------------------------------------------------------------------------
+# One source of truth for the lanes that ship
+# --------------------------------------------------------------------------
+
+
+def test_nothing_in_the_repo_shadows_the_lanes_that_ship():
+    """A `lanes/` directory here would silently beat the packaged lanes.
+
+    The lanes used to live at the repo root, before they became package data
+    (`aa09e90`). The root copy outlived the move: it stopped being updated while
+    the packaged lanes kept being tuned, so running from a checkout got 2 search
+    queries and `stories: 0` where an install got 6 queries and `stories: 80` —
+    the vendor-story sourcing never ran. Nothing failed, because a workspace
+    lane overriding a shipped one is the documented behaviour and every test
+    built its own workspace.
+
+    The fix is that the package is the only copy. This is the guard that says so,
+    and it fails on re-introduction rather than on the next silent drift.
+    """
+    root_lanes = REPO / "lanes"
+    assert not root_lanes.exists(), (
+        f"{root_lanes} shadows the packaged lanes; lanes ship as package data "
+        "in harness_fleet/resources/lanes/"
+    )
+
+
+def test_the_repo_root_runs_the_lanes_that_ship():
+    """What `research --lane X` loads from this checkout is what an install gets.
+
+    Both halves matter: nothing in the repo may override a lane, and the funnel
+    the run gates on has to be the shipped one rather than a stale copy.
+    """
+    from harness_fleet.lanes import lane_source
+
+    available = lane_module.load_available_lanes(REPO)
+    for name in available:
+        assert lane_source(REPO, name) == "shipped", (
+            f"{name} is being overridden inside the repo, so a checkout runs "
+            "different configuration than an install"
+        )
+    for name in ("account", "career", "partner"):
+        assert available[name].funnel.ladder, f"{name} ships without its ladder"
+    assert available["partner"].stories == lane_module.shipped_lanes()["partner"].stories
 
 
 def test_a_lane_validator_rejects_a_ladder_that_cannot_run():
@@ -355,11 +405,125 @@ def test_the_earned_counts_say_what_the_survivors_are_owed():
         run_funnel("b.co.uk", snippet="A consultancy of 30 people in Leeds.", profile=profile),
     ]
     earned = cli._earned_counts(reports)
-    assert earned == {"stories": 2}, "both wait on the case studies, not on a page"
+    assert earned == {"surface": 2}, "both are owed the page fetch they earned"
     # An eliminated candidate is owed nothing: it never spends a fetch.
     assert cli._earned_counts([
         run_funnel("vendor.io", snippet="Our platform is a SaaS product", profile=profile)
     ]) == {}
+
+
+def test_every_lead_names_a_next_step_or_says_there_is_none():
+    """A lead must never go quiet.
+
+    The failure this guards against is silent: a walk that cannot match a lead's
+    open gate to any rung returns nothing, and the run reports a lead with no
+    next step — indistinguishable from a lead that is finished. Either a lead
+    names the rung it earned, or it has no open gate left that a fetch could
+    settle, which is a state it has to be *in* rather than fall into.
+    """
+    ladders = {
+        "default": None,
+        "partner": lane_module.shipped_lanes()["partner"].funnel.rungs(),
+        "career": lane_module.shipped_lanes()["career"].funnel.rungs(),
+    }
+    profiles = [
+        {},
+        {"allows": "services"},
+        {"allows": "services", "size_min": 20, "size_max": 500},
+        {"allows": "services", "locations": ("United Kingdom",)},
+        {"allows": "services", "locations": ("United Kingdom",), "verticals": ("fintech",)},
+        {"allows": "services", "size_min": 20, "locations": ("United Kingdom",),
+         "verticals": ("fintech", "healthcare")},
+    ]
+    texts = [
+        "A data consultancy of 200 people in London serving banking clients.",
+        "A boutique advisory, team of 6, in Leeds.",
+        "We build things.",
+        "An engineering firm of 1,200 people headquartered in Munich, Germany.",
+        "A consultancy in Toronto, Canada, working with healthcare providers.",
+    ]
+    for ladder_name, ladder in ladders.items():
+        for profile in profiles:
+            for grade in (SNIPPET, FETCHED):
+                for text in texts:
+                    report = run_funnel(
+                        "x.example", snippet=text, profile=profile,
+                        evidence=grade, ladder=ladder,
+                    )
+                    if report.verdict != "lead":
+                        continue
+                    where = f"{ladder_name}/{grade}/{profile}/{text[:30]}"
+                    if report.earned:
+                        assert report.earned in {r.name for r in report.rungs}, (
+                            f"{where}: earned a rung that is not on its ladder"
+                        )
+                        assert not report.exhausted, where
+                    else:
+                        # Nothing earned, so it must be a state the report can
+                        # account for: finished, or out of things to fetch.
+                        assert report.qualified or report.eliminated or report.exhausted, where
+
+
+def test_a_lead_that_has_read_everything_is_reported_as_exhausted():
+    """There is a difference between "fetch this next" and "nothing left".
+
+    A firm whose pages name no industry is unresolved on the vertical and no
+    second fetch will change that, so the report says it has nothing further to
+    offer instead of naming a fetch nobody should spend.
+    """
+    profile = {"allows": "services", "locations": ("United Kingdom",),
+               "verticals": ("fintech",)}
+    exhausted = run_funnel(
+        "acme.co.uk",
+        snippet="An advisory firm of 200 people in London. We build data platforms.",
+        profile=profile, evidence=FETCHED,
+    )
+    assert exhausted.verdict == "lead"
+    assert exhausted.unresolved == ["vertical"]
+    assert exhausted.earned == "" and exhausted.exhausted
+
+    owed = run_funnel("acme.co.uk", snippet="An advisory firm of 200 people in London.",
+                      profile=profile)
+    assert owed.earned == "surface" and not owed.exhausted
+
+
+def test_the_ladder_is_climbed_one_fetch_at_a_time():
+    """What a candidate has earned changes once the fetch is actually spent.
+
+    The staircase has to move, and this is the whole truth table for it, because
+    the recurrence is easy to get subtly wrong in a way no single case reveals:
+    a rung whose gates are all settled advances the walk, a rung this report's
+    own evidence could still settle is a grant rather than a fetch owed, and the
+    first rung carrying something open it *cannot* settle is what was earned.
+    """
+    with_verticals = {"allows": "services", "locations": ("United Kingdom",),
+                      "verticals": ("fintech",)}
+    without = {"allows": "services", "locations": ("United Kingdom",)}
+    cases = [
+        # (snippet, profile, grade, verdict, earned, unresolved)
+        ("A consultancy of 200 people in London.", with_verticals, SNIPPET,
+         "lead", "surface", ["kind", "vertical"]),
+        ("A consultancy of 200 people in London.", without, SNIPPET,
+         "lead", "surface", ["kind"]),
+        # The pages are read and none of them names an industry. Nothing further
+        # will settle this: the vertical lives on the same pages we just read, so
+        # the honest answer is that no next step is owed rather than sending
+        # somebody to fetch the case studies twice.
+        ("A consultancy of 200 people in London. We build data platforms.", with_verticals, FETCHED,
+         "lead", "", ["vertical"]),
+        ("A consultancy of 200 people in London serving banking.", with_verticals, FETCHED,
+         "qualified", "", []),
+        ("A consultancy of 200 people in Munich, Germany.", with_verticals, FETCHED,
+         "eliminated", "", []),
+    ]
+    for text, profile, grade, verdict, earned, unresolved in cases:
+        report = run_funnel("x.example", snippet=text, profile=profile, evidence=grade)
+        where = f"{grade}: {text[:45]}"
+        assert report.verdict == verdict, where
+        assert report.earned == earned, f"{where} -> earned {report.earned!r}"
+        assert report.unresolved == unresolved, where
+        if verdict == "qualified":
+            assert report.fetched, "only a fetched page qualifies"
 
 
 def test_an_eliminated_candidate_is_never_bundled_and_never_fetched(tmp_path: Path):
@@ -409,7 +573,7 @@ def test_an_eliminated_candidate_is_never_bundled_and_never_fetched(tmp_path: Pa
     assert named == {"kind": ["vendor.io"], "size": ["tiny.io"], "location": ["munich.de"]}
     # What actually reaches the expensive stage: one dossier, not four.
     assert [d.item_id for d in bundle_records(kept)] == ["acme.co.uk"]
-    assert earned == {"stories": 1}, "and it still waits on the case studies"
+    assert earned == {"surface": 1}, "and it is owed the page fetch it earned"
 
 
 def test_the_funnel_can_be_turned_off_for_a_run(tmp_path: Path):
