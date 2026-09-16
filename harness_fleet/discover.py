@@ -34,8 +34,10 @@ import csv
 import ipaddress
 import json
 import re
+import threading
 import time
 from collections.abc import Callable, Sequence
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from html.parser import HTMLParser
@@ -491,6 +493,28 @@ def _workspace_channels() -> dict[str, Any]:
         # A broken channel file must not take down the built-in backends; the
         # CLI reports it when the channel itself is asked for.
         return {}
+
+
+
+#: Per-host spacing, so many hosts can be fetched at once while no single host is
+#: hit faster than the delay asks. One global sleep made breadth expensive and
+#: punished every host for the slowest one.
+_host_locks: dict[str, threading.Lock] = {}
+_host_last: dict[str, float] = {}
+_host_guard = threading.Lock()
+
+
+def _space_host(host: str, delay: float) -> None:
+    """Wait until this host may be fetched again; other hosts proceed."""
+    if delay <= 0 or not host:
+        return
+    with _host_guard:
+        lock = _host_locks.setdefault(host, threading.Lock())
+    with lock:
+        gap = delay - (time.monotonic() - _host_last.get(host, 0.0))
+        if gap > 0:
+            time.sleep(gap)
+        _host_last[host] = time.monotonic()
 
 
 def _run_backend(
@@ -3635,9 +3659,40 @@ def run_discovery(
         for backend in backends
     }
     with httpx.Client(timeout=timeout, follow_redirects=True, headers={"User-Agent": USER_AGENT}) as client:
+        # Breadth first: every (query, backend) surface is probed in parallel, so a
+        # surface that produces nothing costs wall-clock but not the run. No single
+        # surface owes us an output; the run succeeds if any of them produced.
+        pairs = [
+            (index, query, backend)
+            for index, query in enumerate(queries) if query.strip()
+            for backend in backends
+        ]
         for query in queries:
             if not query.strip():
                 skipped.append({"query": query, "reason": "empty query"})
+        found: dict[tuple[int, str], list[SearchHit]] = {}
+        failures: list[tuple[int, str, str]] = []
+        if pairs:
+            workers = max(1, min(8, len(pairs)))
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                futures = {
+                    pool.submit(
+                        _run_backend, backend, query, max_results, searxng_url, client,
+                        reddit_subreddits, se_tagged, se_site, discourse_url, lemmy_instance,
+                    ): (index, query, backend)
+                    for index, query, backend in pairs
+                }
+                for future in as_completed(futures):
+                    index, query, backend = futures[future]
+                    try:
+                        found[(index, backend)] = future.result()
+                    except DiscoverError as exc:
+                        failures.append((index, backend, f"{query}: {exc}"))
+                    except Exception as exc:  # a surface must not take the run down
+                        failures.append((index, backend, f"{query}: {type(exc).__name__}: {exc}"))
+
+        for index, query in enumerate(queries):
+            if not query.strip():
                 continue
             seen_urls: set[str] = set()
             ordered: list[SearchHit] = []
@@ -3646,20 +3701,18 @@ def run_discovery(
                     backend, {"queries": 0, "hits": 0, "unique_hits": 0, "captured": 0, "skipped": 0}
                 )
                 metrics["queries"] += 1
-                try:
-                    backend_hits = _run_backend(backend, query, max_results, searxng_url, client,
-                                                reddit_subreddits, se_tagged, se_site,
-                                                discourse_url, lemmy_instance)
-                    metrics["hits"] += len(backend_hits)
-                    for hit in backend_hits:
-                        key = canonical_url(hit.url)
-                        if key in seen_urls:
-                            continue
-                        seen_urls.add(key)
-                        ordered.append(hit)
-                        metrics["unique_hits"] += 1
-                except DiscoverError as exc:
-                    skipped.append({"query": query, "backend": backend, "reason": str(exc)})
+                backend_hits = found.get((index, backend), [])
+                metrics["hits"] += len(backend_hits)
+                for hit in backend_hits:
+                    key = canonical_url(hit.url)
+                    if key in seen_urls:
+                        continue
+                    seen_urls.add(key)
+                    ordered.append(hit)
+                    metrics["unique_hits"] += 1
+            for _index, _backend, reason in failures:
+                if reason.startswith(f"{query}: "):
+                    skipped.append({"query": query, "backend": _backend, "reason": reason.split(": ", 1)[1]})
             if not ordered:
                 skipped.append({"query": query, "reason": "0 hits from backends"})
             for hit in ordered:
@@ -3720,7 +3773,7 @@ def run_discovery(
                     skipped.append({"url": hit.url, "reason": str(exc)})
                     metrics["skipped"] += 1
                 if delay > 0:
-                    time.sleep(delay)
+                    _space_host(host, delay)
     items = to_input_items(
         records,
         max_chars=max_chars,
