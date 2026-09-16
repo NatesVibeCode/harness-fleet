@@ -12,6 +12,7 @@
   "preset": "account-research",
   "tier": "tier_3",
   "top": 25,
-  "revision": 3,
-  "stories": 60
+  "revision": 5,
+  "stories": 60,
+  "resolve_stories": 40
 }

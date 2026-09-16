@@ -372,3 +372,25 @@ def test_a_repository_is_not_a_dossier():
     assert entity_key_for("https://medium.com/@someone/post", "a post") == ""
     assert entity_key_for("https://acme.com/case-studies/x", "delivered a thing") == "acme.com"
     assert entity_key_for("https://github.com/acme/tool", "see https://acme.com/x") == "acme.com"
+
+
+def test_a_name_is_resolved_to_a_domain_or_left_alone(monkeypatch):
+    """A name cannot be walked, and unwalked means no first-party evidence.
+
+    The resolver must not guess: attaching a stranger's case studies to a
+    candidate is worse than leaving it un-walkable and saying so.
+    """
+    from harness_fleet import enrich
+    from harness_fleet.discover import SearchHit
+
+    monkeypatch.setattr("harness_fleet.discover.web_search", lambda query, **kw: [
+        SearchHit(url="https://en.wikipedia.org/wiki/Accenture", title="", snippet="", backend="ddgs"),
+        SearchHit(url="https://www.accenture.com/us-en", title="", snippet="", backend="ddgs"),
+        SearchHit(url="https://www.linkedin.com/company/accenture", title="", snippet="", backend="ddgs"),
+        SearchHit(url="https://www.accenture.com/us-en/about", title="", snippet="", backend="ddgs"),
+    ])
+    assert enrich.resolve_entity_domain("accenture") == "accenture.com"
+
+    monkeypatch.setattr("harness_fleet.discover.web_search", lambda query, **kw: [])
+    assert enrich.resolve_entity_domain("adinte") == "", "no result is not a domain"
+    assert enrich.resolve_entity_domain("") == ""

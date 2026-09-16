@@ -1924,8 +1924,14 @@ def cmd_research(args: argparse.Namespace) -> None:
     if story_limit > 0:
         from .enrich import story_candidates
 
+        resolve_limit = int(getattr(args, "resolve_stories", None) or 0)
+        if not resolve_limit and lane is not None:
+            resolve_limit = int(lane.resolve_stories or 0)
         stories, story_skipped = story_candidates(
             per_vendor=story_limit,
+            resolve_limit=resolve_limit,
+            story_paths=tuple(getattr(args, "story_paths", None) or (lane.story_paths if lane else [])),
+            partner_half=bool(lane.story_partner_half) if lane else False,
             timeout=float(getattr(args, "timeout", 20.0) or 20.0),
             respect_robots=not getattr(args, "ignore_robots", False),
         )
@@ -2916,6 +2922,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--stories", type=_non_negative_int, default=None,
         help="Vendor-published customer stories to gather per vendor as candidate entities "
              "(default: whatever the lane declares; 0 turns the source off)",
+    )
+    research.add_argument(
+        "--story-paths", action="append",
+        help="Only these published story paths name this lane's population "
+             "(repeatable; default: whatever the lane declares)",
+    )
+    research.add_argument(
+        "--resolve-stories", type=_non_negative_int, default=None,
+        help="Candidate names to resolve to their own domain (one search each; default: "
+             "whatever the lane declares). Without this a name-only candidate cannot be walked",
     )
     research.add_argument(
         "--enrich-entities", type=_non_negative_int, default=0,

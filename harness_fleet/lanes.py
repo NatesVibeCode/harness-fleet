@@ -43,6 +43,18 @@ class Lane(ClosedModel):
     #: named company, which is the independent half of the evidence bar. Zero
     #: turns the source off.
     stories: int = 0
+    #: Of those candidates, how many names to resolve to a domain. A name cannot
+    #: be walked, and without walking there is no first-party evidence — the kind
+    #: the bar requires — so this is what makes a large candidate set scorable.
+    #: Each resolution is one search; zero leaves the candidates as names.
+    resolve_stories: int = 0
+    #: Which published story paths name the kind of company this lane wants.
+    #: A vendor's ``/customers/`` index names firms that buy the product; its
+    #: ``/partners/`` and award pages name the firms that implement it. Empty
+    #: means every declared path.
+    story_paths: list[str] = []
+    #: Read the partner half of a vendor's ``<customer>-<partner>`` story slug.
+    story_partner_half: bool = False
     #: Filters the lane cares about (e.g. "enterprise sales", "sales ops").
     title_include: list[str] = []
     title_exclude: list[str] = []
@@ -91,6 +103,8 @@ def validate_lane(lane: Lane, *, channels: set[str] | None = None, backends: set
         raise LaneError("top: must be at least 1")
     if lane.stories < 0:
         raise LaneError("stories: cannot be negative")
+    if lane.resolve_stories < 0:
+        raise LaneError("resolve_stories: cannot be negative")
     if lane.min_score is not None and not 0 <= lane.min_score <= 100:
         raise LaneError("min_score: must be between 0 and 100")
 

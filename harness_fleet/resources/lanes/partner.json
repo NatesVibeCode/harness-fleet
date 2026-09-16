@@ -12,6 +12,11 @@
   "preset": "partner-research",
   "tier": "tier_1",
   "top": 25,
-  "revision": 2,
-  "stories": 80
+  "revision": 4,
+  "stories": 80,
+  "resolve_stories": 60,
+  "story_paths": [
+    "/partners/"
+  ],
+  "story_partner_half": true
 }

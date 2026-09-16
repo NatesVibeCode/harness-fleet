@@ -175,6 +175,12 @@ _fetch_markup = fetch_markup
 # Vendor stories: independent prose published by a vendor, naming the entity
 # ---------------------------------------------------------------------------
 
+#: How many files of a vendor's sitemap index to open before giving up on
+#: filling the quota. A story index is a handful of files; the rest of a large
+#: index is product and blog pages we were downloading for nothing.
+max_nested_maps = 6
+
+
 def vendor_story_urls(
     sources: dict[str, Any] | None = None,
     *,
@@ -222,24 +228,47 @@ def vendor_story_urls(
         sitemap = spec.get("sitemap")
         if not sitemap:
             continue
-        sitemap_urls: list[str] = [sitemap]
+        paths = tuple(spec.get("story_paths") or ())
+        # Walk the index only as far as it takes to fill this vendor's quota,
+        # and only into the nested sitemaps that can hold stories. Downloading
+        # every nested file of a large index and then keeping forty URLs is what
+        # turned a gather stage into most of an hour: a vendor's index can list
+        # hundreds of thousands of pages across dozens of files.
+        queue: list[str] = [sitemap]
+        visited_maps = 0
         story_urls: list[str] = []
-        for sitemap_url in sitemap_urls:
+        while queue and len(story_urls) < max_per_vendor and visited_maps < max_nested_maps:
+            sitemap_url = queue.pop(0)
             try:
                 text = fetch_markup(sitemap_url, timeout=timeout, respect_robots=respect_robots)
             except Exception as exc:
                 skipped.append({"vendor": vendor, "reason": str(exc)[:200]})
                 continue
-            locs = re.findall(r"<loc>\s*([^<\s]+)\s*</loc>", text)
-            nested = [loc for loc in locs if loc.endswith(".xml") and len(sitemap_urls) < 8]
-            story_urls.extend(loc for loc in locs if not loc.endswith(".xml"))
-            sitemap_urls.extend(nested[:6])
-        paths = tuple(spec.get("story_paths") or ())
-        filtered = [
-            u for u in story_urls
-            if (not paths or any(path in u for path in paths))
-            and not any(hint in u.lower() for hint in _ASSET_HINTS)
-        ]
+            visited_maps += 1
+            locs = re.findall(r"<loc>\s*(?:<!\[CDATA\[)?\s*([^<\s\]]+)\s*(?:\]\]>)?\s*</loc>", text)
+            nested = [loc for loc in locs if loc.endswith(".xml")]
+            pages = [loc for loc in locs if not loc.endswith(".xml")]
+            if nested and not pages:
+                # An index: queue the files that can hold stories, stories first.
+                # A vendor names them freely — Snowflake's 58 children carry none
+                # of the story words — so the named ones are a preference, not a
+                # filter, and the walk keeps opening files until the quota is met
+                # or the budget runs out.
+                named = [loc for loc in nested if any(str(path).strip("/").split("/")[0] in loc for path in paths)]
+                rest = [loc for loc in nested if loc not in named]
+                queue.extend((named + rest)[: max_nested_maps * 3])
+                continue
+            # A flat sitemap lists its pages directly — Elastic publishes 13,645
+            # of them in one 7MB file with nothing nested. Treating that as an
+            # index collected nothing at all.
+            story_urls.extend(
+                loc for loc in pages
+                if not paths or any(path in loc for path in paths)
+            )
+            if len(story_urls) >= max_per_vendor:
+                break
+        story_urls = list(dict.fromkeys(story_urls))
+        filtered = [u for u in story_urls if not any(hint in u.lower() for hint in _ASSET_HINTS)]
         urls.extend(list(dict.fromkeys(filtered))[:max_per_vendor])
 
     return list(dict.fromkeys(urls)), skipped
@@ -315,7 +344,9 @@ class EnrichReport:
         }
 
 
-def story_entity(url: str, *, sources: dict[str, Any] | None = None) -> tuple[str, str]:
+def story_entity(
+    url: str, *, sources: dict[str, Any] | None = None, partner_half: bool = False
+) -> tuple[str, str]:
     """The company a vendor story is about, and the vendor that published it.
 
     A story's own address names the customer: vendors file them under
@@ -345,9 +376,14 @@ def story_entity(url: str, *, sources: dict[str, Any] | None = None) -> tuple[st
         if not declared or not (host == declared or host.endswith("." + declared)):
             continue
         if spec.get("hub"):
-            # A hub feed files stories as <customer>-<partner> and nothing in
-            # the slug says which half is which; guessing would credit the
-            # wrong firm, so the story is left unattributed.
+            # A hub feed files stories as ``<customer>-<partner>``, which the
+            # plan declares: the customer comes first, so the partner half is
+            # everything after the first token. ``partner_half`` asks for it.
+            slug = urlparse(url).path.strip("/").split("/")[-1].strip()
+            if not slug:
+                return "", vendor
+            if partner_half and "-" in slug:
+                return slug.split("-", 1)[1].replace("-", "_"), vendor
             return "", vendor
         for prefix in spec.get("story_paths") or ():
             marker = str(prefix).lower()
@@ -363,13 +399,66 @@ def story_entity(url: str, *, sources: dict[str, Any] | None = None) -> tuple[st
     return "", ""
 
 
+#: Hosts that answer a "who is this company" query without being the company:
+#: encyclopedias, directories, job boards and social platforms. A candidate's
+#: own site is what is left after these are removed.
+NOT_THE_COMPANY = (
+    "wikipedia.org", "wikidata.org", "crunchbase.com", "bloomberg.com",
+    "linkedin.com", "facebook.com", "twitter.com", "x.com", "instagram.com",
+    "glassdoor.com", "indeed.com", "g2.com", "clutch.co", "zoominfo.com",
+    "youtube.com", "medium.com", "reddit.com", "github.com", "gitlab.com",
+    "apollo.io", "pitchbook.com", "owler.com", "dnb.com", "trustpilot.com",
+)
+
+
+def resolve_entity_domain(name: str, *, timeout: float = 20.0, backends: Sequence[str] = ("ddgs",)) -> str:
+    """A company name to its own domain, or "" when that cannot be established.
+
+    The story indexes give hundreds of candidate companies by name, and a name
+    cannot be walked: the evidence the bar wants lives on the company's own
+    site. A vendor's story page does not link the customer (Databricks' 13 links
+    are all CDNs), so the name has to be resolved. The site a company query
+    returns most often, once encyclopedias, directories and job boards are
+    removed, is the company's site.
+
+    Returns "" rather than guessing: a wrong domain would attach a stranger's
+    case studies to this candidate, which is worse than leaving it un-walkable.
+    """
+    from .discover import web_search
+    from .sources import host_of, is_source_host
+
+    cleaned = str(name or "").replace("_", " ").strip()
+    if len(cleaned) < 3:
+        return ""
+    try:
+        hits = web_search(f"{cleaned} official site", backends=list(backends), max_results=5, timeout=timeout)
+    except Exception:
+        return ""
+    counts: dict[str, int] = {}
+    for hit in hits:
+        domain = host_of(hit.url)
+        if not domain or "." not in domain:
+            continue
+        if is_source_host(domain) or any(bad in domain for bad in NOT_THE_COMPANY):
+            continue
+        counts[domain] = counts.get(domain, 0) + 1
+    if not counts:
+        return ""
+    best = max(counts.items(), key=lambda pair: (pair[1], -len(pair[0])))
+    # A single mention among five is a different claim from three of five.
+    return best[0] if best[1] >= 1 else ""
+
+
 def story_candidates(
     *,
     per_vendor: int = 40,
+    story_paths: Sequence[str] = (),
     sources: dict[str, Any] | None = None,
     timeout: float = 20.0,
     respect_robots: bool = True,
     max_pages: int | None = None,
+    resolve_limit: int = 0,
+    partner_half: bool = False,
 ) -> tuple[list[Any], list[dict[str, str]]]:
     """Candidate entities from the stories vendors publish about their customers.
 
@@ -382,12 +471,27 @@ def story_candidates(
     from .models import InputItem
 
     plan = sources or load_surfaces()
+    # Which published stories name the kind of company this lane is looking for.
+    # A vendor's /customers/ index names firms that *buy* the product; its
+    # /partners/ paths and award pages name the firms that implement it. For a
+    # partner lane those are different populations, and the wrong one produces
+    # a list of software vendors' customers.
+    if story_paths:
+        plan = json.loads(json.dumps(plan))
+        for spec in (plan.get("vendor_stories") or {}).get("vendors", {}).values():
+            if isinstance(spec, dict) and spec.get("story_paths"):
+                spec["story_paths"] = [path for path in spec["story_paths"] if path in story_paths]
+        for vendor, spec in list((plan.get("vendor_stories") or {}).get("vendors", {}).items()):
+            if isinstance(spec, dict) and not spec.get("story_paths") and not spec.get("hub"):
+                del plan["vendor_stories"]["vendors"][vendor]
     urls, skipped = vendor_story_urls(
         plan, max_per_vendor=per_vendor, timeout=timeout, respect_robots=respect_robots,
     )
     budget = max_pages if max_pages is not None else per_vendor * 6
     items: list[Any] = []
     seen: set[str] = set()
+    resolved_count = 0
+    resolved_total = 0
     for url in urls:
         if len(items) >= budget:
             skipped.append({
@@ -395,7 +499,8 @@ def story_candidates(
                 "reason": f"stopped after {budget} stories (the run's own page budget)",
             })
             break
-        entity, vendor = story_entity(url, sources=plan)
+        entity, vendor = story_entity(url, sources=plan, partner_half=partner_half)
+        story_slug = entity
         if not entity:
             skipped.append({
                 "url": url,
@@ -411,10 +516,26 @@ def story_candidates(
             continue
         seen.add(entity)
         metadata = dict(getattr(record, "metadata", None) or {})
+        # A name cannot be walked, and without walking there is no first-party
+        # evidence — which is the kind the bar requires. Resolve the name to a
+        # domain where that can be established, and keep it a name where it
+        # cannot, so the difference is recorded rather than assumed.
+        resolved = ""
+        if resolve_limit and resolved_count < resolve_limit:
+            resolved_count += 1
+            resolved = resolve_entity_domain(entity, timeout=timeout)
+        if resolved:
+            resolved_total += 1
+            skipped.append({
+                "source": "vendor_stories", "url": url,
+                "reason": f"'{entity}' resolved to {resolved}",
+            })
+            entity = resolved
         metadata.update({
             "backend": f"stories:{vendor}",
             "enrich_surface": "vendor_stories",
-            "attribution": "vendor story slug",
+            "attribution": "vendor story slug" if not resolved else "vendor story slug -> resolved domain",
+            "story_slug": story_slug,
         })
         items.append(InputItem(
             item_id=entity,
