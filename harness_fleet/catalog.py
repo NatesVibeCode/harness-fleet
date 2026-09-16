@@ -410,6 +410,17 @@ class RouteCatalog:
         )]
         if not routes:
             return [], {}
+        # A route whose transport cannot run here is not a candidate: ranking them
+        # in made a keyless install spend every attempt on providers that answer
+        # `auth_error` (two of three attempts in a live run), scoring nothing.
+        # A policy that names routes explicitly is honoured as written, because a
+        # pin is a deliberate instruction rather than a preference.
+        if not (policy is not None and getattr(policy, "allowed_routes", None)):
+            from .providers.registry import configured_routes
+
+            usable = configured_routes(routes)
+            if usable:
+                routes = usable
         from .scoring import rank_with_scores
         return rank_with_scores(
             routes=routes,
