@@ -152,3 +152,43 @@ def test_synonyms_do_not_widen_a_gate_into_nonsense():
     assert matches_any("we do data engineering", ("fintech",)) == []
     assert matches_any("headquartered in Berlin", ("germany",)) == ["germany"]
     assert matches_any("", ("fintech",)) == []
+
+
+def test_a_lane_that_does_not_ask_the_kind_question_does_not_answer_it(monkeypatch):
+    """A competitor's customers are buyers, and a buyer may be a product company.
+
+    The account lane carried `allows: "services"`, the partner lane's population
+    test: it eliminated software companies and left every other candidate
+    unresolved on kind — so no account could ever qualify, and the gate was
+    answering a question that lane never asked.
+    """
+    from harness_fleet.gates import check_kind, run_funnel
+
+    product = (
+        "Our platform is a SaaS product, built by our team of 300 people. "
+        "Book a demo. Pricing plans for every team."
+    )
+    assert check_kind(product, allows="services", evidence="fetched").outcome == "fail"
+    assert check_kind(product, allows="any", evidence="fetched").outcome == "pass"
+
+    report = run_funnel("buyer.com", snippet=product, profile={"allows": "any", "size_max": 5000})
+    kinds = {r.gate: r for r in report.results}
+    assert "kind" not in kinds, "a question nobody asked does not appear in the trace"
+    assert "kind" not in report.unresolved, "an unasked question is not an unresolved one"
+    assert kinds["size"].outcome == "pass", "the gates the lane does ask still run"
+
+
+def test_the_shipped_account_lane_no_longer_runs_the_partner_test():
+    import json
+    from pathlib import Path
+
+    lane = json.loads(
+        (Path(__file__).resolve().parents[1] / "harness_fleet/resources/lanes/account.json").read_text()
+    )
+    assert lane["funnel"]["allows"] == "any"
+    assert all("kind" not in rung["gates"] for rung in lane["funnel"]["ladder"])
+    partner = json.loads(
+        (Path(__file__).resolve().parents[1] / "harness_fleet/resources/lanes/partner.json").read_text()
+    )
+    assert partner["funnel"]["allows"] == "services", "the partner population test stays"
+    assert "kind" in partner["funnel"]["ladder"][0]["gates"]

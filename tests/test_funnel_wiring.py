@@ -117,7 +117,11 @@ def test_a_lane_states_its_own_ladder_and_which_rung_fetches():
     assert by_name["surface"].evidence == FETCHED, "the rung that reads their own pages"
     assert by_name["surface"].gates == ["kind", "size", "location"]
     assert "vertical" in by_name["stories"].gates
-    assert len(by_name["stories"].surfaces) > len(by_name["surface"].surfaces)
+    # Progressive reading: the surface rung opens on the landing page and the
+    # cheap-qualifier pages, and the stories rung is the deep read.
+    assert by_name["surface"].surfaces[0] == "home", "the walk opens on the landing page"
+    assert "partners" in by_name["surface"].surfaces, "the partner page is cheap-gate evidence"
+    assert "case_studies" in by_name["stories"].surfaces
 
 
 def test_the_ladder_tells_a_candidate_what_still_stands_between_it_and_a_pass():
@@ -163,7 +167,17 @@ def test_every_shipped_lane_carries_a_ladder_that_validates(tmp_path: Path):
     for name, lane in loaded.items():
         assert lane.funnel.ladder, f"{name} states how a candidate earns a fetch"
         gates = {gate for rung in lane.funnel.ladder for gate in rung.gates}
-        assert "kind" in gates, f"{name} gates on the kind of company"
+        if lane.funnel.allows == "services":
+            # The partner population test: a delivery firm, not a product company.
+            # It is the partner lane's question, not a universal one — the account
+            # lane's population is a competitor's customers, and a buyer may be a
+            # product company.
+            assert "kind" in gates, f"{name} asks whether the firm delivers, so a rung must settle it"
+        else:
+            assert "kind" not in gates, (
+                f"{name} asks no kind question (allows {lane.funnel.allows!r}), "
+                "so a rung claiming to settle one settles nothing"
+            )
         for rung in lane.funnel.ladder:
             assert rung.name and rung.evidence in (SNIPPET, FETCHED)
             assert rung.earns, f"{name}:{rung.name} says what it buys"

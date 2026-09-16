@@ -19,7 +19,7 @@ from typing import Any
 
 from pydantic import field_validator
 
-from .gates import SNIPPET, LadderRung, validate_ladder
+from .gates import KIND_QUESTIONS, SNIPPET, LadderRung, validate_ladder
 from .models import ClosedModel
 from .task import PRESETS
 
@@ -215,7 +215,11 @@ def _validate_funnel(funnel: LaneFunnel) -> None:
         # loaded here carries only its own defaults, so a gate it leaves unset is
         # still owed a rung — a person merges their profile in at run time.
         declarable = ("size", "location", "vertical")
-        gated = {"kind"}
+        # Whether kind is gated at all is the lane's to say, exactly as it is in
+        # the funnel: a lane that asks no kind question is not owed a rung for
+        # one, and demanding it made the validator insist every lane run the
+        # partner population test.
+        gated = {"kind"} if funnel.allows in KIND_QUESTIONS else set()
         if funnel.size_min or funnel.size_max:
             gated.add("size")
         if funnel.locations:
@@ -237,8 +241,9 @@ def _validate_funnel(funnel: LaneFunnel) -> None:
                 f"funnel.ladder: {', '.join(unknown_gates)} is gated on but the "
                 "funnel never leaves it unresolved, so the rung settles nothing"
             )
-        if "kind" not in {g for rung in funnel.ladder if rung.evidence == SNIPPET
-                          for g in rung.gates}:
+        if "kind" in gated and "kind" not in {
+            g for rung in funnel.ladder if rung.evidence == SNIPPET for g in rung.gates
+        }:
             raise LaneError(
                 "funnel.ladder: no rung gates on the kind of company at snippet "
                 "grade, which is the one elimination a search result settles alone"

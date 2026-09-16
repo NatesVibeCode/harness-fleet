@@ -512,8 +512,23 @@ def _gate(name: str, verdict: Outcome, reason: str, evidence: str) -> GateResult
     return GateResult(gate=name, outcome=verdict, reason=reason, evidence=evidence)
 
 
+#: The kind questions this engine can put to a candidate. Only one exists so far:
+#: whether the company is a delivery firm, which is the partner population test.
+#: A lane whose population is buyers (`allows: "any"`) asks no kind question —
+#: a bank is neither a consultancy nor a software vendor, and a target account
+#: can be a product company. A future "buyer" test belongs here when there is a
+#: vocabulary to run it.
+KIND_QUESTIONS = ("services",)
+
+
 def check_kind(text: str, *, allows: str, evidence: str) -> GateResult:
     """The ICP gate: is this the kind of company the profile asks for."""
+    if allows not in KIND_QUESTIONS:
+        # The lane does not put a kind question to its candidates, so there is
+        # nothing here to fail and nothing to leave unresolved: the gate passes
+        # and says why, rather than reporting an unknown that would hold every
+        # candidate back from ever qualifying.
+        return _gate("kind", "pass", f"this lane does not gate on kind (allows {allows!r})", evidence)
     kind = read_kind(text)
     if kind == "software" and allows == "services":
         return _gate("kind", "fail", "reads as a product company, not a delivery firm", evidence)
@@ -613,7 +628,11 @@ def _evaluable_gates(prof: GateProfile) -> frozenset[str]:
     defaults with the run's profile first, so a field left unset in a lane file
     is still gated on once a person supplies it.
     """
-    gates = {"kind"}
+    # The kind gate is put to a candidate only when the lane asks the kind
+    # question. A lane whose population is buyers — a competitor's customers —
+    # asks nothing of the sort, and carrying the gate anyway forced its ladder
+    # to name a rung for a question it never puts.
+    gates = {"kind"} if prof.allows in KIND_QUESTIONS else set()
     if prof.size_min or prof.size_max:
         gates.add("size")
     if prof.locations:
@@ -645,9 +664,12 @@ def run_funnel(
     """
     prof = GateProfile.from_object(profile)
     report = FunnelReport(candidate=candidate, fetched=bool(evidence == FETCHED))
-    report.results.append(check_kind(snippet, allows=prof.allows, evidence=evidence))
-    if report.eliminated:
-        return report
+    # Only the gates this lane actually puts to a candidate appear in the trace:
+    # a row for a question nobody asked reads as a gate that ran and hesitated.
+    if "kind" in _evaluable_gates(prof):
+        report.results.append(check_kind(snippet, allows=prof.allows, evidence=evidence))
+        if report.eliminated:
+            return report
     # A gate the profile leaves unset is not put to the candidate at all: no
     # size bounds means nothing to be outside of, and no territory named means
     # nowhere to be outside of. Such a gate would come back `unknown` forever
