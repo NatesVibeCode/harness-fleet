@@ -832,6 +832,7 @@ def _channel_records(
     timeout: float,
     respect_robots: bool,
     max_per_channel: int,
+    pace: float = 0.0,
 ) -> tuple[list[Any], list[dict[str, str]]]:
     """Records from a surface the engine already knows how to fetch.
 
@@ -874,15 +875,32 @@ def _channel_records(
         return records, skipped
 
     if channel == "community":
-        backends = (surfaces.get("community") or {}).get("backends") or []
-        hits = []
-        for backend in backends:
+        backends = list((surfaces.get("community") or {}).get("backends") or [])
+        # The backends share nothing: different hosts, no dependency, and a
+        # mention on Hacker News does not inform the search for one on Reddit.
+        # Looping them one at a time made this the single largest cost in a walk
+        # — 38 of 62 measured seconds — for a two-record yield.
+        #
+        # Pacing still applies, per source, because the limit that is real is
+        # across entities: a hundred companies each searching the same six
+        # backends must queue on that backend, not fire at once.
+        hits: list[Any] = []
+        results: dict[str, list[Any]] = {}
+
+        def search_one(backend: str) -> None:
             try:
-                hits.extend(discover.web_search(
+                discover._source_ready(backend, pace)
+                results[backend] = list(discover.web_search(
                     f'"{domain}"', backends=[backend], max_results=max_per_channel, timeout=timeout,
                 ))
             except Exception as exc:
                 skipped.append({"surface": "community", "backend": backend, "reason": str(exc)[:200]})
+
+        if backends:
+            with ThreadPoolExecutor(max_workers=min(6, len(backends))) as pool:
+                list(pool.map(search_one, backends))
+        for backend in backends:
+            hits.extend(results.get(backend, []))
         for hit in hits[: max_per_channel * 2]:
             try:
                 site = discover.se_site_for_url(hit.url)
@@ -1071,7 +1089,7 @@ def enrich_entity(
     for surface in channel_surfaces:
         channel_records, channel_skipped = _channel_records(
             surface, domain, surfaces=plan, timeout=timeout,
-            respect_robots=respect_robots, max_per_channel=max(1, per_surface),
+            respect_robots=respect_robots, max_per_channel=max(1, per_surface), pace=pace,
         )
         report.visited += len(channel_records)
         for record in channel_records:
