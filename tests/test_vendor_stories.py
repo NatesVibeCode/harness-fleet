@@ -1,19 +1,20 @@
 """Vendor story enumeration and attribution: stories that name the partner only."""
 import pytest
 
-from harness_fleet import partner_sourcing
-from harness_fleet.partner_sourcing import fetch_vendor_stories, vendor_story_urls
+from harness_fleet import enrich
+from harness_fleet.enrich import fetch_vendor_stories, vendor_story_urls
 
+# The vendor hubs are shared data now — every lane may need independent prose
+# about an entity, not just the partner product — so the shape is the surface
+# file's, not a product stage's.
 PLAN = {
-    "stages": {
-        "vendor_stories": {
-            "vendors": {
-                "aws": {"hub": "https://aws.example/partners/success/",
-                        "story_path_prefix": "/partners/success/"},
-                "vendorx": {"sitemap": "https://vendorx.example/sitemap.xml",
-                            "story_paths": ["/customers/", "/case-studies/"]},
-            },
-        }
+    "vendor_stories": {
+        "vendors": {
+            "aws": {"hub": "https://aws.example/partners/success/",
+                    "story_path_prefix": "/partners/success/"},
+            "vendorx": {"sitemap": "https://vendorx.example/sitemap.xml",
+                        "story_paths": ["/customers/", "/case-studies/"]},
+        },
     }
 }
 
@@ -45,8 +46,7 @@ def markup(monkeypatch):
         "https://vendorx.example/sitemap.xml": SITEMAP_INDEX,
         "https://vendorx.example/sitemap-0.xml": SITEMAP,
     }
-    monkeypatch.setattr(partner_sourcing, "_fetch_markup",
-                        lambda url, **kw: pages[url])
+    monkeypatch.setattr(enrich, "fetch_markup", lambda url, **kw: pages[url])
     return pages
 
 
@@ -67,11 +67,11 @@ def test_sitemap_enumeration_walks_one_level_and_filters_assets(markup):
     assert not any("background" in u for u in urls), "CMS assets are not prose"
 
 
-def test_unreachable_vendor_is_reported_not_fatal(markup):
+def test_unreachable_vendor_is_reported_not_fatal(monkeypatch, markup):
     def boom(url, **kw):
         raise RuntimeError("HTTP 503")
 
-    partner_sourcing._fetch_markup = boom
+    monkeypatch.setattr(enrich, "fetch_markup", boom)
     urls, skipped = vendor_story_urls(PLAN, vendors=["aws"], respect_robots=False)
     assert urls == []
     assert skipped and "503" in skipped[0]["reason"]
@@ -91,7 +91,7 @@ def test_only_stories_that_name_the_partner_are_kept(monkeypatch, markup):
                         lambda url, **kw: RawRecord(text=pages[url], source_uri=url))
 
     records, skipped = fetch_vendor_stories(
-        "presidio.com", plan=PLAN, vendors=["aws"], respect_robots=False,
+        "presidio.com", sources=PLAN, vendors=["aws"], respect_robots=False,
     )
     assert [r.source_uri for r in records] == [
         "https://aws.example/partners/success/biolytica-presidio/"
@@ -108,7 +108,7 @@ def test_a_story_naming_nobody_is_dropped_not_misfiled(monkeypatch, markup):
     # The entity is not named in the text, and its name is not in the slug, so
     # there is nothing tying this story to them.
     records, skipped = fetch_vendor_stories(
-        "acme.example", plan=PLAN, vendors=["aws"], respect_robots=False,
+        "acme.example", sources=PLAN, vendors=["aws"], respect_robots=False,
     )
     assert records == [], "no attribution means no dossier entry"
 

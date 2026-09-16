@@ -1,0 +1,666 @@
+"""Go to an entity's own surfaces and collect the evidence it is missing.
+
+Discovery finds pages *about* a company. A page about a company is not the
+company: what it builds, what it delivered, who it hired and what it charges
+live on its own site, on its applicant-tracking board, on the directories that
+review it, and in the stories its vendors publish naming it. Scoring a search
+result as though it were a dossier is how a lane ends up demanding evidence it
+never went to get.
+
+This is the stage that walks those surfaces. It is deliberately shared: the
+mechanism is identical whether the entity is a target account, an implementation
+partner or an employer, so it lives here once and every lane calls it. What
+differs between products is *which kinds they are missing*, and that is already
+declared — the lane's bar, and the central contracts that map a kind to the
+surfaces carrying it.
+
+Surface knowledge (which paths a website keeps its case studies under, which
+ATS hosts exist) is data in ``data/source_surfaces.json``; nothing about a
+product appears in this module.
+"""
+from __future__ import annotations
+
+import json
+import re
+from collections.abc import Iterable, Sequence
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
+from urllib.parse import urlparse
+
+from .sources import canonicalize_entity_id
+
+if TYPE_CHECKING:  # the record type lives with the fetchers; importing it at
+    # runtime would drag the whole discovery stack into anything that only wants
+    # to know where a kind of evidence lives.
+    from .discover import RawRecord
+
+SURFACES_PATH = Path(__file__).resolve().parent / "data" / "source_surfaces.json"
+#: A name shorter than this is too generic to prove attribution on its own
+#: ("acme", "data", "ably"), so only the full domain counts for those. This is
+#: the threshold the partner product shipped with, and it now applies
+#: everywhere: loosening it would let a common English word attribute a page to
+#: a company in every lane at once.
+_ATTRIBUTION_MIN_NAME = 6
+#: CMS assets live under the same paths as stories (background images, headers,
+#: logos) and are never prose, so they are dropped before any fetch.
+_ASSET_HINTS = (
+    "background", "asset", "header", "logo", "icon", "font", "sprite",
+    "screenshot", "thumbnail", "avatar", "placeholder",
+    ".css", ".js", ".png", ".jpg", ".jpeg", ".svg", ".webp", ".gif", ".zip",
+)
+_SURFACE_CACHE: dict[str, Any] = {}
+
+
+class EnrichError(RuntimeError):
+    """The surfaces this install ships could not be read."""
+
+
+def load_surfaces(path: str | Path | None = None) -> dict[str, Any]:
+    """The shipped surface plan: where each kind of evidence lives."""
+    target = Path(path).expanduser() if path else SURFACES_PATH
+    key = str(target)
+    if key in _SURFACE_CACHE:
+        return _SURFACE_CACHE[key]
+    try:
+        payload = json.loads(target.read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise EnrichError(f"could not read the surface plan at {target}: {exc}") from exc
+    except json.JSONDecodeError as exc:
+        raise EnrichError(f"surface plan is not valid JSON: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise EnrichError(f"surface plan at {target} is not an object")
+    _SURFACE_CACHE[key] = payload
+    return payload
+
+
+def entity_domain(entity: str) -> str:
+    """The domain to visit for this entity, or "" when it does not name one.
+
+    An entity key is usually a domain, but not always: a posting on a niche
+    board can be filed under the employer's slug ("viking_cloud_inc"), and a
+    page that names nobody keeps its own host. There is no website to walk in
+    those cases, and saying so is better than crawling something unrelated.
+    """
+    key = canonicalize_entity_id(str(entity or "").strip())
+    if not key or key == "unknown_entity" or "." not in key:
+        return ""
+    host = key.split("/")[0].strip(".")
+    if not host or host.count(".") < 1:
+        return ""
+    label = host.rsplit(".", 1)[0]
+    if not label or len(label) < 2:
+        return ""
+    return host
+
+
+# ---------------------------------------------------------------------------
+# Attribution: a page counts for an entity only when it is about them
+# ---------------------------------------------------------------------------
+
+def attribution_terms(entity: str) -> tuple[str, ...]:
+    """Terms that prove a page is about this entity, strongest first."""
+    raw = str(entity or "").strip()
+    if not raw:
+        return ()
+    canonical = (canonicalize_entity_id(raw) or raw).strip().lower()
+    if not canonical:
+        return ()
+    terms = [canonical]
+    label = canonical.split(".")[0]
+    if len(label) >= _ATTRIBUTION_MIN_NAME and label != canonical:
+        terms.append(label)
+    return tuple(dict.fromkeys(terms))
+
+
+def is_attributed(text: str | None, uri: str | None, entity: str) -> bool:
+    """True when this page is about `entity`, not merely matched by keywords."""
+    uri_l = (uri or "").lower()
+    text_l = (text or "").lower()
+    for term in attribution_terms(entity):
+        if term in uri_l:
+            return True
+        if any(ch.isdigit() for ch in term):
+            # "trace3" is that entity's name and does not appear by accident —
+            # but it must be the whole word, so "trace33" is a different firm.
+            if re.search(rf"(?<![\w-]){re.escape(term)}(?![\w-])", text_l):
+                return True
+        elif f" {term} " in f" {text_l} ":
+            # A bare word must stand alone: "trace" must not match "tracing".
+            return True
+    return False
+
+
+def filter_attributed(
+    records: Iterable[RawRecord], entity: str
+) -> tuple[list[RawRecord], list[RawRecord]]:
+    """Split records into (about this entity, everything else)."""
+    kept: list[RawRecord] = []
+    dropped: list[RawRecord] = []
+    for record in records:
+        target = kept if is_attributed(record.text, record.source_uri, entity) else dropped
+        target.append(record)
+    return kept, dropped
+
+
+# ---------------------------------------------------------------------------
+# Raw markup: link and sitemap discovery needs hrefs, not prose
+# ---------------------------------------------------------------------------
+
+def fetch_markup(url: str, *, timeout: float = 20.0, respect_robots: bool = True) -> str:
+    """Raw HTML/XML for link and sitemap discovery.
+
+    Prose extraction strips the markup, so hrefs and <loc> entries have to come
+    from the raw response: ``fetch_text`` is for the story text, not for
+    finding it.
+    """
+    import httpx
+
+    from .discover import USER_AGENT, robots_allowed
+
+    with httpx.Client(timeout=timeout, follow_redirects=True, headers={"User-Agent": USER_AGENT}) as client:
+        if respect_robots and not robots_allowed(url, client, timeout=timeout):
+            raise EnrichError(f"robots.txt disallows {url}")
+        response = client.get(url)
+    if response.status_code != 200:
+        raise EnrichError(f"HTTP {response.status_code} for {url}")
+    return response.text
+
+
+# Kept as a private alias so callers that patched the old name keep working.
+_fetch_markup = fetch_markup
+
+
+# ---------------------------------------------------------------------------
+# Vendor stories: independent prose published by a vendor, naming the entity
+# ---------------------------------------------------------------------------
+
+def vendor_story_urls(
+    sources: dict[str, Any] | None = None,
+    *,
+    vendors: Sequence[str] | None = None,
+    max_per_vendor: int = 20,
+    timeout: float = 20.0,
+    respect_robots: bool = True,
+) -> tuple[list[str], list[dict[str, str]]]:
+    """Enumerate a vendor's customer/partner story URLs from its own site.
+
+    Vendor-published stories are independent prose about the work, and the plan
+    lists where they live: a story hub whose links are the stories (AWS), or a
+    sitemap index walked one level and filtered to the story paths (Snowflake,
+    Databricks, Elastic, Datadog, MongoDB). Enumerated rather than searched,
+    because review sites that used to supply this now answer 403.
+    """
+    configured = ((sources or load_surfaces()).get("vendor_stories") or {}).get("vendors") or {}
+    wanted = [v for v in (vendors or configured) if v in configured]
+    urls: list[str] = []
+    skipped: list[dict[str, str]] = []
+
+    for vendor in wanted:
+        spec = configured.get(vendor) or {}
+        hub = spec.get("hub")
+        prefix = spec.get("story_path_prefix") or ""
+        if hub:
+            try:
+                markup = fetch_markup(hub, timeout=timeout, respect_robots=respect_robots)
+            except Exception as exc:
+                skipped.append({"vendor": vendor, "reason": str(exc)[:200]})
+                continue
+            found = []
+            for match in re.finditer(r'href="([^"#?]+)"', markup):
+                link = match.group(1)
+                if prefix not in link:
+                    continue
+                # A story has a slug after the prefix; the hub itself (and its
+                # localized twins) does not, so those are not stories.
+                if not link.split(prefix, 1)[1].strip("/"):
+                    continue
+                found.append(link if link.startswith("http") else f"https://{urlparse(hub).netloc}{link}")
+            urls.extend(list(dict.fromkeys(found))[:max_per_vendor])
+            continue
+
+        sitemap = spec.get("sitemap")
+        if not sitemap:
+            continue
+        sitemap_urls: list[str] = [sitemap]
+        story_urls: list[str] = []
+        for sitemap_url in sitemap_urls:
+            try:
+                text = fetch_markup(sitemap_url, timeout=timeout, respect_robots=respect_robots)
+            except Exception as exc:
+                skipped.append({"vendor": vendor, "reason": str(exc)[:200]})
+                continue
+            locs = re.findall(r"<loc>\s*([^<\s]+)\s*</loc>", text)
+            nested = [loc for loc in locs if loc.endswith(".xml") and len(sitemap_urls) < 8]
+            story_urls.extend(loc for loc in locs if not loc.endswith(".xml"))
+            sitemap_urls.extend(nested[:6])
+        paths = tuple(spec.get("story_paths") or ())
+        filtered = [
+            u for u in story_urls
+            if (not paths or any(path in u for path in paths))
+            and not any(hint in u.lower() for hint in _ASSET_HINTS)
+        ]
+        urls.extend(list(dict.fromkeys(filtered))[:max_per_vendor])
+
+    return list(dict.fromkeys(urls)), skipped
+
+
+def fetch_vendor_stories(
+    entity: str,
+    *,
+    sources: dict[str, Any] | None = None,
+    vendors: Sequence[str] | None = None,
+    max_per_vendor: int = 20,
+    timeout: float = 20.0,
+    respect_robots: bool = True,
+) -> tuple[list[RawRecord], list[dict[str, str]]]:
+    """Vendor stories that actually name *entity*.
+
+    Enumerating a vendor's stories is not evidence about an entity: the story
+    has to name them. Attribution decides, exactly as it does for search hits,
+    so a story that credits nobody is dropped rather than filed under whoever
+    happened to be nearby.
+    """
+    from .discover import fetch_text
+
+    domain = canonicalize_entity_id(entity) or entity
+    urls, skipped = vendor_story_urls(
+        sources, vendors=vendors, max_per_vendor=max_per_vendor, timeout=timeout,
+        respect_robots=respect_robots,
+    )
+    records: list[RawRecord] = []
+    for url in urls:
+        try:
+            record = fetch_text(url, timeout=timeout, respect_robots=respect_robots)
+        except Exception as exc:
+            skipped.append({"url": url, "reason": str(exc)[:200]})
+            continue
+        if is_attributed(record.text, record.source_uri, domain):
+            records.append(record)
+    return records, skipped
+
+
+# ---------------------------------------------------------------------------
+# The stage itself
+# ---------------------------------------------------------------------------
+
+@dataclass
+class EnrichReport:
+    """What the walk did, so a run can explain itself instead of thinning."""
+
+    entity: str = ""
+    domain: str = ""
+    kinds: list[str] = field(default_factory=list)
+    surfaces: list[str] = field(default_factory=list)
+    visited: int = 0
+    kept: int = 0
+    #: Records collected per surface. A surface that returned nothing is as
+    #: much a fact about the run as one that returned five.
+    by_surface: dict[str, int] = field(default_factory=dict)
+    skipped: list[dict[str, str]] = field(default_factory=list)
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "entity": self.entity,
+            "domain": self.domain,
+            "kinds": list(self.kinds),
+            "surfaces": list(self.surfaces),
+            "visited": self.visited,
+            "kept": self.kept,
+            "by_surface": dict(self.by_surface),
+            "skipped": self.skipped,
+        }
+
+
+def surface_urls(
+    surface: str,
+    domain: str,
+    *,
+    surfaces: dict[str, Any] | None = None,
+) -> list[str]:
+    """The candidate URLs for one surface on one domain.
+
+    A template may name ``{slug}`` (the first label of the domain), which is how
+    the shared ATS and review probes address a company.
+    """
+    plan = surfaces or load_surfaces()
+    slug = domain.split(".")[0]
+    values = {"domain": domain, "slug": slug, "origin": f"https://{domain}"}
+    if surface in (plan.get("first_party_paths") or {}):
+        return [f"https://{domain}{path}" for path in plan["first_party_paths"][surface] or []]
+    templates = (plan.get("templates") or {}).get(surface) or []
+    return [str(t).format(**values) for t in templates]
+
+
+def classify_page(url: str, *, surfaces: dict[str, Any] | None = None) -> str:
+    """Which surface a discovered URL belongs to, or "" when none claims it.
+
+    Read off the path, because a page's address is what says what it is. The
+    patterns are data: a site that keeps its stories under /our-work is a
+    configuration, not a code change.
+    """
+    plan = surfaces or load_surfaces()
+    path = urlparse(url).path.lower()
+    for surface, patterns in (plan.get("match") or {}).items():
+        if surface.startswith("_") or not isinstance(patterns, list):
+            # A note is not a surface. The file documents itself with
+            # _-prefixed keys precisely so a loop cannot read prose as data.
+            continue
+        if any(str(pattern).lower() in path for pattern in patterns):
+            return str(surface)
+    return ""
+
+
+def _deepest_first(urls: Iterable[str]) -> list[str]:
+    """Prefer specific pages over index pages.
+
+    A sitemap lists both ``/case-studies`` and ``/case-studies/acme-bank``. The
+    index page is navigation; the deeper one is the story, and reading stories
+    is the point.
+    """
+    return sorted(dict.fromkeys(urls), key=lambda url: (-urlparse(url).path.count("/"), url))
+
+
+def discover_pages(
+    domain: str,
+    *,
+    surfaces: dict[str, Any] | None = None,
+    timeout: float = 20.0,
+    respect_robots: bool = True,
+    scan_cap: int = 3000,
+) -> tuple[dict[str, list[str]], list[dict[str, str]]]:
+    """The pages a site publishes, grouped by the surface they belong to.
+
+    A sitemap answered for every domain probed (8/8) and names the real
+    case-study and careers URLs; guessing at paths produced 200s that were the
+    wrong kind of page. Returns ({surface: [url, ...]}, skipped).
+    """
+    from .discover import discover_sitemap_url, fetch_sitemap_entries
+
+    plan = surfaces or load_surfaces()
+    found: dict[str, list[str]] = {}
+    skipped: list[dict[str, str]] = []
+    try:
+        sitemap = discover_sitemap_url(f"https://{domain}", timeout=timeout)
+    except Exception as exc:
+        return {}, [{"surface": "sitemap", "url": f"https://{domain}/sitemap.xml", "reason": str(exc)[:200]}]
+    if not sitemap:
+        return {}, [{
+            "surface": "sitemap",
+            "url": f"https://{domain}/robots.txt",
+            "reason": "no sitemap found in the common paths or in robots.txt",
+        }]
+    try:
+        entries = fetch_sitemap_entries(sitemap, timeout=timeout, max_urls=scan_cap)
+    except Exception as exc:
+        return {}, [{"surface": "sitemap", "url": sitemap, "reason": str(exc)[:200]}]
+    for url, _lastmod in entries:
+        surface = classify_page(url, surfaces=plan)
+        if surface:
+            found.setdefault(surface, []).append(url)
+    return {surface: _deepest_first(urls) for surface, urls in found.items()}, skipped
+
+
+def _channel_records(
+    channel: str,
+    domain: str,
+    *,
+    surfaces: dict[str, Any],
+    timeout: float,
+    respect_robots: bool,
+    max_per_channel: int,
+) -> tuple[list[Any], list[dict[str, str]]]:
+    """Records from a surface the engine already knows how to fetch.
+
+    Named channels rather than re-implemented ones: discover.py owns how to talk
+    to a hiring board and to a code host, and this decides when to ask. A board
+    that does not exist raises, and the reason is kept — a company without an
+    ATS account is a fact about that company, not a failed fetch.
+    """
+    from . import discover
+
+    slug = domain.split(".")[0]
+    records: list[Any] = []
+    skipped: list[dict[str, str]] = []
+
+    if channel == "ats":
+        for name, fetcher in (
+            ("greenhouse", discover.fetch_greenhouse_board),
+            ("ashby", discover.fetch_ashby_org),
+            ("lever", discover.fetch_lever_org),
+        ):
+            if name not in (surfaces.get("channels") or {}).get("ats", []):
+                continue
+            try:
+                records.extend(fetcher(slug, max_jobs=max_per_channel, timeout=timeout))
+            except Exception as exc:
+                skipped.append({"surface": "ats", "board": name, "url": f"{name}:{slug}", "reason": str(exc)[:200]})
+        return records, skipped
+
+    if channel == "code":
+        if "github" not in (surfaces.get("channels") or {}).get("code", []):
+            return [], []
+        try:
+            org_records, org_skipped = discover.fetch_github_org(
+                slug, max_repos=max_per_channel, timeout=timeout,
+            )
+            records.extend(org_records)
+            skipped.extend(org_skipped[:5])
+        except Exception as exc:
+            skipped.append({"surface": "code", "url": f"github:{slug}", "reason": str(exc)[:200]})
+        return records, skipped
+
+    if channel == "community":
+        backends = (surfaces.get("channels") or {}).get("community") or []
+        hits = []
+        for backend in backends:
+            try:
+                hits.extend(discover.web_search(
+                    f'"{domain}"', backends=[backend], max_results=max_per_channel, timeout=timeout,
+                ))
+            except Exception as exc:
+                skipped.append({"surface": "community", "backend": backend, "reason": str(exc)[:200]})
+        for hit in hits[: max_per_channel * 2]:
+            try:
+                # Stack Exchange and Reddit answer 403 to a plain HTML fetch;
+                # fetch_smart_url routes them through the APIs that do answer.
+                records.append(discover.fetch_smart_url(
+                    hit.url, timeout=timeout, respect_robots=respect_robots,
+                ))
+            except Exception as exc:
+                skipped.append({"surface": "community", "url": hit.url, "reason": str(exc)[:200]})
+        return records, skipped
+
+    return [], [{"surface": channel, "reason": f"no channel wired for '{channel}'"}]
+
+
+def enrich_entity(
+    entity: str,
+    *,
+    kinds: Sequence[str] = (),
+    surfaces: dict[str, Any] | None = None,
+    bar_kinds: Sequence[str] = (),
+    max_pages: int = 8,
+    per_surface: int = 3,
+    timeout: float = 20.0,
+    delay: float = 1.0,
+    respect_robots: bool = True,
+    vendor_stories: bool = True,
+    vendor_story_limit: int = 20,
+) -> tuple[list[Any], EnrichReport]:
+    """Walk the surfaces that carry the kinds this entity is missing.
+
+    Returns the records collected and a report of what was visited and what was
+    refused. Every refusal is recorded with its reason: a surface that answered
+    404 is a fact about the run, and a silent zero is not allowed.
+    """
+    from . import contracts
+    from .discover import crawl_site, fetch_text
+
+    report = EnrichReport(entity=str(entity or ""), kinds=[str(k) for k in kinds])
+    domain = entity_domain(entity)
+    report.domain = domain
+    if not domain:
+        report.skipped.append({
+            "surface": "all",
+            "reason": (
+                f"'{entity}' does not name a domain, so there is no website to walk. "
+                "Attribution gave this entity a slug rather than a host."
+            ),
+        })
+        return [], report
+
+    wanted_kinds = [str(k) for k in (kinds or bar_kinds)]
+    wanted = contracts.surfaces_for_kinds(wanted_kinds)
+    report.surfaces = list(wanted)
+    if not wanted:
+        report.skipped.append({
+            "surface": "all",
+            "reason": "no surface is declared for the evidence this entity is missing",
+        })
+        return [], report
+
+    plan = surfaces or load_surfaces()
+    paths = plan.get("first_party_paths") or {}
+    templates = plan.get("templates") or {}
+    channels = plan.get("channels") or {}
+    first_party = [s for s in wanted if s in paths]
+    probe_surfaces = [s for s in wanted if s in templates]
+    channel_surfaces = [s for s in wanted if s in channels]
+    records: list[Any] = []
+    seen: set[str] = set()
+    #: Records reached by addressing the entity's own account (a hiring board
+    #: under its slug) rather than by finding them. They are about the entity by
+    #: construction, even though a board URL does not spell the domain out.
+    addressed: list[Any] = []
+
+    def add(record: Any, surface: str, *, by_address: bool = False) -> None:
+        key = str(getattr(record, "source_uri", "") or getattr(record, "item_id", "") or "")
+        if key and key in seen:
+            return
+        if key:
+            seen.add(key)
+        # Tag the record with the surface that produced it, so the lane report
+        # can say which surface a claim came from instead of folding every
+        # enrichment into one anonymous "enriched" bucket.
+        metadata = getattr(record, "metadata", None)
+        if isinstance(metadata, dict):
+            metadata.setdefault("enrich_surface", surface)
+        records.append(record)
+        if by_address:
+            if isinstance(metadata, dict):
+                metadata.setdefault("attribution", "addressed by slug")
+            addressed.append(record)
+        report.by_surface[surface] = report.by_surface.get(surface, 0) + 1
+
+    def fetch_into(url: str, surface: str) -> bool:
+        report.visited += 1
+        try:
+            add(fetch_text(url, timeout=timeout, respect_robots=respect_robots), surface)
+            return True
+        except Exception as exc:
+            report.skipped.append({"surface": surface, "url": url, "reason": str(exc)[:200]})
+            return False
+
+    # First party: the sitemap names the pages, so fetch those instead of
+    # guessing at paths. A site with no sitemap falls back to the paths.
+    if first_party:
+        pages, sitemap_skipped = discover_pages(
+            domain, surfaces=plan, timeout=timeout, respect_robots=respect_robots,
+        )
+        report.skipped.extend(sitemap_skipped)
+        report.visited += 1  # the sitemap lookup itself
+        if pages:
+            # A sitemap answered for every domain probed, so when one is found
+            # it is the authority: a page absent from it is a page that is not
+            # there, and probing the guess list anyway only buys 404s.
+            for surface in first_party:
+                for url in pages.get(surface, [])[: max(1, per_surface)]:
+                    fetch_into(url, surface)
+        else:
+            # No sitemap. Crawl the site's own links first — a site that names
+            # its pages is better evidence than a guess list — and fall back to
+            # the paths for whatever the crawl did not reach.
+            covered: set[str] = set()
+            try:
+                walked, crawl_skipped = crawl_site(
+                    f"https://{domain}", max_pages=max_pages, max_depth=2,
+                    timeout=timeout, delay=delay, respect_robots=respect_robots,
+                )
+                report.visited += len(walked)
+                report.skipped.extend(
+                    {"surface": "first_party", "url": str(s.get("url", "")), "reason": str(s.get("reason", ""))[:200]}
+                    for s in crawl_skipped[:5]
+                )
+                for record in walked:
+                    surface = classify_page(str(getattr(record, "source_uri", "") or ""), surfaces=plan)
+                    if surface in first_party:
+                        add(record, surface)
+                        covered.add(surface)
+            except Exception as exc:
+                report.skipped.append({
+                    "surface": "first_party", "url": f"https://{domain}", "reason": str(exc)[:200],
+                })
+            for surface in first_party:
+                if surface in covered:
+                    continue
+                for url in surface_urls(surface, domain, surfaces=plan)[:2]:
+                    fetch_into(url, surface)
+
+    for surface in probe_surfaces:
+        for url in surface_urls(surface, domain, surfaces=plan):
+            fetch_into(url, surface)
+
+    for surface in channel_surfaces:
+        channel_records, channel_skipped = _channel_records(
+            surface, domain, surfaces=plan, timeout=timeout,
+            respect_robots=respect_robots, max_per_channel=max(1, per_surface),
+        )
+        report.visited += len(channel_records)
+        for record in channel_records:
+            add(record, surface, by_address=True)
+        report.skipped.extend(channel_skipped)
+
+    if vendor_stories and "vendor_stories" in wanted:
+        try:
+            story_records, story_skipped = fetch_vendor_stories(
+                domain, sources=plan, max_per_vendor=vendor_story_limit,
+                timeout=timeout, respect_robots=respect_robots,
+            )
+            report.visited += len(story_records)
+            for record in story_records:
+                add(record, "vendor_stories")
+            report.skipped.extend(story_skipped[:5])
+        except Exception as exc:
+            report.skipped.append({"surface": "vendor_stories", "reason": str(exc)[:200]})
+
+    # A surface that was looked at and yielded nothing says so. "We searched
+    # the vendor stories and none names this entity" is a different fact from
+    # "we never looked", and a zero with no reason is the one thing this fleet
+    # does not report.
+    spoken_for = {str(entry.get("surface") or "") for entry in report.skipped}
+    attempted = set(first_party) | set(probe_surfaces) | set(channel_surfaces)
+    if vendor_stories and "vendor_stories" in wanted:
+        attempted.add("vendor_stories")
+    for surface in sorted(attempted):
+        if report.by_surface.get(surface) or surface in spoken_for:
+            continue
+        report.skipped.append({
+            "surface": surface,
+            "reason": (
+                "looked, and no vendor story naming this entity was found"
+                if surface == "vendor_stories"
+                else "visited, and nothing on this surface was about the entity"
+            ),
+        })
+
+    # A first-party page carries its own host, so attribution passes on the URL;
+    # anything that names nobody is dropped rather than filed under this entity.
+    # Records reached by addressing the entity's own account are exempt: the
+    # board's slug is the address we asked for, not a name we have to find.
+    by_address = {id(record) for record in addressed}
+    attributed, _dropped = filter_attributed(
+        [record for record in records if id(record) not in by_address], domain
+    )
+    report.kept = len(attributed) + len(addressed)
+    return attributed + addressed, report

@@ -6,9 +6,16 @@ Two entry points, one pipeline:
   backend the fleet ships (web, HN, Reddit, Stack Exchange, Discourse, dev.to,
   Lobsters, Lemmy, YC) and turns the hits into candidate partner entities.
 * **enrich** — for one partner, whether it came from *find* or from a list you
-  already have. Fetches their own site, their ATS board, their Clutch/G2/
-  ZoomInfo pages, their vendor-registry listing, independent mentions, and
-  press, then bundles everything per entity.
+  already have. Walks the shared surface plan (their own site, their ATS board,
+  the directories that review them, the vendor stories that name them), adds
+  independent mentions and press, then bundles everything per entity.
+
+The surface walk itself is not partner-specific and does not live here: it is
+``harness_fleet/enrich.py``, which every lane calls when it is short of
+evidence. What stays in this module is what is specific to this product — the
+find-stage queries, and the practice gate that decides whether an entity is a
+delivery firm at all. Re-exported names below keep this product's import path
+working for callers that have always used it.
 
 The rule that makes the difference between evidence and noise: **attribution**.
 A hit counts toward a partner only when that partner's domain or name appears
@@ -18,21 +25,44 @@ returns pages about *tracing*; without this filter they read as evidence.
 from __future__ import annotations
 
 import json
-import re
-from collections.abc import Iterable, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+from . import contracts
 from .bundler import bundle_records, canonicalize_entity_id
 from .discover import (
     RawRecord,
     SearchHit,
-    crawl_site,
     fetch_text,
     to_input_items,
     web_search,
+)
+from .enrich import (
+    attribution_terms as attribution_terms,
+)
+from .enrich import (
+    enrich_entity as enrich_entity,
+)
+from .enrich import (
+    fetch_vendor_stories as fetch_vendor_stories,
+)
+from .enrich import (
+    filter_attributed as filter_attributed,
+)
+from .enrich import (
+    is_attributed as is_attributed,
+)
+from .enrich import (
+    load_surfaces as load_surfaces,
+)
+from .enrich import (
+    surface_urls as surface_urls,
+)
+from .enrich import (
+    vendor_story_urls as vendor_story_urls,
 )
 from .models import InputItem
 from .sources import (
@@ -146,38 +176,9 @@ def load_plan(path: str | Path | None = None) -> dict[str, Any]:
 # Attribution
 # ---------------------------------------------------------------------------
 
-def attribution_terms(entity: str) -> tuple[str, ...]:
-    """Terms that prove a page is about this partner, strongest first."""
-    raw = str(entity or "").strip()
-    if not raw:
-        return ()
-    canonical = (canonicalize_entity_id(raw) or raw).strip().lower()
-    if not canonical:
-        return ()
-    terms = [canonical]
-    label = canonical.split(".")[0]
-    if len(label) >= _ATTRIBUTION_MIN_NAME and label != canonical:
-        terms.append(label)
-    return tuple(dict.fromkeys(terms))
-
-
-def is_attributed(text: str | None, uri: str | None, entity: str) -> bool:
-    """True when this page is about `entity`, not merely matched by keywords."""
-    uri_l = (uri or "").lower()
-    text_l = (text or "").lower()
-    for term in attribution_terms(entity):
-        if term in uri_l:
-            return True
-        if any(ch.isdigit() for ch in term):
-            # "trace3" is that partner's name and does not appear by accident —
-            # but it must be the whole word, so "trace33" is a different firm.
-            if re.search(rf"(?<![\w-]){re.escape(term)}(?![\w-])", text_l):
-                return True
-        elif f" {term} " in f" {text_l} ":
-            # A bare word must stand alone: "trace" must not match "tracing".
-            return True
-    return False
-
+# ---------------------------------------------------------------------------
+# The practice gate — this product's admission rule, not the engine's
+# ---------------------------------------------------------------------------
 
 def practice_signals(plan: dict[str, Any] | None = None) -> tuple[str, ...]:
     """Terms that mark a page as being about *delivering* work, from the plan."""
@@ -191,21 +192,16 @@ def practice_signals(plan: dict[str, Any] | None = None) -> tuple[str, ...]:
 
 
 def has_practice_signal(text: str | None, signals: Sequence[str] | None = None) -> bool:
-    """True when the page talks about delivering work for clients at all."""
+    """True when the page talks about delivering work for clients at all.
+
+    A page is always trivially attributed to its own host, so without this gate
+    every blog post on the internet is a candidate partner. It is deliberately
+    *not* in the shared enrichment: whether an entity delivers work is a
+    question this product asks of its candidates, and the evidence bar already
+    answers it for every other lane.
+    """
     blob = (text or "").lower()
     return any(term in blob for term in (signals or _DEFAULT_PRACTICE_SIGNALS))
-
-
-def filter_attributed(
-    records: Iterable[RawRecord], entity: str
-) -> tuple[list[RawRecord], list[RawRecord]]:
-    """Split records into (about this partner, everything else)."""
-    kept: list[RawRecord] = []
-    dropped: list[RawRecord] = []
-    for record in records:
-        target = kept if is_attributed(record.text, record.source_uri, entity) else dropped
-        target.append(record)
-    return kept, dropped
 
 
 # ---------------------------------------------------------------------------
@@ -248,22 +244,28 @@ def find_queries(plan: dict[str, Any], *, tech: str = "", vertical: str = "") ->
     return out
 
 
-def enrich_urls(plan: dict[str, Any], entity: str) -> dict[str, list[str]]:
-    """Step -> URLs to fetch for one partner (first-party, ATS, third-party)."""
-    stage = plan.get("stages", {}).get("enrich", {})
+def enrich_urls(plan: dict[str, Any] | None, entity: str) -> dict[str, list[str]]:
+    """Where one entity's evidence lives, by surface family.
+
+    The URLs come from the shared surface plan, not from this product's file:
+    which paths a website keeps its case studies under is a fact about the web,
+    and the same walk serves every lane. The ``plan`` argument is accepted and
+    ignored so this product's callers keep working.
+    """
     domain = canonicalize_entity_id(entity) or entity
+    plan = load_surfaces()
     slug = domain.split(".")[0]
-    origin = f"https://{domain}"
-    values = {"domain": domain, "slug": slug, "origin": origin}
-    urls: dict[str, list[str]] = {"ats": [], "third_party": []}
-    for key in ("ats", "third_party"):
-        for template in (stage.get(key) or {}).get("probe") or (stage.get(key) or {}).get("urls") or []:
-            resolved = _substitute(template, values)
-            if resolved:
-                urls[key].append(resolved)
-    urls["first_party"] = [_substitute(t, values) or origin for t in (stage.get("first_party") or {}).get("crawl", [])]
-    urls["first_party"] = [u if u.startswith("http") else origin + u for u in urls["first_party"]]
-    return urls
+    return {
+        "first_party": [
+            url
+            for surface in ("services", "case_studies", "careers", "about", "blog")
+            for url in surface_urls(surface, domain, surfaces=plan)[:2]
+        ],
+        # The HTML board hosts are not listed: they answer 200 for a slug that
+        # does not exist, so the readable form is the API.
+        "ats": [str(t).format(slug=slug) for t in (plan.get("ats") or {}).values() if isinstance(t, str)],
+        "third_party": surface_urls("registry", domain, surfaces=plan),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -399,135 +401,6 @@ def find_partners(
     return items, report
 
 
-def _fetch_markup(url: str, *, timeout: float, respect_robots: bool) -> str:
-    """Raw HTML/XML for link and sitemap discovery.
-
-    Prose extraction strips the markup, so hrefs and <loc> entries have to come
-    from the raw response: ``fetch_text`` is for the story text, not for
-    finding it.
-    """
-    import httpx
-
-    from .discover import USER_AGENT, robots_allowed
-
-    with httpx.Client(timeout=timeout, follow_redirects=True, headers={"User-Agent": USER_AGENT}) as client:
-        if respect_robots and not robots_allowed(url, client, timeout=timeout):
-            raise SourcingError(f"robots.txt disallows {url}")
-        response = client.get(url)
-    if response.status_code != 200:
-        raise SourcingError(f"HTTP {response.status_code} for {url}")
-    return response.text
-
-
-def vendor_story_urls(
-    plan: dict[str, Any] | None = None,
-    *,
-    vendors: Sequence[str] | None = None,
-    max_per_vendor: int = 20,
-    timeout: float = 20.0,
-    respect_robots: bool = True,
-) -> tuple[list[str], list[dict[str, str]]]:
-    """Enumerate a vendor's partner/customer story URLs from its own site.
-
-    Vendor-published stories are independent prose about the work, and the plan
-    lists where they live: a story hub whose links are the stories (AWS), or a
-    sitemap index walked one level and filtered to the story paths (Snowflake,
-    Databricks, Elastic, Datadog, MongoDB). Enumerated rather than searched,
-    because review sites that used to supply this now answer 403.
-    """
-
-    plan = plan or load_plan()
-    stage = plan.get("stages", {}).get("vendor_stories") or {}
-    configured = stage.get("vendors") or {}
-    wanted = [v for v in (vendors or configured) if v in configured]
-    urls: list[str] = []
-    skipped: list[dict[str, str]] = []
-
-    for vendor in wanted:
-        spec = configured.get(vendor) or {}
-        hub = spec.get("hub")
-        prefix = spec.get("story_path_prefix") or ""
-        if hub:
-            try:
-                markup = _fetch_markup(hub, timeout=timeout, respect_robots=respect_robots)
-            except Exception as exc:
-                skipped.append({"vendor": vendor, "reason": str(exc)[:200]})
-                continue
-            found = []
-            for match in re.finditer(r'href="([^"#?]+)"', markup):
-                link = match.group(1)
-                if prefix not in link:
-                    continue
-                # A story has a slug after the prefix; the hub itself (and its
-                # localized twins) does not, so those are not stories.
-                if not link.split(prefix, 1)[1].strip("/"):
-                    continue
-                found.append(link if link.startswith("http") else f"https://{urlparse(hub).netloc}{link}")
-            urls.extend(list(dict.fromkeys(found))[:max_per_vendor])
-            continue
-
-        sitemap = spec.get("sitemap")
-        if not sitemap:
-            continue
-        sitemap_urls: list[str] = [sitemap]
-        story_urls: list[str] = []
-        for sitemap_url in sitemap_urls:
-            try:
-                text = _fetch_markup(sitemap_url, timeout=timeout, respect_robots=respect_robots)
-            except Exception as exc:
-                skipped.append({"vendor": vendor, "reason": str(exc)[:200]})
-                continue
-            locs = re.findall(r"<loc>\s*([^<\s]+)\s*</loc>", text)
-            nested = [loc for loc in locs if loc.endswith(".xml") and len(sitemap_urls) < 8]
-            story_urls.extend(loc for loc in locs if not loc.endswith(".xml"))
-            sitemap_urls.extend(nested[:6])
-        paths = tuple(spec.get("story_paths") or ())
-        filtered = [
-            u for u in story_urls
-            if (not paths or any(path in u for path in paths))
-            and not any(hint in u.lower() for hint in _ASSET_HINTS)
-        ]
-        urls.extend(list(dict.fromkeys(filtered))[:max_per_vendor])
-
-    return list(dict.fromkeys(urls)), skipped
-
-
-def fetch_vendor_stories(
-    entity: str,
-    *,
-    plan: dict[str, Any] | None = None,
-    vendors: Sequence[str] | None = None,
-    max_per_vendor: int = 20,
-    timeout: float = 20.0,
-    respect_robots: bool = True,
-) -> tuple[list[RawRecord], list[dict[str, str]]]:
-    """Vendor stories that actually name *entity*.
-
-    Enumerating a vendor's stories is not evidence about a partner: the story
-    has to name them. Attribution decides, exactly as it does for search hits,
-    so a story that credits nobody is dropped rather than filed under whoever
-    happened to be nearby.
-    """
-    from .discover import fetch_text
-
-    plan = plan or load_plan()
-    domain = canonicalize_entity_id(entity) or entity
-    urls, skipped = vendor_story_urls(
-        plan, vendors=vendors, max_per_vendor=max_per_vendor, timeout=timeout,
-        respect_robots=respect_robots,
-    )
-    records: list[RawRecord] = []
-    for url in urls:
-        try:
-            record = fetch_text(url, timeout=timeout, respect_robots=respect_robots)
-        except Exception as exc:
-            skipped.append({"url": url, "reason": str(exc)[:200]})
-            continue
-        if is_attributed(record.text, record.source_uri, domain):
-            records.append(record)
-    return records, skipped
-
-
 def enrich_partner(
     entity: str,
     *,
@@ -548,55 +421,41 @@ def enrich_partner(
     plan = plan or load_plan()
     report = SourcingReport(stage="enrich", candidates=[entity])
     domain = canonicalize_entity_id(entity) or entity
-    stage = plan.get("stages", {}).get("enrich", {})
     records: list[RawRecord] = []
     seen_urls: set[str] = set()
 
     if include_fetch:
-        urls = enrich_urls(plan, domain)
-        # First-party: crawl the site shallowly and keep the pages the plan
-        # cares about (services, partners, case studies, careers).
-        try:
-            crawled, skipped = crawl_site(
-                f"https://{domain}", max_pages=max_pages, max_depth=2, timeout=timeout,
-                delay=delay, respect_robots=respect_robots,
-            )
-            hints = tuple((stage.get("first_party") or {}).get("crawl") or ())
-            keep = [r for r in crawled if not hints or any(h in r.source_uri.lower() for h in hints)]
-            records.extend(keep or crawled)
-            report.skipped.extend({"url": s.get("url", ""), "reason": s.get("reason", "")} for s in skipped[:5])
-        except Exception as exc:
-            report.skipped.append({"url": f"https://{domain}", "reason": str(exc)[:200]})
-
-        for kind in ("ats", "third_party"):
-            for url in urls.get(kind, []):
-                try:
-                    records.append(fetch_text(url, timeout=timeout, respect_robots=respect_robots))
-                except Exception as exc:
-                    report.skipped.append({"url": url, "reason": str(exc)[:200]})
-
-    # Vendor-published stories that name this partner: independent prose about
-    # the work, and the non-first-party half of the tier-1 evidence gate.
-    if include_fetch and vendor_stories:
-        try:
-            story_records, story_skipped = fetch_vendor_stories(
-                domain, plan=plan, max_per_vendor=vendor_story_limit, timeout=timeout,
-                respect_robots=respect_robots,
-            )
-            records.extend(story_records)
-            report.skipped.extend(story_skipped[:5])
-            report.vendor_stories = len(story_records)
-        except Exception as exc:
-            report.skipped.append({"source": "vendor_stories", "reason": str(exc)[:200]})
+        # The walk is the shared one. This command asks for every kind the
+        # engine knows, because its job is "tell me everything about this
+        # domain" — a lane asks only for the kinds its own bar is short of.
+        walked, walk = enrich_entity(
+            domain,
+            kinds=tuple(contracts.EVIDENCE_KINDS),
+            max_pages=max_pages,
+            timeout=timeout,
+            delay=delay,
+            respect_robots=respect_robots,
+            vendor_stories=vendor_stories,
+            vendor_story_limit=vendor_story_limit,
+        )
+        records.extend(walked)
+        report.fetched += walk.visited
+        report.vendor_stories = walk.by_surface.get("vendor_stories", 0)
+        report.skipped.extend(
+            {"url": str(s.get("url") or s.get("surface") or ""), "reason": str(s.get("reason", ""))}
+            for s in walk.skipped[:5]
+        )
 
     # Independent mentions and press, via the search backends. --no-fetch means
     # no fetching at all, so search hits stay snippets in that mode.
     snippets_only = snippets_only or not include_fetch
     search_backends = list(backends) if backends else [*COMMUNITY_BACKENDS, "ddgs"]
-    queries = [f'"{domain}"'] + [
-        _substitute(q, {"domain": domain}) or ""
-        for q in (stage.get("web") or {}).get("queries", [])
-    ]
+    # Press and mentions. The query for each kind of evidence is already
+    # declared centrally, so this product does not keep a second list that can
+    # drift from it.
+    queries = [f'"{domain}"'] + contracts.queries_for_gaps(
+        domain, tuple(contracts.EVIDENCE_KINDS), limit=len(contracts.EVIDENCE_KINDS)
+    )
     for query in [q for q in queries if q]:
         for backend in search_backends:
             report.searched += 1

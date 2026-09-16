@@ -518,3 +518,64 @@ def test_lane_list_names_every_shipped_lane_and_its_bar(tmp_path, monkeypatch, c
     for row in lanes.values():
         assert row["source"] in {"shipped", "workspace"}
         assert row["preset"], row
+
+
+# --- the walk the lane runs before scoring -----------------------------------
+
+def test_the_lane_walks_only_the_entities_short_of_its_bar(monkeypatch):
+    """A lane goes to the website for what its bar wants and it does not have.
+
+    Discovery finds pages *about* an entity; the bar asks for evidence those
+    pages rarely carry. Only the entities that are actually short get walked,
+    and only for the kinds they are missing — a walk per entity per kind is
+    real traffic, so it has to be aimed.
+    """
+    from harness_fleet import cli
+    from harness_fleet.lanes import Lane
+    from harness_fleet.models import InputItem
+
+    walked: list[tuple[str, tuple[str, ...]]] = []
+
+    def fake_enrich(entity, *, kinds=(), **kwargs):
+        walked.append((entity, tuple(kinds)))
+        from harness_fleet.discover import RawRecord
+        from harness_fleet.enrich import EnrichReport
+
+        record = RawRecord(
+            text=f"{entity} delivered a Kafka migration for a named bank",
+            source_uri=f"https://{entity}/case-studies/a-bank",
+            title="case study",
+            # The real walk tags each record with the surface that produced it;
+            # the fake has to honour that contract or it tests a fiction.
+            metadata={"enrich_surface": "case_studies"},
+        )
+        report = EnrichReport(entity=entity, domain=entity, kinds=list(kinds))
+        report.by_surface = {"case_studies": 1}
+        return [record], report
+
+    monkeypatch.setattr("harness_fleet.enrich.enrich_entity", fake_enrich)
+
+    covered = InputItem(
+        item_id="has-it.com",
+        text="Acme runs Kafka in production and delivered it for a client, cutting latency 40 percent.",
+        source_uri="https://has-it.com/case-studies/x",
+        metadata={"source_category": "first_party_case_study"},
+    )
+    short = InputItem(
+        item_id="short-of-it.com",
+        text="A company page with nothing the bar asks for.",
+        source_uri="https://short-of-it.com/about",
+        metadata={"source_category": "first_party_practice"},
+    )
+    lane = Lane(name="account", preset="account-research", tier="tier_3")
+    extra, report = cli._enrich_entities(
+        [covered, short], lane, per_surface=1, max_entities=5, timeout=5.0, delay=0.0,
+        respect_robots=True,
+    )
+    assert [entity for entity, _kinds in walked] == ["short-of-it.com"], (
+        "an entity that already carries the bar's evidence is not walked"
+    )
+    assert walked[0][1] == ("stack_delivery",), "only the missing kind is asked for"
+    assert report and report[0]["missing"] == ["stack_delivery"]
+    assert [item.item_id for item in extra] == ["short-of-it.com"]
+    assert extra[0].metadata["backend"] == "case_studies", "yield is attributed to its surface"

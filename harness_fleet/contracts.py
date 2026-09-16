@@ -101,6 +101,9 @@ def validate_contracts() -> list[str]:
         for category in categories:
             if category not in SOURCE_CATEGORIES:
                 problems.append(f"evidence bar for '{kind or 'any'}' allows undeclared category '{category}'")
+    for kind in KIND_SURFACES:
+        if kind not in EVIDENCE_KINDS:
+            problems.append(f"surface mapping names unknown evidence kind '{kind}'")
     return problems
 
 
@@ -241,6 +244,45 @@ def queries_for_gaps(entity: str, missing_kinds: Any, limit: int = 3) -> list[st
         if len(queries) >= limit:
             break
     return queries
+
+
+#: ``KIND_QUERIES`` above is what to *search* for a kind an entity is missing.
+#: This is the other half: which of the entity's own surfaces carry that kind,
+#: for the stage that stops searching and goes to look. The names are a
+#: vocabulary — the URLs behind them are one file of web knowledge
+#: (``data/source_surfaces.json``), so a surface is renamed in one place and the
+#: mapping never drifts from what a fetch can actually do.
+#:
+#: Every lane reads this. What differs between products is which kinds they
+#: demand, and that is the lane's bar; there is no per-product variant of where
+#: a company keeps its case studies.
+KIND_SURFACES: dict[str, tuple[str, ...]] = {
+    "delivery_proof": ("case_studies", "services"),
+    "stack_delivery": ("services", "case_studies", "blog", "code"),
+    "delivery_hiring": ("ats",),
+    "named_clients": ("case_studies",),
+    # Review directories answered 403 on every domain probed, so independent
+    # validation comes from the vendors who publish stories naming the entity
+    # and from the communities that discuss it — sources that answer.
+    "independent_validation": ("vendor_stories", "community"),
+    "certification": ("registry", "partners"),
+    # Rates and headcount are published on the entity's own pages, not on the
+    # review sites that used to carry them.
+    "commercial_terms": ("services", "about"),
+    "growth_signal": ("news",),
+    "engineering_output": ("blog", "code"),
+    "dated_events": ("news", "blog"),
+}
+
+
+def surfaces_for_kinds(missing_kinds: Any) -> tuple[str, ...]:
+    """The surfaces that carry these kinds, deduped, in declaration order."""
+    ordered: list[str] = []
+    for kind in missing_kinds:
+        for surface in KIND_SURFACES.get(str(kind), ()):
+            if surface not in ordered:
+                ordered.append(surface)
+    return tuple(ordered)
 
 # ---------------------------------------------------------------------------
 # 7. The evidence bar: what counts, and what is merely a lead.

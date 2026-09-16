@@ -1714,6 +1714,82 @@ def _skip_reasons_note(skipped: Any, limit: int = 3) -> str:
     remaining = len(entries) - len(reasons)
     return "\n  failing sources: " + "; ".join(reasons) + (f" (+{remaining} more)" if remaining > 0 else "")
 
+def _gaps_for_dossier(text: str, uri: str, bar: tuple[str, ...]) -> list[str]:
+    """Which of the lane's required kinds this entity's evidence does not carry."""
+    from .evidence import coverage
+
+    if not bar:
+        return []
+    kinds = coverage(text or "", uri or "")
+    return [kind for kind in bar if not kinds.get(kind)]
+
+
+def _enrich_entities(
+    dossiers: list[Any],
+    lane: Any,
+    *,
+    per_surface: int,
+    max_entities: int,
+    timeout: float,
+    delay: float,
+    respect_robots: bool,
+    vendor_stories: bool = True,
+) -> tuple[list[Any], list[dict[str, Any]]]:
+    """Go to each entity's own surfaces for the evidence the lane's bar wants.
+
+    Discovery finds pages *about* an entity. The bar asks for evidence a page
+    about somebody rarely carries — the stack they actually deliver, the people
+    they are hiring, what they charge — because that lives on their own site,
+    their hiring board and the stories their vendors publish. This is the stage
+    that stops searching and goes to look, and it is the same walk for every
+    lane: only the missing kinds differ.
+
+    Returns the extra items to bundle, and a report of what each walk did.
+    """
+    from . import contracts
+    from .enrich import enrich_entity
+    from .models import InputItem
+
+    bar: tuple[str, ...] = ()
+    if lane is not None:
+        bar = tuple(lane.require_kinds) or tuple(contracts.TIER_MINIMUMS.get(lane.tier or "", ()))
+
+    extra: list[Any] = []
+    report: list[dict[str, Any]] = []
+    for dossier in dossiers[: max(1, max_entities)]:
+        entity = str(getattr(dossier, "item_id", "") or "")
+        missing = _gaps_for_dossier(
+            getattr(dossier, "text", "") or "", getattr(dossier, "source_uri", "") or "", bar
+        )
+        if not missing:
+            continue
+        records, walk = enrich_entity(
+            entity,
+            kinds=missing,
+            per_surface=per_surface,
+            timeout=timeout,
+            delay=delay,
+            respect_robots=respect_robots,
+            vendor_stories=vendor_stories,
+        )
+        summary = walk.as_dict()
+        summary["missing"] = missing
+        report.append(summary)
+        for record in records:
+            metadata = dict(getattr(record, "metadata", None) or {})
+            # The lane report attributes yield by surface, so carry the surface
+            # the walk tagged rather than one flat "enrichment" bucket.
+            metadata.setdefault("backend", str(metadata.get("enrich_surface") or "enrich"))
+            extra.append(InputItem(
+                item_id=entity,
+                text=str(getattr(record, "text", "") or ""),
+                title=getattr(record, "title", None),
+                source_uri=getattr(record, "source_uri", None),
+                metadata=metadata,
+            ))
+    return extra, report
+
+
 def _load_lane_for_run(args: argparse.Namespace, workspace: Path) -> Any:
     """Load the lane this run names, validating it against what is installed."""
     from .channels import load_channels
@@ -1869,11 +1945,42 @@ def cmd_research(args: argparse.Namespace) -> None:
         for item in items
     ]
     dossiers = bundle_records(keyed)
+    print(f"Captured {len(keyed)} sources into {len(dossiers)} account dossiers")
+
+    # 1b. Go to each entity's own surfaces for the evidence the lane's bar wants
+    # and the search results did not carry. Skipped with --no-enrich.
+    if not getattr(args, "no_enrich", False) and dossiers:
+        extra, walk_report = _enrich_entities(
+            dossiers, lane,
+            per_surface=int(getattr(args, "enrich_pages", 3) or 3),
+            max_entities=int(getattr(args, "enrich_entities", 25) or 25),
+            timeout=float(getattr(args, "timeout", 20.0) or 20.0),
+            delay=float(getattr(args, "delay", 1.0) or 0.0),
+            respect_robots=not getattr(args, "ignore_robots", False),
+        )
+        report["enrich"] = walk_report
+        if extra:
+            kept = sum(len(entry.get("missing", [])) for entry in walk_report)
+            print(
+                f"Went to {len(walk_report)} entit"
+                f"{'y' if len(walk_report) == 1 else 'ies'} for {kept} missing evidence kind(s): "
+                f"collected {len(extra)} more source(s)"
+            )
+            keyed = keyed + extra
+            dossiers = bundle_records(keyed)
+        else:
+            walked = ", ".join(
+                f"{entry.get('entity')}: {'nothing collected' if not entry.get('kept') else 'nothing new'}"
+                for entry in walk_report[:3]
+            ) or "no entity was short of the bar"
+            print(f"Nothing further collected from their own surfaces ({walked})")
+        _write_discovery_report(workspace, run_id, report)
+
     input_path = workspace / output
     input_path.parent.mkdir(parents=True, exist_ok=True)
     export_bundled_csv(dossiers, input_path)
     merged = len(keyed) - len(dossiers)
-    print(f"Captured {len(keyed)} sources into {len(dossiers)} account dossiers"
+    print(f"Bundled {len(keyed)} sources into {len(dossiers)} account dossiers"
           + (f" ({merged} merged)" if merged else "") + f" -> {input_path}")
 
     # 2. Ensure the task exists (a preset is enough for a first run).
@@ -2733,6 +2840,19 @@ def build_parser() -> argparse.ArgumentParser:
     research.add_argument("--min-source-coverage", type=_coverage_value, default=None,
                           help="Fail unless this fraction of hits is captured (default: warn only below 70%%)")
     research.add_argument("--ignore-robots", action="store_true", help="Ignore robots.txt (default: respect it)")
+    research.add_argument(
+        "--no-enrich", action="store_true",
+        help="Stop after search: do not walk each entity's own site, hiring board and vendor stories "
+             "for the evidence the lane's bar is missing",
+    )
+    research.add_argument(
+        "--enrich-pages", type=_positive_int, default=3,
+        help="Pages to keep per surface when walking an entity's own site (default 3)",
+    )
+    research.add_argument(
+        "--enrich-entities", type=_positive_int, default=25,
+        help="Most entities to walk per run (default 25)",
+    )
     research.add_argument("--workspace-root", default=".", help="Workspace root for relative paths")
     _policy_options(research)
     _common(research)

@@ -85,6 +85,10 @@ def _manifest_stream(
 DEFAULT_PROMPT_TIMEOUT_SEC = 180
 
 
+class LeaseLostError(RuntimeError):
+    """Another worker owns this batch now; this worker should move on."""
+
+
 class Engine:
     def __init__(
         self,
@@ -491,6 +495,47 @@ class Engine:
                 score=float(score),
             )
 
+    def _settle(
+        self,
+        lease: dict[str, Any],
+        session: WorkerSession,
+        ok: bool,
+        results: Any,
+        receipt: ProviderReceipt | None,
+        error: str | None,
+        run_id: str,
+    ) -> None:
+        """Record what happened to a leased batch, or yield if the lease moved.
+
+        Raises :class:`LeaseLost` when another worker has taken the batch over.
+        That is a race a slow route produces, not a failure of this worker, and
+        the caller retries the loop rather than ending the run.
+        """
+        attempt_id = lease["attempt_id"]
+        try:
+            if ok and results is not None and receipt is not None:
+                self.store.complete_batch(run_id, attempt_id, session.session_id, results, receipt)
+                return
+            if (receipt and receipt.error_type in ("rate_limit", "transient_http")) or (
+                "active cooldown" in (error or "").lower()
+            ):
+                # Release the lease back to pending without consuming an attempt.
+                earliest_retry = self.catalog.get_earliest_cooldown_retry()
+                sleep_time = min(5.0, max(0.5, earliest_retry)) if earliest_retry > 0 else 1.0
+                self.store.release_lease(
+                    run_id, attempt_id, session.session_id,
+                    reason=error or "Rate limit / transient error / route cooldown",
+                )
+                time.sleep(sleep_time)
+                return
+            self.store.fail_batch(
+                run_id, attempt_id, session.session_id, error or "Unknown error", receipt,
+            )
+        except ValueError as exc:
+            if "not owned by this worker" in str(exc):
+                raise LeaseLostError(str(exc)) from exc
+            raise
+
     def run_campaign(
         self,
         raw_items: Iterable[InputItem | dict[str, Any]],
@@ -679,9 +724,19 @@ class Engine:
         session_pool = SessionPool(num_sessions=concurrency, routes=available_free_routes)
         sessions_list = session_pool.get_all_sessions()
 
+        # A batch is worked for as long as its route attempts may each take, so
+        # the lease has to outlive that. At the 300-second default a slow free
+        # route outlived its own lease: another worker reclaimed the batch, the
+        # first worker's completion was refused, and the refusal propagated out
+        # of the pool and killed a run that was doing nothing wrong.
+        lease_seconds = max(
+            300,
+            self.prompt_timeout_sec * max(1, self.max_attempts_per_batch) + 60,
+        )
+
         def session_worker(session: WorkerSession) -> None:
             while True:
-                lease = self.store.lease_batch(run_id, session.session_id)
+                lease = self.store.lease_batch(run_id, session.session_id, lease_seconds)
                 if lease is None:
                     return
                 batch = lease["batch"]
@@ -696,27 +751,14 @@ class Engine:
                     receipt = ProviderReceipt.model_validate(raw_receipt) if raw_receipt else None
                 except ValidationError:
                     receipt = None
-                if ok and results is not None and receipt is not None:
-                    self.store.complete_batch(run_id, lease["attempt_id"], session.session_id, results, receipt)
-                elif (receipt and receipt.error_type in ("rate_limit", "transient_http")) or "active cooldown" in (error or "").lower():
-                    # Release lease back to pending without consuming attempt
-                    earliest_retry = self.catalog.get_earliest_cooldown_retry()
-                    sleep_time = min(5.0, max(0.5, earliest_retry)) if earliest_retry > 0 else 1.0
-                    self.store.release_lease(
-                        run_id,
-                        lease["attempt_id"],
-                        session.session_id,
-                        reason=error or "Rate limit / transient error / route cooldown",
-                    )
-                    time.sleep(sleep_time)
-                else:
-                    self.store.fail_batch(
-                        run_id,
-                        lease["attempt_id"],
-                        session.session_id,
-                        error or "Unknown error",
-                        receipt,
-                    )
+                try:
+                    self._settle(lease, session, ok, results, receipt, error, run_id)
+                except LeaseLostError:
+                    # The lease was reclaimed while this batch was in flight —
+                    # a legitimate race with a slow route, and the reclaiming
+                    # worker owns the batch now. Losing the race is not a reason
+                    # to kill the run.
+                    continue
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as executor:
             list(executor.map(session_worker, sessions_list))

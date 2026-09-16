@@ -1,0 +1,183 @@
+{
+  "schema": "source_surfaces_v1",
+  "_comment": "Where evidence lives once an entity is known. Discovery finds pages *about* a company; a page about a company is not the company. This file is shared by every lane: which paths a website keeps its case studies under, and which hosts carry a hiring board, is a fact about the web rather than about a product. A lane decides only which kinds it is missing.",
+  "probed": "2026-09 against 8 real company domains (slalom, thoughtworks, innowise, gravity9, softwaremill, factorhouse, taashee, sqldbm). Every entry below is here because it answered, and every removal is recorded with its reason.",
+  "discovery": {
+    "_comment": "A sitemap is the only first-party surface that answered for every domain tested (8/8), and it names the real case-study and careers URLs instead of guessing at them. Guessing produced 200s that were the wrong *kind* of page (slalom's /case-studies redirects to 'Who we are'), and every domain serves a styled 404 carrying enough navigation chrome to fool a word count. Locate the sitemap first, then fetch the pages it names.",
+    "paths": [
+      "/sitemap.xml",
+      "/sitemap_index.xml",
+      "/sitemap-index.xml",
+      "/sitemap.xml.gz"
+    ],
+    "robots": true
+  },
+  "first_party_paths": {
+    "_comment": "Fallbacks for a site whose sitemap is missing or thin. Ordered by how often each answered in the probe.",
+    "careers": [
+      "/careers",
+      "/jobs",
+      "/join-us"
+    ],
+    "blog": [
+      "/blog",
+      "/insights",
+      "/resources",
+      "/engineering"
+    ],
+    "case_studies": [
+      "/case-studies",
+      "/case-study",
+      "/our-work",
+      "/success-stories"
+    ],
+    "partners": [
+      "/partners",
+      "/partnerships",
+      "/alliances"
+    ],
+    "services": [
+      "/services",
+      "/what-we-do",
+      "/solutions",
+      "/capabilities"
+    ],
+    "about": [
+      "/about",
+      "/about-us",
+      "/company"
+    ],
+    "news": [
+      "/news",
+      "/newsroom",
+      "/press"
+    ]
+  },
+  "match": {
+    "_comment": "How a discovered URL is classified into a surface: substring match on the path.",
+    "case_studies": [
+      "/case-stud",
+      "/customer-stor",
+      "/success-stor",
+      "/our-work",
+      "/clients",
+      "/portfolio"
+    ],
+    "services": [
+      "/services",
+      "/what-we-do",
+      "/solutions",
+      "/capabilities",
+      "/consulting"
+    ],
+    "careers": [
+      "/career",
+      "/jobs",
+      "/vacanc",
+      "/join-us",
+      "/positions"
+    ],
+    "blog": [
+      "/blog",
+      "/insight",
+      "/resources",
+      "/engineering",
+      "/articles",
+      "/tech"
+    ],
+    "news": [
+      "/news",
+      "/press",
+      "/newsroom",
+      "/announcement"
+    ],
+    "partners": [
+      "/partner",
+      "/alliance",
+      "/ecosystem",
+      "/certification"
+    ]
+  },
+  "templates": {
+    "_comment": "URL-shaped surfaces, addressed by the first label of the domain.",
+    "registry": [
+      "https://partners.amazonaws.com/partners/{slug}",
+      "https://www.snowflake.com/partners/{slug}"
+    ]
+  },
+  "channels": {
+    "_comment": "Surfaces the engine already knows how to fetch, named here rather than re-implemented. The walk decides when to ask; discover.py knows how.",
+    "ats": [
+      "greenhouse",
+      "ashby",
+      "lever"
+    ],
+    "code": [
+      "github"
+    ],
+    "community": [
+      "hn",
+      "reddit",
+      "stackexchange",
+      "devto"
+    ]
+  },
+  "ats": {
+    "_comment": "Applicant-tracking boards are only readable through their JSON APIs. The HTML boards lie: jobs.ashbyhq.com answers HTTP 200 for a slug that does not exist, so a status check reports 'board found' for every company forever, and apply.workable.com serves a named board page for accounts with zero postings. One company in eight in the probe had a board at all, which is why hiring is evidence a lane asks for, never evidence a lane assumes.",
+    "greenhouse": "https://boards-api.greenhouse.io/v1/boards/{slug}/jobs?content=true",
+    "ashby": "https://api.ashbyhq.com/posting-api/job-board/{slug}",
+    "lever": "https://api.lever.co/v0/postings/{slug}?mode=json"
+  },
+  "removed": {
+    "_comment": "Surfaces that were in the guess-list and are not any more, with the reason they went. Kept as a record so nobody re-adds them from memory.",
+    "/customers": "404 on 8 of 8 domains, each returning that domain's own error template.",
+    "jobs.lever.co/<slug> (HTML board)": "404 on 8 of 8, and the missing-slug baseline is 404 too. The JSON API is the readable form and is kept.",
+    "boards.greenhouse.io/<slug> (HTML board)": "The board host moved to job-boards.greenhouse.io. The JSON API is kept.",
+    "clutch.co/profile/<slug>": "HTTP 403 on 8 of 8 domains, flat, with no challenge page. A surface that never answers is not a source.",
+    "g2.com/products/<slug>/reviews": "HTTP 403 on 8 of 8 domains. Same."
+  },
+  "vendor_stories": {
+    "_comment": "Independent prose about an entity, published by the vendor it works with — and, now that the review directories refuse automated access, the half of the tier-1 evidence gate that review sites used to supply. Enumerated rather than searched: walk each vendor's sitemap index one level, keep the story paths, fetch the pages, and let attribution file each story under the entity it names.",
+    "vendors": {
+      "snowflake": {
+        "sitemap": "https://www.snowflake.com/sitemap_index.xml",
+        "story_paths": [
+          "/customers/",
+          "/case-studies/"
+        ]
+      },
+      "databricks": {
+        "sitemap": "https://www.databricks.com/en-customer-assets/sitemap/sitemap-index.xml",
+        "story_paths": [
+          "/customers/",
+          "/customer-assets/"
+        ]
+      },
+      "elastic": {
+        "sitemap": "https://www.elastic.co/sitemap.xml",
+        "story_paths": [
+          "/customers"
+        ]
+      },
+      "datadog": {
+        "sitemap": "https://www.datadoghq.com/sitemap.xml",
+        "story_paths": [
+          "/customers",
+          "/case-studies"
+        ]
+      },
+      "mongodb": {
+        "sitemap": "https://www.mongodb.com/sitemap.xml",
+        "story_paths": [
+          "/customers",
+          "/case-studies"
+        ]
+      },
+      "aws": {
+        "hub": "https://aws.amazon.com/partners/success/",
+        "story_path_prefix": "/partners/success/",
+        "slug_form": "<customer>-<partner>"
+      }
+    }
+  }
+}

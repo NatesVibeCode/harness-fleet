@@ -30,11 +30,34 @@ from harness_fleet.partner_sourcing import (
 # Plan
 # ---------------------------------------------------------------------------
 
-def test_packaged_plan_loads_and_has_both_stages():
+def test_packaged_plan_holds_the_product_and_the_surfaces_are_shared():
+    """What is specific to this product is its queries; where evidence lives is not.
+
+    The enrich and vendor-story blocks moved to the shared surface plan the day
+    every lane started walking the same surfaces — a second copy here is a
+    second thing to keep true.
+    """
     plan = load_plan()
     assert plan["schema"] == "partner_sources_v1"
-    assert set(plan["stages"]) >= {"find", "enrich"}
+    assert set(plan["stages"]) >= {"find"}
     assert plan["evidence_rules"]["attribution"]
+
+    from harness_fleet.enrich import load_surfaces
+
+    surfaces = load_surfaces()
+    assert surfaces["schema"] == "source_surfaces_v1"
+    assert set(surfaces) >= {
+        "discovery", "first_party_paths", "match", "templates", "channels", "ats", "vendor_stories",
+    }
+    assert "/sitemap.xml" in surfaces["discovery"]["paths"], "the surface that answers everywhere"
+    assert surfaces["ats"]["greenhouse"].endswith("jobs?content=true"), "the API, not the HTML board"
+    # A surface that answered 403 on every domain probed is not fetchable; the
+    # data file records why it went rather than leaving a silent hole.
+    fetchable = str(surfaces.get("templates")) + str(surfaces.get("first_party_paths"))
+    assert "clutch.co" not in fetchable and "g2.com" not in fetchable
+    assert "clutch.co" in str(surfaces.get("removed")), "recorded, not forgotten"
+    assert surfaces["vendor_stories"]["vendors"], "the vendor hubs every lane can read"
+    assert "/case-studies" in surfaces["first_party_paths"]["case_studies"]
 
 
 def test_load_plan_rejects_a_plan_without_stages(tmp_path):
@@ -78,23 +101,20 @@ def test_find_queries_skips_templates_that_need_an_absent_value():
 
 
 def test_enrich_urls_expands_domain_slug_and_origin():
-    plan = {
-        "stages": {
-            "enrich": {
-                "first_party": {"crawl": ["/services", "/case-studies", "https://absolute.example/x"]},
-                "ats": {"probe": ["https://boards.greenhouse.io/{slug}", "https://jobs.ashbyhq.com/{slug}"]},
-                "third_party": {"urls": ["https://www.g2.com/products/{slug}/reviews"]},
-            }
-        }
-    }
-    urls = enrich_urls(plan, "Trace3.com")
-    assert urls["first_party"] == [
-        "https://trace3.com/services",
-        "https://trace3.com/case-studies",
-        "https://absolute.example/x",
-    ]
-    assert "https://boards.greenhouse.io/trace3" in urls["ats"]
-    assert urls["third_party"] == ["https://www.g2.com/products/trace3/reviews"]
+    """The URLs come from the shared surface plan, addressed by slug."""
+    urls = enrich_urls(None, "Trace3.com")
+    assert "https://trace3.com/services" in urls["first_party"]
+    assert "https://trace3.com/case-studies" in urls["first_party"]
+    # Hiring boards are only readable through their JSON APIs: the HTML hosts
+    # answer 200 for a slug that does not exist.
+    assert "https://boards-api.greenhouse.io/v1/boards/trace3/jobs?content=true" in urls["ats"]
+    assert "https://api.ashbyhq.com/posting-api/job-board/trace3" in urls["ats"]
+    assert "https://partners.amazonaws.com/partners/trace3" in urls["third_party"]
+
+    from harness_fleet.enrich import surface_urls
+
+    assert surface_urls("registry", "trace3.com")[0] == "https://partners.amazonaws.com/partners/trace3"
+    assert surface_urls("about", "trace3.com")[0] == "https://trace3.com/about"
 
 
 # ---------------------------------------------------------------------------
@@ -205,7 +225,8 @@ def test_enrich_rejects_a_partner_with_no_delivery_evidence(monkeypatch):
     """A dossier is the output of filtering: a mention that never says the firm
     delivers work is not enough to write one."""
     plan = {"stages": {"enrich": {"web": {"queries": ['"{domain}"']}}}}
-    monkeypatch.setattr(partner_sourcing, "crawl_site", lambda *a, **k: ([], []))
+    _patch_crawl(monkeypatch, result=([], []))
+    _offline_walk(monkeypatch)
     _patch_search(monkeypatch, {'"trace3.com"': [
         SearchHit(url="https://news.ycombinator.com/item?id=7", title="", snippet="Great team, highly recommend", backend="hn"),
     ]})
@@ -299,7 +320,59 @@ def _patch_fetch(monkeypatch, pages):
             raise RuntimeError(f"HTTP 404 for {url}")
         return RawRecord(text=pages[url], source_uri=url, title=url)
 
+    # This module fetches its search hits; the shared surface walk fetches from
+    # discover. Patch both so a test says which URLs may be fetched, not which
+    # module happened to look them up.
+    from harness_fleet import discover
+
     monkeypatch.setattr(partner_sourcing, "fetch_text", fake_fetch)
+    monkeypatch.setattr(discover, "fetch_text", fake_fetch)
+
+
+def _offline_walk(monkeypatch, *, pages=None, sitemap_urls=(), greenhouse=None, community=None):
+    """Make the whole surface walk offline, and say what it may find.
+
+    The walk reaches for a sitemap, then channels the engine owns (a hiring
+    board, a code host, community search). A test that patches only the fetcher
+    still talks to the network, so every entry point is stubbed here.
+    """
+    from harness_fleet import discover
+
+    pages = pages or {}
+    monkeypatch.setattr(
+        discover, "discover_sitemap_url",
+        lambda site, **kw: f"{site.rstrip('/')}/sitemap.xml" if sitemap_urls else "",
+    )
+    monkeypatch.setattr(
+        discover, "fetch_sitemap_entries",
+        lambda url, **kw: [(u, None) for u in sitemap_urls],
+    )
+    monkeypatch.setattr(discover, "fetch_github_org", lambda org, **kw: ([], []))
+    monkeypatch.setattr(discover, "fetch_greenhouse_board", lambda slug, **kw: list(greenhouse or []))
+    monkeypatch.setattr(discover, "fetch_ashby_org", lambda slug, **kw: [])
+    monkeypatch.setattr(discover, "fetch_lever_org", lambda slug, **kw: [])
+    monkeypatch.setattr(discover, "web_search", lambda query, **kw: list(community or []))
+
+    # The vendor-story half of the walk reads real vendor sitemaps. Left
+    # unstubbed it makes every enrich test a 15-second network call that passes
+    # or fails on someone else's uptime.
+    from harness_fleet import enrich
+
+    def _offline_markup(url, **kw):
+        raise RuntimeError(f"offline: {url} not reached in tests")
+
+    monkeypatch.setattr(enrich, "fetch_markup", _offline_markup)
+
+
+def _patch_crawl(monkeypatch, result=None, exc=None):
+    from harness_fleet import discover
+
+    def fake_crawl(url, **kwargs):
+        if exc is not None:
+            raise exc
+        return result if result is not None else ([], [])
+
+    monkeypatch.setattr(discover, "crawl_site", fake_crawl)
 
 
 def test_find_partners_keeps_attributed_hits_and_drops_the_rest(monkeypatch):
@@ -401,33 +474,34 @@ def test_find_partners_survives_a_backend_that_raises(monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_enrich_partner_bundles_first_party_ats_and_mentions(monkeypatch):
-    plan = {
-        "stages": {
-            "enrich": {
-                "first_party": {"crawl": ["/services", "/case-studies"]},
-                "ats": {"probe": ["https://boards.greenhouse.io/{slug}"]},
-                "third_party": {"urls": ["https://www.g2.com/products/{slug}/reviews"]},
-                "web": {"queries": ['"{domain}" review']},
-            }
-        }
+    plan = {"stages": {"find": {}}}
+    pages = {
+        "https://trace3.com/services": "Trace3 provides Kafka delivery",
+        "https://trace3.com/case-studies/kafka": "Trace3 case study for a bank",
+        # No surface asks for this path, so the walk must not spend a fetch on it.
+        "https://trace3.com/webinar-signup": "unrelated page",
     }
-    crawled = [
-        RawRecord(text="Trace3 provides Kafka delivery", source_uri="https://trace3.com/services"),
-        RawRecord(text="Trace3 case study for a bank", source_uri="https://trace3.com/case-studies/kafka"),
-        RawRecord(text="unrelated page", source_uri="https://trace3.com/blog/x"),
-    ]
-    monkeypatch.setattr(partner_sourcing, "crawl_site",
-                        lambda url, **kw: (crawled, [{"url": "https://trace3.com/404", "reason": "404"}]))
+    _offline_walk(
+        monkeypatch,
+        pages=pages,
+        sitemap_urls=list(pages),
+        greenhouse=[RawRecord(
+            text="Trace3 is hiring a Kafka solutions architect",
+            source_uri="https://boards-api.greenhouse.io/v1/boards/trace3/jobs",
+        )],
+    )
     _patch_fetch(monkeypatch, {
-        "https://boards.greenhouse.io/trace3": "Trace3 is hiring a Kafka solutions architect",
-        "https://www.g2.com/products/trace3/reviews": "Trace3 review: strong delivery team",
+        "https://trace3.com/services": "Trace3 provides Kafka delivery",
+        "https://trace3.com/case-studies/kafka": "Trace3 case study for a bank",
         "https://news.ycombinator.com/item?id=3": "Trace3 did our Kafka rollout",
         # Fetches fine, but the page is about tracing, not about Trace3.
         "https://medium.com/x": "distributed tracing for kafka streams in production",
     })
     _patch_search(monkeypatch, {
         '"trace3.com"': [SearchHit(url="https://news.ycombinator.com/item?id=3", title="", snippet="Trace3 did our Kafka rollout", backend="hn")],
-        '"trace3.com" review': [SearchHit(url="https://medium.com/x", title="", snippet="tracing kafka streams", backend="ddgs")],
+        '"trace3.com" (funding OR acquisition OR award)': [
+            SearchHit(url="https://medium.com/x", title="", snippet="tracing kafka streams", backend="ddgs"),
+        ],
     })
 
     items, report = enrich_partner("trace3.com", plan=plan, backends=["hn", "ddgs"], delay=0.0, max_pages=5)
@@ -435,23 +509,31 @@ def test_enrich_partner_bundles_first_party_ats_and_mentions(monkeypatch):
     assert [item.item_id for item in items] == ["trace3.com"]
     text = items[0].text
     assert "Trace3 provides Kafka delivery" in text
-    # The blog page is not a plan hint, so only the hinted pages are kept.
+    # A page on no wanted surface is not kept.
     assert "unrelated page" not in text
+    # The hiring board arrives through its API, not as an HTML page: the HTML
+    # hosts answer 200 for a slug that does not exist, so they prove nothing.
     assert "hiring a Kafka solutions architect" in text
-    assert "Trace3 review" in text
     assert "Trace3 did our Kafka rollout" in text
     assert "tracing kafka streams" not in text
     assert report.stage == "enrich"
     assert report.dropped_unattributed == 1
     assert report.kept == 1
     assert report.candidates == ["trace3.com"]
-    assert any(s["url"] == "https://trace3.com/404" for s in report.skipped)
+    # The walk is no longer plan-driven, so the crawl-failure note is gone; what
+    # it must still do is carry a source that returned nothing.
+    assert report.skipped, "a surface that returned nothing is reported"
 
 
 def test_enrich_partner_can_skip_fetching_entirely(monkeypatch):
-    plan = {"stages": {"enrich": {"web": {"queries": ['"{domain}"']}}}}
-    monkeypatch.setattr(partner_sourcing, "crawl_site",
+    from harness_fleet import discover
+
+    plan = {"stages": {"find": {}}}
+    _offline_walk(monkeypatch)
+    monkeypatch.setattr(discover, "crawl_site",
                         lambda *a, **k: pytest.fail("--no-fetch must not crawl"))
+    monkeypatch.setattr(discover, "fetch_text",
+                        lambda *a, **k: pytest.fail("--no-fetch must not fetch"))
     monkeypatch.setattr(partner_sourcing, "fetch_text",
                         lambda *a, **k: pytest.fail("--no-fetch must not fetch"))
     _patch_search(monkeypatch, {'"trace3.com"': [
@@ -463,12 +545,9 @@ def test_enrich_partner_can_skip_fetching_entirely(monkeypatch):
 
 
 def test_enrich_partner_reports_crawl_failure_and_still_searches(monkeypatch):
-    plan = {"stages": {"enrich": {"web": {"queries": ['"{domain}"']}}}}
-
-    def boom(*args, **kwargs):
-        raise RuntimeError("connection refused")
-
-    monkeypatch.setattr(partner_sourcing, "crawl_site", boom)
+    plan = {"stages": {"find": {}}}
+    _patch_crawl(monkeypatch, exc=RuntimeError("connection refused"))
+    _offline_walk(monkeypatch)
     _patch_fetch(monkeypatch, {
         "https://news.ycombinator.com/item?id=5": "Trace3 is an independent consulting partner",
     })
