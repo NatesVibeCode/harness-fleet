@@ -13,7 +13,7 @@ confidence, export, then `lane report` to see what it produced). This file only
 carries what is specific to the `account` lane:
 
 - **Lane config:** `lanes/account.json` — seeds, queries, sources, filters.
-- **Preset:** `account-research` · **Bar:** `tier_2` · **Output:** top 25.
+- **Preset:** `account-research` · **Bar:** the tier ladder, floor `tier_3` (a record clearing tier_3, tier_2 or tier_1 has met it) · **Output:** top 25.
 - **Looks for:** companies doing the work, and companies hiring for it.
 
 Run it with `harness-fleet research --lane account`, or over MCP by passing
