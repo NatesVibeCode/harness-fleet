@@ -405,10 +405,14 @@ def entity_key_for(source_uri: str, text: str = "", metadata: dict[str, Any] | N
         named = [domain for domain in linked_domains(text) if not is_source_host(domain)]
         if named:
             return named[0]
-        # A platform page (YouTube, Medium, LinkedIn) that names nobody is not an
-        # entity: filing it under the platform turned a copyright line into an
-        # "account". Vendor registries and job boards keep their own key, because
-        # a story there is evidence about somebody even when unnamed.
-        if any(marker in key for marker in PLATFORM_HOSTS):
+        # A page on somebody else's host that names nobody is not an entity.
+        # Filing it under the host turned a copyright line into an "account" on
+        # YouTube, and did the same for the platform vendors: a Snowflake blog
+        # post naming no customer became a candidate called snowflake.com, which
+        # is a competitor's homepage — never a target account, and never a
+        # system integrator. A vendor's own site is where the story *lives*; what
+        # it names is the entity, and when it names nobody the page is about
+        # nobody.
+        if any(marker in key for marker in (*PLATFORM_HOSTS, *REGISTRY_DOMAINS)):
             return ""
     return key or "unknown_entity"

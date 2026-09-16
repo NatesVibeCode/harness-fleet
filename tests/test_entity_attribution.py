@@ -148,3 +148,24 @@ def test_a_repository_is_not_an_account():
         "https://github.com/Yuvraj1507/-BankingSystem-Microservices-Kafka"
     ) == "github.com"
     assert canonicalize_entity_id("https://medium.com/@someone/some-post") == "medium.com"
+
+
+def test_a_platform_vendor_is_never_the_entity():
+    """Snowflake's blog is not a target account, and not a system integrator.
+
+    A vendor's own site is where a story *lives*: what the story names is the
+    entity, and when it names nobody the page is about nobody. Filing it under
+    the host made a vendor's product post a candidate called snowflake.com —
+    which is a competitor's homepage for an account lane and the wrong
+    population for a partner lane.
+    """
+    assert entity_key_for("https://www.snowflake.com/en/blog/whats-new/", "product news") == ""
+    assert entity_key_for("https://www.databricks.com/blog/2026/thing", "a launch post") == ""
+    assert entity_key_for("https://www.elastic.co/blog/xyz", "release notes") == ""
+
+    # What the story names is still the entity, and a story naming the customer
+    # in its own text keeps that customer.
+    assert entity_key_for(
+        "https://www.snowflake.com/en/customers/acme-bank/",
+        "Acme Bank moved its ledger to the platform. See https://acmebank.com/case-study",
+    ) == "acmebank.com"
