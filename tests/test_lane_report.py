@@ -496,3 +496,25 @@ def test_an_explicit_lane_still_wins_over_the_recorded_one(tmp_path, monkeypatch
     payload = json.loads(capsys.readouterr().out)
     assert payload["lane"] == "account"
     assert "delivery_proof" in payload["tier_bar"], "the explicit lane's bar, not the recorded one's"
+
+
+# --- lane list ---------------------------------------------------------------
+
+def test_lane_list_names_every_shipped_lane_and_its_bar(tmp_path, monkeypatch, capsys):
+    """Discoverability: nothing else in the CLI says which lanes exist.
+
+    The MCP surface has a tool for this and the CLI did not, so a person had to
+    read the package or guess a name.
+    """
+    parser = cli.build_parser()
+    args = parser.parse_args(["lane", "list", "--json", "--workspace-root", str(tmp_path)])
+    cli.cmd_lane(args)
+    payload = json.loads(capsys.readouterr().out)
+    lanes = {row["name"]: row for row in payload["lanes"]}
+    assert {"account", "career", "partner"} <= set(lanes)
+    assert lanes["career"]["tier"] == ""
+    assert lanes["career"]["require_kinds"] == ["delivery_hiring"]
+    assert lanes["account"]["tier"] == "tier_3"
+    for row in lanes.values():
+        assert row["source"] in {"shipped", "workspace"}
+        assert row["preset"], row

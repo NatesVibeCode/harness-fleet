@@ -1381,6 +1381,23 @@ class LaneSummary(ClosedModel):
     source: str = "shipped"
 
 
+class LaneAvailability(ClosedModel):
+    """One lane this workspace can run, with where it came from."""
+
+    name: str
+    description: str = ""
+    preset: str = ""
+    #: The ladder floor, or empty when the lane gates on ``require_kinds``.
+    tier: str = ""
+    require_kinds: list[str] = []
+    queries: int = 0
+    backends: list[str] = []
+    top: int = 0
+    source: str = "shipped"
+    #: The bar one line, as the CLI prints it: a floor or a kind list.
+    bar: str = ""
+
+
 class LanesReport(ClosedModel):
     """What this install can be asked to do, without installing anything else."""
 

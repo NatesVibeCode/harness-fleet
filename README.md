@@ -445,6 +445,7 @@ mechanism. Three ship in the package:
   A lane's `tier` is the *floor*: a record clearing any tier at or above it has met the
   bar. A lane whose rows are pages rather than companies sets `"tier": null` and names
   the evidence it does demand in `require_kinds`.
+- **Find them with `harness-fleet lane list`** (add `--json` for scripts), which prints each lane's preset, evidence bar and where it came from.
 - **Workspace overrides shipped.** A file at `<workspace>/lanes/<name>.json` replaces
   the packaged lane of the same name, and the run records which one it used.
   `harness-fleet lane report <run_id> --lane <name>` measures the result.
@@ -502,6 +503,7 @@ Free routes are used by default. A paid route approved in an earlier session mus
 | `settings` | Print, or `--clear`, the harness/model selection the studio saved (`run --from-studio` uses it) |
 | `studio` | Serve the localhost settings companion (pick harnesses and models; saves the selection to SQLite) |
 | `research` | One command from a question to a ranked deliverable: discover → bundle per entity → score → export (`--lane`, `--query`, `--backend`, `--max-results`, `--min-chars`, `--top`) |
+| `lane list` | The lanes this install can run: preset, evidence bar, query count, and whether the lane came from the package or your workspace |
 | `lane report` | Measure a finished run against its lane: yield per source, records meeting the evidence bar, claims carried vs refused with reasons, a re-fetched truth sample, cost (`RUN_ID`, `--lane`, `--sample`, `--freeze`) |
 | `sources` | The learned source registry: `list`, `propose`, `promote`, `demote`, `channels` — which hosts count as evidence, and why |
 | `discover` | Broad web search (`ddgs`, self-hosted SearXNG, HN Algolia, YC, Reddit, Stack Exchange, Discourse, Lobsters, Lemmy, Dev.to) to an accounts file |

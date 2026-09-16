@@ -21,6 +21,7 @@ file, not a different tool:
 | `partner` | implementation partners from vendor stories | `partner-research` | tier_1 |
 
 ```bash
+harness-fleet lane list                    # the lanes this install can run
 harness-fleet research --lane career          # the whole pipeline for one lane
 harness-fleet lane report <run_id> --lane career   # what it actually produced
 ```

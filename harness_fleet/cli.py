@@ -2059,10 +2059,55 @@ def cmd_sources(args: argparse.Namespace) -> None:
     )
 
 
-def cmd_lane(args: argparse.Namespace) -> None:
-    """Measure a finished run: the five numbers a lane is tuned by.
+def _cmd_lane_list(args: argparse.Namespace) -> None:
+    """The lanes this install can run, with where each one came from."""
+    from .lanes import lane_source, load_available_lanes
+    from .models import LaneAvailability
 
-    Read-only by construction — this reports what a run produced and never
+    workspace = Path(getattr(args, "workspace_root", ".")).expanduser().resolve()
+    try:
+        available = load_available_lanes(workspace)
+    except Exception as exc:
+        raise ValueError(str(exc)) from exc
+    rows = []
+    for lane in sorted(available.values(), key=lambda item: item.name):
+        bar = (
+            f"tier floor {lane.tier}"
+            if lane.tier
+            else f"require_kinds {', '.join(lane.require_kinds) or 'none'}"
+        )
+        rows.append(LaneAvailability(
+            name=lane.name, description=lane.description, preset=lane.preset,
+            tier=lane.tier or "", require_kinds=list(lane.require_kinds),
+            queries=len(lane.queries), backends=list(lane.backends), top=lane.top,
+            source=lane_source(workspace, lane.name), bar=bar,
+        ))
+    lines = ["Lanes available here:"]
+    for row in rows:
+        plural = "query" if row.queries == 1 else "queries"
+        lines.append(
+            f"  {row.name:10} {row.source:9} {row.preset:18} {row.bar:34} "
+            f"{row.queries} {plural} -> top {row.top}"
+        )
+        if row.description:
+            lines.append(f"             {row.description[:110]}")
+    lines.append("Run one with: harness-fleet research --lane <name>")
+    lines.append("Measure one with: harness-fleet lane report <run_id>")
+    _emit(
+        {
+            "workspace_root": str(workspace),
+            "lanes_dir": str(workspace / "lanes"),
+            "lanes": [row.model_dump(mode="json") for row in rows],
+        },
+        getattr(args, "json", False),
+        "\n".join(lines),
+    )
+
+
+def cmd_lane(args: argparse.Namespace) -> None:
+    """List the lanes this install can run, or measure a finished run.
+
+    Read-only by construction — the report says what a run produced and never
     recomputes a score — so it can be run against any run, before and after a
     configuration change, and compared on a frozen sample.
     """
@@ -2070,8 +2115,11 @@ def cmd_lane(args: argparse.Namespace) -> None:
 
     workspace = Path(getattr(args, "workspace_root", ".")).expanduser().resolve()
     action = getattr(args, "lane_command", "report") or "report"
+    if action == "list":
+        _cmd_lane_list(args)
+        return
     if action != "report":
-        raise ValueError(f"unknown lane action '{action}' (only 'report' is defined)")
+        raise ValueError(f"unknown lane action '{action}' (have: list, report)")
     run_id = str(getattr(args, "run_id", "") or "").strip()
     if not run_id:
         raise ValueError("lane report needs a run id: `lane report <run_id>`")
@@ -2633,8 +2681,11 @@ def build_parser() -> argparse.ArgumentParser:
     _common(test)
 
     run = commands.add_parser("run", help="Create and execute a resumable run")
-    lane = commands.add_parser("lane", help="Measure a lane: yield, coverage, support, truth sample, cost")
+    lane = commands.add_parser("lane", help="List the lanes this install can run, or measure one")
     lane_sub = lane.add_subparsers(dest="lane_command", required=True)
+    lane_list = lane_sub.add_parser("list", help="The lanes available here, and where each came from")
+    lane_list.add_argument("--workspace-root", default=".", help="Workspace root for relative paths")
+    _common(lane_list)
     lane_report = lane_sub.add_parser("report", help="The five measurements for a finished run")
     lane_report.add_argument("run_id", help="Run to measure")
     lane_report.add_argument("--lane", help="Lane whose bar and filters to judge against (lanes/<name>.json)")
