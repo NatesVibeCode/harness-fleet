@@ -89,6 +89,18 @@ def _yield_measurement(
     captured: dict[str, int] = {}
     for item in items.values():
         metadata = getattr(item, "metadata", None) or {}
+        # A bundled dossier is one row per entity, so its own metadata names
+        # every surface that contributed. Reading only the row-level backend is
+        # how a run's yield collapsed to "unknown" after bundling.
+        contributing = metadata.get("source_backends")
+        if isinstance(contributing, str):
+            contributing = [part for part in contributing.split(",") if part.strip()]
+        if isinstance(contributing, (list, tuple)) and contributing:
+            for source in contributing:
+                name = str(source).strip()
+                if name:
+                    captured[name] = captured.get(name, 0) + 1
+            continue
         source = str(
             metadata.get("discovery_backend")
             or metadata.get("backend")
@@ -157,7 +169,14 @@ def _yield_measurement(
 def _coverage_measurement(
     records: list[Any], items: dict[str, Any], *, bar_kinds: tuple[str, ...]
 ) -> tuple[list[LaneCoverage], float, dict[str, int]]:
-    """Kinds per entity, the bar each clears, and the kinds seen overall."""
+    """Kinds per entity, the bar each clears, and the kinds seen overall.
+
+    A tier's minimums are the evidence *that tier* claims, and the tiers are
+    nested: a record clearing tier_2 has already cleared tier_3. A lane that
+    declares tier_3 as its floor is therefore met by any record that clears
+    tier_3, tier_2 or tier_1 — asking for every kind in the floor's tuple at
+    once would report 0% for a run whose records each clear a real tier.
+    """
     entries: list[LaneCoverage] = []
     meeting = 0
     kind_totals: dict[str, int] = {}
@@ -172,10 +191,12 @@ def _coverage_measurement(
         claimed_tier = claims.get("fit_tier") if isinstance(claims.get("fit_tier"), str) else None
         # The lane's bar decides compliance; without a lane the entity is judged
         # against the tier it claims, which is the honest default.
-        required = bar_kinds or (
-            contracts.TIER_MINIMUMS.get(claimed_tier, ()) if claimed_tier else ()
-        )
-        missing = [kind for kind in required if not kinds.get(kind)]
+        if bar_kinds:
+            required = _nearest_tier_bar(bar_kinds, kinds)
+            missing = [kind for kind in required if not kinds.get(kind)]
+        else:
+            required = contracts.TIER_MINIMUMS.get(claimed_tier, ()) if claimed_tier else ()
+            missing = [kind for kind in required if not kinds.get(kind)]
         if not missing:
             meeting += 1
         for kind in present:
@@ -185,6 +206,31 @@ def _coverage_measurement(
         ))
     share = (meeting / len(records)) if records else 0.0
     return entries, round(share, 4), kind_totals
+
+
+def _nearest_tier_bar(bar_kinds: tuple[str, ...], kinds: dict[str, Any]) -> tuple[str, ...]:
+    """The tier requirement to measure one record against, given a lane floor.
+
+    Tiers nest, so a lane declaring ``tier_3`` as its floor is met by anything
+    that clears tier_3, tier_2 or tier_1: the lane's bar is the *lowest* tier it
+    will accept, not a union of every kind. Measuring a record against its
+    floor's tuple alone reported 0% for a run whose records each cleared a real
+    tier, and named a gap nobody could close.
+
+    Returns the lane's own requirement when nothing at or above the floor is
+    met (the kinds that would promote it), and an empty tuple when the record
+    already clears some tier at or above the floor.
+    """
+    from .contracts import TIER_MINIMUMS
+
+    candidates = sorted({tuple(required) for required in TIER_MINIMUMS.values()}, key=len)
+    if tuple(bar_kinds) not in candidates:
+        return tuple(bar_kinds)
+    accepted = [required for required in candidates if len(required) >= len(bar_kinds)]
+    for required in accepted:  # shortest first: clearing any of them is enough
+        if all(kinds.get(kind) for kind in required):
+            return ()
+    return tuple(bar_kinds)
 
 
 def _support_measurement(records: list[Any], items: dict[str, Any], task: Any) -> tuple[list[LaneSupport], int, int]:

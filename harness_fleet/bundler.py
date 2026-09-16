@@ -99,11 +99,23 @@ def bundle_records(
             "",
         ]
         all_uris: list[str] = []
+        # Which surface each contributing source came from. A dossier is one row
+        # per entity, so without this the yield of a run collapses to "unknown"
+        # the moment it is bundled — the one place a person looks to see whether
+        # a search surface is pulling its weight.
+        source_backends: list[str] = []
 
         for i, hit in enumerate(hits, 1):
             cat = hit["source_category"].upper()
             uri_text = hit["source_uri"] or f"source_{i}"
             all_uris.append(uri_text)
+            backend = str(
+                (hit.get("metadata") or {}).get("discovery_backend")
+                or (hit.get("metadata") or {}).get("backend")
+                or ""
+            ).strip()
+            if backend and backend not in source_backends:
+                source_backends.append(backend)
             sections.append(
                 f"=== SECTION: {cat} (URI: {uri_text}) ===\n"
                 f"{hit['text']}\n"
@@ -123,6 +135,7 @@ def bundle_records(
                     "source_categories": [str(c) for c in categories],
                     "category_count": len(categories),
                     "source_uris": [str(u) for u in all_uris],
+                    "source_backends": [str(name) for name in source_backends],
                 },
             )
         )
@@ -170,7 +183,10 @@ def export_bundled_csv(
 
     with out.open("w", encoding="utf-8", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(["item_id", "text", "source_uri", "source_count", "source_categories"])
+        writer.writerow([
+            "item_id", "text", "source_uri", "source_count", "source_categories",
+            "source_backends", "source_uris",
+        ])
         for item in bundled_items:
             meta = item.metadata or {}
             writer.writerow([
@@ -179,5 +195,7 @@ def export_bundled_csv(
                 item.source_uri or "",
                 meta.get("source_count", 1),
                 ",".join(str(c) for c in _string_list(meta.get("source_categories"))),
+                ",".join(_string_list(meta.get("source_backends"))),
+                " ".join(_string_list(meta.get("source_uris"))),
             ])
     return out

@@ -157,6 +157,44 @@ def test_coverage_without_a_lane_judges_the_claimed_tier(tmp_path, monkeypatch):
     assert entry.claimed_tier in {"tier_1", "tier_2", "tier_3", "unfit", None}
 
 
+def test_a_lane_floor_accepts_any_tier_at_or_above_it():
+    """Tiers nest, so a tier_3 floor is met by a record that clears tier_2.
+
+    Reporting the floor's own tuple as a mandatory union showed 0% for a run
+    whose records each cleared a real tier, and named a gap nobody could close.
+    """
+    from harness_fleet.lane_report import _nearest_tier_bar
+
+    tier_2_only = {"delivery_proof": True, "stack_delivery": True, "independent_validation": False}
+    assert _nearest_tier_bar(("stack_delivery",), tier_2_only) == ()
+    assert _nearest_tier_bar(("delivery_proof", "stack_delivery"), tier_2_only) == ()
+    assert _nearest_tier_bar(("delivery_proof", "independent_validation", "stack_delivery"), tier_2_only) == (
+        "delivery_proof", "independent_validation", "stack_delivery",
+    )
+
+    tier_3_only = {"delivery_proof": False, "stack_delivery": True, "independent_validation": False}
+    assert _nearest_tier_bar(("stack_delivery",), tier_3_only) == (), "a tier_3 lane is met by tier_3"
+    assert _nearest_tier_bar(("delivery_proof", "stack_delivery"), tier_3_only) == (
+        "delivery_proof", "stack_delivery",
+    ), "a tier_2 lane is not met by tier_3 evidence, and says which kind is missing"
+
+    nothing = {"delivery_proof": False, "stack_delivery": False, "independent_validation": False}
+    assert _nearest_tier_bar(("stack_delivery",), nothing) == ("stack_delivery",)
+
+
+def test_a_record_clearing_a_higher_tier_counts_toward_the_floor(tmp_path, monkeypatch):
+    """The share the report prints is the share the lane would actually accept."""
+    db, workspace = _offline_run(tmp_path, monkeypatch)
+    lane = Lane(name="career", tier="tier_3")
+    report = build_lane_report(HarnessStore(db), "lane-run", workspace_root=workspace, lane=lane, sample=0)
+    entry = report.coverage[0]
+    if entry.missing:
+        assert report.coverage_meeting_bar == 0.0
+    else:
+        assert report.coverage_meeting_bar == 1.0
+        assert set(entry.kinds) >= {"stack_delivery"}
+
+
 # --- 3. support quality -----------------------------------------------------
 
 def test_support_quality_counts_carried_and_refused_with_the_engines_reasons(tmp_path, monkeypatch):
@@ -375,3 +413,40 @@ def test_yield_surfaces_why_a_source_returned_nothing(tmp_path, monkeypatch):
     report = build_lane_report(HarnessStore(db), "lane-run", workspace_root=workspace, sample=0)
     assert any("HTTP 403" in note and "hn" in note for note in report.notes), report.notes
     assert any(entry.source == "hn" and entry.skipped == 3 for entry in report.yield_by_source)
+
+
+def test_a_bundled_dossier_keeps_the_surface_each_source_came_from(tmp_path):
+    """Yield must survive bundling, or every lane reports 'unknown'.
+
+    A dossier is one row per entity, so the row loses the per-source backend
+    unless the bundle carries it. Without this the answer to "which search
+    surface is pulling its weight" was always 'unknown'.
+    """
+    from harness_fleet.bundler import bundle_records, export_bundled_csv
+    from harness_fleet.lane_report import _load_input_items, _yield_measurement
+    from harness_fleet.models import InputItem
+
+    def item(iid: str, uri: str, backend: str, text: str) -> InputItem:
+        return InputItem(item_id=iid, text=text, source_uri=uri, title="t",
+                         metadata={"discovery_backend": backend, "evidence": "fetched"})
+
+    # Same entity, two surfaces: the dossier must name both. (In a real run the
+    # discovery stage has already replaced each item's id with its entity key,
+    # which is what groups them here.)
+    raw = [
+        item("acme.com", "https://acme.com/case-study", "ddgs",
+             "Acme implemented Kafka and cut latency 40 percent for its clients."),
+        item("acme.com", "https://acme.com/thread", "hn",
+             "Acme migrated its billing stack to Kafka last year, per the thread."),
+    ]
+    bundled = bundle_records(raw)
+    assert len(bundled) == 1, "one dossier per entity"
+    assert bundled[0].metadata["source_backends"] == ["ddgs", "hn"]
+
+    path = export_bundled_csv(bundled, tmp_path / "accounts.csv")
+    items = _load_input_items(path)
+    entries, _notes = _yield_measurement(
+        {"run_id": "r"}, items, run_id="r", runs_dir=tmp_path / "runs", channel_names=set()
+    )
+    by_source = {entry.source: entry.captured for entry in entries}
+    assert by_source == {"ddgs": 1, "hn": 1}, by_source

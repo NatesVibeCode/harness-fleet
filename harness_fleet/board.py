@@ -50,6 +50,24 @@ def _humanize(item_id: str) -> str:
     return words[:1].upper() + words[1:] if words else str(item_id)
 
 
+def _lane_from_report(runs_dir: Path, run_id: Any) -> str | None:
+    """The lane a run recorded for itself, from its own discovery report.
+
+    This is the authoritative answer: ``research --lane X`` writes the lane next
+    to the run, so the board names what the run was for instead of inferring a
+    product from a path or a task name.
+    """
+    if not run_id:
+        return None
+    report = runs_dir / str(run_id) / "discovery_report.json"
+    try:
+        payload = json.loads(report.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    lane = payload.get("lane") if isinstance(payload, dict) else None
+    return str(lane) if lane else None
+
+
 def _properties_map(task: Any, *path: str) -> dict[str, Any]:
     """The property map at ``path`` inside the task's claims schema.
 
@@ -292,6 +310,7 @@ def build_board_payload(
             "attempts_used": snapshot.get("attempts_used"),
             "input_path": snapshot.get("input_path"),
             "task": getattr(task, "name", None),
+            "lane": _lane_from_report(Path(runs_dir), snapshot.get("run_id")) if runs_dir else None,
             "task_revision": snapshot.get("task_revision_id"),
             "instructions": getattr(task, "instructions", None),
         },

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Partner pipeline</title>
+<title>Results board</title>
 <style>
   :root {
     --bg:#f5f6f8; --surface:#ffffff; --surface-2:#fafbfc; --surface-3:#f2f4f7;
@@ -222,7 +222,7 @@
     <div class="brand">
       <div class="brand-mark">HF</div>
       <div class="brand-text">
-        <div class="brand-title">Partner pipeline</div>
+        <div class="brand-title" id="brandTitle">Results board</div>
         <div class="brand-sub" id="runSub">loading…</div>
       </div>
     </div>
@@ -269,6 +269,16 @@
   var STATE = { payload:null, runs:[], view:"partners", query:"", tiers:new Set(), facets:{}, sort:{key:"score", dir:-1}, selected:null };
 
   var TIER_COLOR = { tier_1:"var(--ok)", tier_2:"var(--info)", tier_3:"var(--warn)", unfit:"var(--bad)" };
+
+  /* What this run's rows are called, taken from the run's own task name rather
+     than hardcoded to one product: a partner run shows partners, an account run
+     accounts, a career run roles. The board is a viewer for every task. */
+  var NOUNS = { partner:["Partner","Partners","Practice"], account:["Account","Accounts","Gap"], career:["Role","Roles","Role"] };
+  function recordNoun() {
+    var task = String(((STATE.payload || {}).run || {}).task || "").toLowerCase();
+    for (var key in NOUNS) { if (task.indexOf(key) === 0) return { one:NOUNS[key][0], many:NOUNS[key][1], detail:NOUNS[key][2] }; }
+    return { one:"Record", many:"Records", detail:"Detail" };
+  }
   var TIER_LABEL = { tier_1:"Tier 1", tier_2:"Tier 2", tier_3:"Tier 3", unfit:"Unfit" };
 
   function el(tag, attrs, kids) {
@@ -348,7 +358,7 @@
 
   /* ---------------- views ---------------- */
   var VIEWS = [
-    { id:"partners", label:"Partners" },
+    { id:"partners", label:"Records" },
     { id:"pipeline", label:"Pipeline" },
     { id:"scorecard", label:"Scorecard" },
     { id:"evidence", label:"Evidence" },
@@ -423,17 +433,17 @@
   function renderHeader() {
     var p = STATE.payload, s = p.stats;
     document.getElementById("main").appendChild(el("div", { class:"stats" }, [
-      statCard("Partners", String(s.records), s.scored + " scored · " + s.unscored + " unscored"),
+      statCard(recordNoun().many, String(s.records), s.scored + " scored · " + s.unscored + " unscored"),
       statCard("Average score", s.average_score === null ? "—" : String(s.average_score), "best " + (s.best_score === null ? "—" : s.best_score) + " / " + p.checklist_total),
       statCard("Tier 1 / 2", (s.tier_counts.tier_1 || 0) + " / " + (s.tier_counts.tier_2 || 0), (s.tier_counts.tier_3 || 0) + " tier 3 · " + (s.tier_counts.unfit || 0) + " unfit"),
       statCard("Evidence-capped tiers", String(s.tier_capped || 0), (s.lone_claims || 0) + " claim(s) stand alone"),
-      statCard("Verified quotes", String(s.quote_count), s.records_with_quotes + " of " + s.records + " partners cited"),
+      statCard("Verified quotes", String(s.quote_count), s.records_with_quotes + " of " + s.records + " " + recordNoun().many.toLowerCase() + " cited"),
       statCard("Route cost", "$" + Number(s.cost_reported || 0).toFixed(6), (s.routes || []).length + " price-verified route(s)"),
       statCard("Batches", s.batches_verified + "/" + s.batches_total, s.batches_failed ? s.batches_failed + " failed" : "all quotes verified")
     ]));
   }
 
-  /* ---------------- partners table ---------------- */
+  /* ---------------- records table ---------------- */
   function sortValue(partner, key) {
     if (key === "score") return partner.score;
     if (key === "id") return partner.id;
@@ -467,7 +477,7 @@
 
   function renderPartners() {
     var p = STATE.payload, main = document.getElementById("main");
-    var search = el("input", { type:"search", placeholder:"Search partner, practice, evidence…", value:STATE.query, "aria-label":"Search partners" });
+    var search = el("input", { type:"search", placeholder:"Search " + recordNoun().one.toLowerCase() + ", " + recordNoun().detail.toLowerCase() + ", evidence…", value:STATE.query, "aria-label":"Search rows" });
     search.addEventListener("input", function () {
       STATE.query = search.value;
       renderNav();
@@ -476,7 +486,7 @@
     });
     main.appendChild(el("section", { class:"section" }, [
       el("div", { class:"section-head" }, [
-        el("h2", { class:"section-title", text:"Qualified partners" }),
+        el("h2", { class:"section-title", text:"Ranked " + recordNoun().many.toLowerCase() }),
         el("span", { class:"section-sub", text:"ranked by score · click a row for the full dossier" })
       ]),
       el("div", { class:"toolbar" }, [
@@ -496,12 +506,12 @@
     clear(host);
     var rows = sortPartners(visiblePartners());
     var countNode = document.getElementById("rowCount");
-    if (countNode) countNode.textContent = rows.length + " of " + (p.partners || []).length + " partners";
+    if (countNode) countNode.textContent = rows.length + " of " + (p.partners || []).length + " " + recordNoun().many.toLowerCase();
 
     if (!rows.length) {
       host.appendChild(el("div", { class:"table-wrap" }, [
         el("div", { class:"state" }, [
-          el("strong", { text:"No partner matches these filters" }),
+          el("strong", { text:"No " + recordNoun().one.toLowerCase() + " matches these filters" }),
           el("span", { text:"Clear a filter or widen the search to see the rest of the run." })
         ])
       ]));
@@ -510,10 +520,10 @@
 
     // Most-consulted columns first; the long attribute tail scrolls horizontally.
     var head = el("tr", null, [
-      headerCell("Partner", "id", "sticky-col"),
+      headerCell(recordNoun().one, "id", "sticky-col"),
       headerCell("Score", "score"),
       el("th", { scope:"col", text:"Tier" }),
-      headerCell("Practice", "practice")
+      headerCell(recordNoun().detail, "practice")
     ]);
     (p.attributes || []).forEach(function (a) { head.appendChild(headerCell(a.label, a.key)); });
     head.appendChild(el("th", { scope:"col", text:"Evidence" }));
@@ -588,7 +598,7 @@
         ])
       ]);
       if (!cards.length) {
-        column.appendChild(el("div", { class:"kanban-empty", text:"No partner in this stage for the current filters." }));
+        column.appendChild(el("div", { class:"kanban-empty", text:"No " + recordNoun().one.toLowerCase() + " in this stage for the current filters." }));
       } else {
         cards.forEach(function (partner) {
           column.appendChild(el("div", {
@@ -599,7 +609,7 @@
               el("span", { class:"cell-name", text:partner.name || partner.id }),
               el("span", { class:"score-num", text:partner.score === null ? "—" : partner.score })
             ]),
-            el("div", { class:"card-practice", text: partner.practice || "no verified practice named" }),
+            el("div", { class:"card-practice", text: partner.practice || ("no verified " + recordNoun().detail.toLowerCase() + " named") }),
             el("div", { class:"card-tags" }, [
               el("span", { class:"tag soft mini", text:(partner.quotes || []).length + " quotes" }),
               partner.source && partner.source.uri ? el("span", { class:"tag soft mini", text:"source linked" }) : null,
@@ -614,7 +624,7 @@
     main.appendChild(el("section", { class:"section" }, [
       el("div", { class:"section-head" }, [
         el("h2", { class:"section-title", text:"Pipeline" }),
-        el("span", { class:"section-sub", text:"partners grouped by the tier the scoring policy gave them · click a card for the dossier" })
+        el("span", { class:"section-sub", text:recordNoun().many.toLowerCase() + " grouped by the tier the scoring policy gave them · click a card for the dossier" })
       ]),
       board
     ]));
@@ -652,7 +662,7 @@
 
     var coverage = el("div", { class:"panel" }, [
       el("div", { class:"panel-head" }, [el("span", { class:"panel-title", text:"Checklist coverage" }),
-        el("span", { class:"spacer" }), el("span", { class:"section-sub", text:"partners passing" })]),
+        el("span", { class:"spacer" }), el("span", { class:"section-sub", text:recordNoun().many.toLowerCase() + " passing" })]),
       el("div", { class:"list" }, (p.checklist || []).map(function (c) {
         return el("div", { class:"list-row" }, [
           el("div", { class:"list-label" }, [
@@ -703,7 +713,7 @@
 
     var attrs = el("div", { class:"panel", style:"margin-top:18px" }, [
       el("div", { class:"panel-head" }, [el("span", { class:"panel-title", text:"Attributes captured" }),
-        el("span", { class:"spacer" }), el("span", { class:"section-sub", text:"filled / partners · distinct values" })]),
+        el("span", { class:"spacer" }), el("span", { class:"section-sub", text:"filled / " + recordNoun().many.toLowerCase() + " · distinct values" })]),
       el("div", { class:"list" }, (p.attributes || []).map(function (a) {
         var facet = p.facets[a.key] || {};
         var values = Object.keys(facet).sort(function (x, y) { return facet[y] - facet[x]; });
@@ -1083,8 +1093,11 @@
       STATE.payload = res.body;
       STATE.selected = null;
       var p = STATE.payload;
-      document.title = "Partner pipeline · " + p.run.run_id;
-      document.getElementById("runSub").textContent = (p.run.task || "run") + " · " + p.stats.records + " partners · " + shortTime(p.run.created_at);
+      var boardTitle = (p.run.lane ? p.run.lane + " lane" : (p.run.task ? p.run.task : "Results")) + " board";
+      document.title = boardTitle + " · " + p.run.run_id;
+      var brandTitle = document.getElementById("brandTitle");
+      if (brandTitle) brandTitle.textContent = boardTitle;
+      document.getElementById("runSub").textContent = (p.run.lane ? p.run.lane + " · " : "") + (p.run.task || "run") + " · " + p.stats.records + " record(s) · " + shortTime(p.run.created_at);
       setStatus(p.run.status);
       if (history.replaceState) history.replaceState(null, "", "?run=" + encodeURIComponent(p.run.run_id));
       renderRunPicker();

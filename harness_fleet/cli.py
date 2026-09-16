@@ -1844,7 +1844,11 @@ def cmd_research(args: argparse.Namespace) -> None:
 
     # Persist what discovery saw, next to the run: the lane report's yield is
     # captured-vs-attempted, and attempted is only knowable if the run kept it.
+    # The lane that asked for it is recorded too, so a later reader (the board,
+    # the lane report) knows what this run was for without guessing from paths.
     report_path = workspace / "runs" / run_id / "discovery_report.json"
+    report["lane"] = lane.name if lane is not None else None
+    report["workspace"] = str(workspace)
     try:
         report_path.parent.mkdir(parents=True, exist_ok=True)
         report_path.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
