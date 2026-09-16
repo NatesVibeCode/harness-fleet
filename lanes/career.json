@@ -1,14 +1,27 @@
 {
   "name": "career",
   "description": "Enterprise sales and operations roles, remote",
-  "seeds": ["enterprise software"],
-  "queries": [
-    "\"enterprise sales\" remote hiring",
-    "\"sales operations\" remote hiring"
+  "seeds": [
+    "enterprise software"
   ],
-  "backends": ["ddgs", "hn"],
-  "title_include": ["enterprise sales", "sales ops", "sales operations"],
-  "title_exclude": ["intern", "apprentice"],
+  "queries": [
+    "site:jobs.ashbyhq.com \"enterprise sales\" remote",
+    "site:boards.greenhouse.io \"sales operations\" remote",
+    "site:jobs.lever.co \"enterprise sales\" remote"
+  ],
+  "backends": [
+    "ddgs",
+    "hn"
+  ],
+  "title_include": [
+    "enterprise sales",
+    "sales ops",
+    "sales operations"
+  ],
+  "title_exclude": [
+    "intern",
+    "apprentice"
+  ],
   "remote": true,
   "preset": "triage",
   "tier": "tier_3",
