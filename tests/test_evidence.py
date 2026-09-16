@@ -20,7 +20,7 @@ Certified Snowflake Premier Partner.
 We deliver managed services and integration work for clients. The story names the client, the platform, the delivery team and the measured outcome, and it describes how the work was run.
 
 === SECTION: ATS_REQUISITIONS (URI: https://boards.greenhouse.io/acme) ===
-Senior Kafka Solutions Architect, remote, posted 2026.
+Senior Kafka Solutions Architect, remote, posted 2026. You will own the streaming platform and lead the migration programme for our largest clients.
 
 === SECTION: VENDOR_REGISTRY (URI: https://aws.amazon.com/partners/success/acme-bank/) ===
 Acme built a streaming platform for Northwind Bank on AWS. The story names the client, the platform, the delivery team and the measured outcome, and it describes how the work was run.

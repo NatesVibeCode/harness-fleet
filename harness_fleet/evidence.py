@@ -154,7 +154,13 @@ def coverage(text: str, source_uri: str = "") -> dict[str, bool]:
         "named_clients": bool(CLIENT_RE.search(everything)),
         "stack_delivery": bool(first_party_stack and any(DELIVERY_VERB_RE.search(s["text"]) for s in sections)),
         "independent_validation": any(_has_prose(s["text"]) for s in vouching),
-        "delivery_hiring": any(s["category"] == "ATS_REQUISITIONS" for s in sections),
+        # The board's *category* is not the evidence: a "no jobs matching this
+        # criterion" page is an ATS page that says nothing about hiring. Ten words
+        # keeps real (if terse) postings and drops empty result pages.
+        "delivery_hiring": any(
+            s["category"] == "ATS_REQUISITIONS" and _has_prose(s["text"], min_words=10)
+            for s in sections
+        ),
         "commercial_terms": bool(COMMERCIAL_RE.search(everything)),
         "certification": bool(CERT_RE.search(everything)),
         "engineering_output": any(

@@ -95,6 +95,10 @@ PLATFORM_HOSTS = (
     "substack.com",
     "hashnode.dev",
     "ghost.io",
+    "github.com",
+    "gitlab.com",
+    "bitbucket.org",
+    "stackoverflow.com",
 )
 
 # Hosts that *talk about* entities rather than being entities: directories,
@@ -155,6 +159,14 @@ def canonicalize_entity_id(identifier_or_url: str) -> str:
             if parts:
                 slug = parts[-1].replace("-", "_")
                 return f"{slug}.com" if "." not in slug else slug
+
+        # A company's own service subdomain is still that company: careers.acme.com
+        # is acme.com, and filing it separately split one account into two.
+        for prefix in ("careers.", "jobs.", "apply.", "boards.", "recruiting.",
+                       "talent.", "hire.", "join.", "work."):
+            if host.startswith(prefix) and host.count(".") >= 2:
+                host = host[len(prefix):]
+                break
 
         if host:
             return host
