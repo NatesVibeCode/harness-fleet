@@ -98,6 +98,26 @@ def render(lane) -> str:
         if index + 1 < len(funnel.ladder):
             add("                      |")
             add("                      v  only what passed " + rung.name + " continues")
+    # The same ladder as a table, because a table is what a person compares
+    # across lanes: what each rung costs, what it asks, and what passing buys.
+    add("")
+    add("  RUNGS AS A TABLE")
+    add("")
+    add("  | # | rung | evidence | cost | gates | reads | earns |")
+    add("  |---|---|---|---|---|---|---|")
+    for index, rung in enumerate(funnel.ladder):
+        cost = "0 fetches" if rung.evidence == "snippet" else "pages"
+        surfaces_cell = ", ".join("`" + s + "`" for s in (rung.surfaces or [])) or "nothing"
+        add(
+            "  | " + str(index + 1)
+            + " | **" + rung.name + "**"
+            + " | `" + rung.evidence + "`"
+            + " | " + cost
+            + " | " + ", ".join(rung.gates)
+            + " | " + surfaces_cell
+            + " | " + (rung.earns or "-") + " |"
+        )
+    add("")
     add(rule())
     add("                      v")
     add("  +-- OUT ------------------------------------------------------------+")

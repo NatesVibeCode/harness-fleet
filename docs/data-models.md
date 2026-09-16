@@ -205,3 +205,44 @@ These are shared by all three models, declared once in `contracts.py`:
 
 The questions the lanes ask are now right. What the lanes can *gather*, and what
 their rows *carry*, is not yet what this document describes.
+
+---
+
+## 6. Who produces what — the data points per DAG node
+
+Each model's fields come from a named rung. Nothing is gathered "just in case":
+a rung runs because a gate is open or a field is missing, and only the surfaces
+that carry them are read.
+
+### Partner
+
+| node / rung | evidence | data points it produces |
+|---|---|---|
+| search (SI queries) | `snippet` | candidate identity, and whatever the result states: headcount, location, kind |
+| rung `result` | `snippet` | **integrator class** (derived), size, territory — and eliminations |
+| rung `surface` | `fetched` | **expertise** (services / what-we-do), **service model**, headcount, territory, **software partners they carry** (partners page), hiring signals (careers) |
+| rung `stories` | `fetched` | **verticals they work in**, named clients, client outcomes, published engineering, growth signals, **independent validation** (vendor stories naming them) |
+| score | — | checklist, `identified_practice`, `revenue_hypothesis`, and the 14 `answers` fields: `target_stack`, `service_model`, `industry_verticals`, `delivery_coverage`, `vendor_alliances`, `case_study_outcome`, `client_logos`, `hiring_signals`, `commercial_terms`, `revenue_motion`, `third_party_mentions`, `engineering_output`, `growth_signals`, `evidence_categories` |
+
+### Account
+
+| node / rung | evidence | data points it produces |
+|---|---|---|
+| search | `snippet` | candidate identity, headcount, location |
+| rung `result` | `snippet` | eliminations on size and territory |
+| rung `surface` | `fetched` | **what they run** (stack), firmographics confirmed |
+| rung `stories` | `fetched` | **vertical**, triggers and initiatives in their own words, named clients, outcomes |
+| score | — | checklist, `identified_gap`, `fit_tier`, reasoning — **and no structured fields today**, because `account-research` defines no `answers` |
+
+### Career
+
+| node / rung | evidence | data points it produces |
+|---|---|---|
+| search | `snippet` | candidate role page, employer name |
+| rung `result` | `snippet` | eliminations on territory |
+| rung `posting` | `fetched` | role, seniority, **location / remote**, compensation, what the employer runs, and the requisition that satisfies `delivery_hiring` |
+| score | — | `priority`, `reason` — the row is a role, and the fields above are its context |
+
+**The rule this makes visible:** a data point only exists on a row if some rung
+reads a surface that carries it. The bar check in `docs/funnels.md` is the same
+test applied to evidence kinds; this is the same test applied to fields.
