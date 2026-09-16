@@ -350,7 +350,7 @@ PRESETS: dict[str, dict[str, Any]] = {
                 "description": "Short explanation grounded in the cited quotes, naming the evidence behind the checklist and the revenue hypothesis.",
             },
         },
-        "required": ["checklist", "identified_practice", "revenue_hypothesis", "reasoning"],
+        "required": ["checklist", "identified_practice", "revenue_hypothesis", "reasoning", "answers"],
     },
 }
 

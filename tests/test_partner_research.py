@@ -62,8 +62,12 @@ def test_create_task_from_partner_research_preset():
     assert "answers" in task.claims_schema["properties"]
     assert "source_diversity_count" in task.claims_schema["properties"]
     assert "fit_tier" in task.claims_schema["properties"]
+    # `answers` is required because it *is* the product: the verticals, the
+    # alliances, the service model. A field the model is not required to fill is
+    # a field it will not fill, and a scored partner came back as booleans with
+    # no verticals at all.
     assert task.claims_schema["required"] == [
-        "checklist", "identified_practice", "revenue_hypothesis", "reasoning",
+        "checklist", "identified_practice", "revenue_hypothesis", "reasoning", "answers",
     ]
     answers = task.claims_schema["properties"]["answers"]
     assert {"client_logos", "hiring_signals", "commercial_terms", "revenue_motion",
