@@ -81,7 +81,7 @@ def test_the_lane_supplies_queries_sources_filters_and_preset(tmp_path, monkeypa
 
 
 def test_a_lane_this_workspace_does_not_have_is_reported(tmp_path):
-    with pytest.raises(ValueError, match="cannot read"):
+    with pytest.raises(ValueError, match="no lane 'nope'"):
         cli.cmd_research(_args(tmp_path, lane="nope"))
 
 

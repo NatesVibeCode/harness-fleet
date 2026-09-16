@@ -1718,17 +1718,25 @@ def _load_lane_for_run(args: argparse.Namespace, workspace: Path) -> Any:
     """Load the lane this run names, validating it against what is installed."""
     from .channels import load_channels
     from .discover import BACKENDS
-    from .lanes import LaneError, load_lane
+    from .lanes import LaneError, load_available_lanes
 
     name = str(getattr(args, "lane", "") or "").strip()
     if not name:
         return None
     channels = set(load_channels(workspace))
-    path = workspace / "lanes" / f"{name}.json"
+    # Shipped lanes are package data; a workspace lane of the same name overrides
+    # one. Looking only in the workspace made every shipped lane unusable unless
+    # it was copied in by hand.
     try:
-        return load_lane(path, channels=channels, backends=set(BACKENDS) | channels)
+        available = load_available_lanes(workspace, channels=channels, backends=set(BACKENDS) | channels)
     except LaneError as exc:
         raise ValueError(str(exc)) from exc
+    lane = available.get(name)
+    if lane is None:
+        raise ValueError(
+            f"no lane '{name}' (have: {', '.join(sorted(available)) or 'none'})"
+        )
+    return lane
 
 
 def _lane_items(items: list[Any], lane: Any) -> tuple[list[Any], int]:
