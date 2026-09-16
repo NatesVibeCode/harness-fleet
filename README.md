@@ -529,8 +529,7 @@ Free routes are used by default. A paid route approved in an earlier session mus
 | `sources` | The learned source registry: `list`, `propose`, `promote`, `demote`, `channels` — which hosts count as evidence, and why |
 | `discover` | Broad web search (`ddgs`, self-hosted SearXNG, HN Algolia, YC, Reddit, Stack Exchange, Discourse, Lobsters, Lemmy, Dev.to) to an accounts file |
 | `fetch` | Fetch URLs, sitemaps, site crawls, ATS boards (Greenhouse/Ashby/Lever), YC profiles, HN/Reddit threads, or Q&A forums to an accounts file |
-| `partners find` | Run the partner sourcing plan cold: fans `harness_fleet/data/partner_sources.json` across every search backend, keeps only hits that attribute the work to a named firm, and writes one dossier per candidate (`--tech`, `--vertical`, `--backend`, `--max`, `--delay`, `--snippets-only`, `--plan`, `--output`) |
-| `partners enrich` | Enrich one partner you already have: their site, ATS board, vendor registry, review pages, and independent mentions, bundled into a single dossier row (`DOMAIN`, `--max-pages`, `--no-fetch`, `--output`) |
+| `partners enrich` | Deepen one partner you already have: its own site, hiring board, vendor registry and independent mentions, bundled into a single dossier row (`DOMAIN`, `--max-pages`, `--no-fetch`, `--output`). Partner candidates come from `research --lane partner` |
 
 Pass `--json` to any command for machine-readable JSON output. `--free-only` is the explicit zero-cost filter (replaces implicit `max-cost=0` sentinel). Long documents are warned when truncated (`partial` slices).
 

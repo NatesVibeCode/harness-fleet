@@ -11,6 +11,7 @@ import sys
 import time
 import uuid
 from collections.abc import Iterable, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -1355,42 +1356,28 @@ def cmd_serve(args: argparse.Namespace) -> None:
 
 
 def cmd_partners(args: argparse.Namespace) -> None:
-    """Run the partner sourcing plan: find candidates, or enrich one partner."""
+    """Deepen one partner: its own site, hiring board, vendor stories and mentions."""
     from .bundler import export_bundled_csv
-    from .partner_sourcing import enrich_partner, find_partners, load_plan
+    from .partner_sourcing import enrich_partner
 
-    plan = load_plan(getattr(args, "plan", None))
     output = Path(getattr(args, "output", None) or (
-        "partners.csv" if args.partners_command == "find" else f"partner-{args.domain}.csv"
+        f"partner-{args.domain}.csv"
     ))
     backends = getattr(args, "backend", None) or None
     max_per_query = int(getattr(args, "max", 8) or 8)
     delay = float(getattr(args, "delay", 1.0) or 0.0)
     snippets_only = bool(getattr(args, "snippets_only", False))
-    if args.partners_command == "find":
-        items, report = find_partners(
-            plan=plan,
-            backends=backends,
-            max_per_query=max_per_query,
-            delay=delay,
-            snippets_only=snippets_only,
-            tech=getattr(args, "tech", "") or "",
-            vertical=getattr(args, "vertical", "") or "",
-            subreddits=getattr(args, "subreddit", None) or [],
-        )
-    else:
-        items, report = enrich_partner(
-            args.domain,
-            plan=plan,
-            backends=backends,
-            max_per_query=max_per_query,
-            delay=delay,
-            snippets_only=snippets_only,
-            max_pages=int(getattr(args, "max_pages", 8) or 8),
-            include_fetch=not bool(getattr(args, "no_fetch", False)),
-            vendor_stories=not bool(getattr(args, "no_vendor_stories", False)),
-            vendor_story_limit=int(getattr(args, "vendor_stories_limit", 20) or 20),
-        )
+    items, report = enrich_partner(
+        args.domain,
+        backends=backends,
+        max_per_query=max_per_query,
+        delay=delay,
+        snippets_only=snippets_only,
+        max_pages=int(getattr(args, "max_pages", 8) or 8),
+        include_fetch=not bool(getattr(args, "no_fetch", False)),
+        vendor_stories=not bool(getattr(args, "no_vendor_stories", False)),
+        vendor_story_limit=int(getattr(args, "vendor_stories_limit", 20) or 20),
+    )
     # Every backend skipped means the run could not search at all: reporting
     # "Found 0 partner dossier(s)" with exit 0 hides a missing dependency.
     if not items and report.rejected:
@@ -1408,7 +1395,7 @@ def cmd_partners(args: argparse.Namespace) -> None:
     _emit(
         payload,
         args.json,
-        f"{'Found' if args.partners_command == 'find' else 'Enriched'} {len(items)} partner dossier(s) -> {path}"
+        f"Enriched {len(items)} partner dossier(s) -> {path}"
         + (f" ({report.searched} searches, {report.dropped_unattributed} unattributed hits dropped)"
            if report.searched or report.dropped_unattributed else "")
         + _format_skips(report.skipped),
@@ -1714,6 +1701,8 @@ def _skip_reasons_note(skipped: Any, limit: int = 3) -> str:
     remaining = len(entries) - len(reasons)
     return "\n  failing sources: " + "; ".join(reasons) + (f" (+{remaining} more)" if remaining > 0 else "")
 
+
+
 def _gaps_for_dossier(text: str, uri: str, bar: tuple[str, ...]) -> list[str]:
     """Which of the lane's required kinds this entity's evidence does not carry."""
     from .evidence import coverage
@@ -1754,8 +1743,23 @@ def _enrich_entities(
     if lane is not None:
         bar = tuple(lane.require_kinds) or tuple(contracts.TIER_MINIMUMS.get(lane.tier or "", ()))
 
+    # Enumerate the vendor story indexes once for the whole run. Doing it inside
+    # each entity's walk cost a dozen requests per entity and made this the
+    # slowest stage of a run.
+    from .enrich import vendor_story_urls
+
+    shared_story_urls: list[str] = []
+    if vendor_stories:
+        try:
+            shared_story_urls, _skipped = vendor_story_urls(
+                max_per_vendor=40, timeout=timeout, respect_robots=respect_robots,
+            )
+        except Exception:
+            shared_story_urls = []
+
     extra: list[Any] = []
     report: list[dict[str, Any]] = []
+    targets: list[Any] = []
     for dossier in dossiers[: max(1, max_entities)]:
         entity = str(getattr(dossier, "item_id", "") or "")
         missing = _gaps_for_dossier(
@@ -1763,6 +1767,10 @@ def _enrich_entities(
         )
         if not missing:
             continue
+        targets.append((entity, missing))
+
+    def walk_one(target: tuple[str, list[str]]) -> tuple[str, list[str], list[Any], Any]:
+        entity, missing = target
         records, walk = enrich_entity(
             entity,
             kinds=missing,
@@ -1771,7 +1779,20 @@ def _enrich_entities(
             delay=delay,
             respect_robots=respect_robots,
             vendor_stories=vendor_stories,
+            story_urls=shared_story_urls,
+            pace=max(0.0, delay),
         )
+        return entity, missing, records, walk
+
+    # Entities are independent of each other, so the walk runs several at once.
+    # Each is a different site, and the shared hosts (a hiring board, a code
+    # host) are paced per host inside the walk, so breadth does not cost
+    # politeness. Sequentially this stage ran for tens of minutes.
+    workers = max(1, min(8, len(targets)))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        walked = list(pool.map(walk_one, targets))
+
+    for entity, missing, records, walk in walked:
         summary = walk.as_dict()
         summary["missing"] = missing
         report.append(summary)
@@ -1788,6 +1809,38 @@ def _enrich_entities(
                 metadata=metadata,
             ))
     return extra, report
+
+
+def expand_lane_queries(lane: Any) -> list[str]:
+    """A lane's query templates, one query per combination of its terms.
+
+    A lane that names its axes once gathers from all of them: two literal
+    queries find two things, and the same two templates over six technologies
+    and four verticals find forty-eight. The expansion is capped, and the cap is
+    reported, because breadth is a cost the operator should see rather than
+    discover in the wall clock.
+    """
+    import itertools
+
+    queries = [str(query) for query in (lane.queries or []) if str(query).strip()]
+    terms = {name: [str(v) for v in values] for name, values in (lane.query_terms or {}).items()}
+    expanded: list[str] = []
+    for query in queries:
+        names = [name for name in terms if "{" + name + "}" in query]
+        if not names:
+            expanded.append(query)
+            continue
+        for combination in itertools.product(*(terms[name] for name in names)):
+            filled = query
+            for name, value in zip(names, combination, strict=True):
+                filled = filled.replace("{" + name + "}", value)
+            expanded.append(filled)
+    seen: list[str] = []
+    for query in expanded:
+        if query not in seen:
+            seen.append(query)
+    cap = int(getattr(lane, "max_queries", 0) or 0)
+    return seen[:cap] if cap else seen
 
 
 def _load_lane_for_run(args: argparse.Namespace, workspace: Path) -> Any:
@@ -1884,7 +1937,13 @@ def cmd_research(args: argparse.Namespace) -> None:
     lane = _load_lane_for_run(args, workspace)
     if lane is not None:
         # The lane supplies defaults; an explicit flag still wins.
-        args.query = list(args.query or []) or list(lane.queries) or list(lane.seeds)
+        args.query = list(args.query or []) or expand_lane_queries(lane) or list(lane.seeds)
+        if lane.query_terms and getattr(args, "query", None):
+            print(
+                f"Lane '{lane.name}': {len(args.query)} queries from "
+                f"{len(lane.queries)} template(s) and {len(lane.query_terms)} term set(s)"
+                + (f" (capped at {lane.max_queries})" if len(args.query) >= lane.max_queries else "")
+            )
         if not getattr(args, "backend", None) and lane.backends:
             args.backend = list(lane.backends)
         if not getattr(args, "preset", None) and lane.preset:
@@ -2901,7 +2960,11 @@ def build_parser() -> argparse.ArgumentParser:
     research.add_argument("--top", type=_positive_int, default=25, help="Rows in the ranked deliverable (default 25)")
     research.add_argument("--output", help="Dossier CSV path (default: accounts.csv)")
     research.add_argument("--run-id", help="Run id (default: research-<timestamp>)")
-    research.add_argument("--sessions", type=_positive_int, default=4)
+    research.add_argument(
+        "--sessions", type=_positive_int, default=8,
+        help="Batches scored at once (default 8; free routes are slow, so more in flight "
+             "finishes a run sooner)",
+    )
     research.add_argument("--max-attempts", type=_positive_int, default=300)
     research.add_argument("--timeout", type=_positive_int, default=DEFAULT_PROMPT_TIMEOUT_SEC)
     research.add_argument("--delay", type=float, default=1.0, help="Seconds between fetches (default 1.0)")
@@ -3082,7 +3145,7 @@ def build_parser() -> argparse.ArgumentParser:
     _common(board)
     partners = commands.add_parser(
         "partners",
-        help="Run the packaged partner sourcing plan (find candidates, or enrich one partner)",
+        help="Deepen one partner from its own surfaces (enrich <domain>)",
     )
     partner_actions = partners.add_subparsers(dest="partners_command", required=True)
 
@@ -3094,12 +3157,6 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--plan", default=None, help="Override the packaged partner source plan")
         p.add_argument("--output", default=None, help="Output CSV (default: partners.csv)")
         _common(p)
-
-    partners_find = partner_actions.add_parser("find", help="Cold start: search every backend for partner candidates")
-    partners_find.add_argument("--tech", default="", help="Technology to anchor queries, e.g. Kafka")
-    partners_find.add_argument("--vertical", default="", help="Target vertical, e.g. fintech")
-    partners_find.add_argument("--subreddit", action="append", help="Restrict reddit queries to subreddits (repeatable)")
-    _partner_common(partners_find)
 
     partners_enrich = partner_actions.add_parser("enrich", help="Enrich one partner already known by domain")
     partners_enrich.add_argument("domain", help="Partner domain, e.g. trace3.com")

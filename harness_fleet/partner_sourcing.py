@@ -24,10 +24,8 @@ returns pages about *tracing*; without this filter they read as evidence.
 """
 from __future__ import annotations
 
-import json
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
@@ -93,7 +91,6 @@ from .sources import (
     linked_domains as linked_domains,
 )
 
-PLAN_PATH = Path(__file__).resolve().parent / "data" / "partner_sources.json"
 COMMUNITY_BACKENDS = ("hn", "reddit", "stackexchange", "discourse", "devto", "lobsters", "lemmy")
 # A name shorter than this is too generic to prove attribution on its own
 # ("acme", "data"), so only the full domain counts for those.
@@ -159,35 +156,16 @@ def candidate_entities(url: str | None, text: str | None = None) -> list[str]:
     return list(dict.fromkeys(out))
 
 
-def load_plan(path: str | Path | None = None) -> dict[str, Any]:
-    plan_path = Path(path).expanduser() if path else PLAN_PATH
-    try:
-        plan = json.loads(plan_path.read_text(encoding="utf-8"))
-    except OSError as exc:
-        raise SourcingError(f"could not read the partner source plan at {plan_path}: {exc}") from exc
-    except json.JSONDecodeError as exc:
-        raise SourcingError(f"partner source plan is not valid JSON: {exc}") from exc
-    if not isinstance(plan.get("stages"), dict):
-        raise SourcingError(f"partner source plan at {plan_path} has no stages")
-    return plan
-
-
-# ---------------------------------------------------------------------------
-# Attribution
-# ---------------------------------------------------------------------------
-
 # ---------------------------------------------------------------------------
 # The practice gate — this product's admission rule, not the engine's
 # ---------------------------------------------------------------------------
 
 def practice_signals(plan: dict[str, Any] | None = None) -> tuple[str, ...]:
-    """Terms that mark a page as being about *delivering* work, from the plan."""
-    rules = (plan or {}).get("evidence_rules") or {}
-    configured = rules.get("practice_signals")
-    if isinstance(configured, list):
-        terms = tuple(str(term).strip().lower() for term in configured if str(term).strip())
-        if terms:
-            return terms
+    """Terms that mark a page as being about *delivering* work.
+
+    These used to be read from the packaged plan; they are the product's own
+    admission rule and live here now that the plan is gone.
+    """
     return _DEFAULT_PRACTICE_SIGNALS
 
 
@@ -214,34 +192,6 @@ def _substitute(template: str, values: dict[str, str]) -> str | None:
     for key, value in values.items():
         out = out.replace("{" + key + "}", value)
     return None if "{" in out else out
-
-
-def find_queries(plan: dict[str, Any], *, tech: str = "", vertical: str = "") -> dict[str, list[str]]:
-    """Backend -> queries for the cold-start stage, placeholders resolved."""
-    stage = plan.get("stages", {}).get("find", {})
-    values = {"tech": tech, "vertical": vertical}
-    out: dict[str, list[str]] = {}
-    for backend, spec in stage.items():
-        if backend in ("comment", "fetch"):
-            continue
-        queries: list[str] = []
-        if isinstance(spec, list):
-            candidates = spec
-        elif isinstance(spec, dict):
-            candidates = list(spec.get("queries") or [])
-        else:
-            continue
-        for template in candidates:
-            if not tech and "{tech}" in template:
-                continue
-            if not vertical and "{vertical}" in template:
-                continue
-            resolved = _substitute(template, values)
-            if resolved:
-                queries.append(resolved)
-        if queries:
-            out[backend] = queries
-    return out
 
 
 def enrich_urls(plan: dict[str, Any] | None, entity: str) -> dict[str, list[str]]:
@@ -325,82 +275,6 @@ def _fetch_hits(hits: Sequence[SearchHit], *, timeout: float, respect_robots: bo
     return records
 
 
-def find_partners(
-    *,
-    plan: dict[str, Any] | None = None,
-    tech: str = "",
-    vertical: str = "",
-    backends: Sequence[str] | None = None,
-    max_per_query: int = 10,
-    searxng_url: str | None = None,
-    discourse_url: str | None = None,
-    subreddits: Sequence[str] = (),
-    se_tagged: Sequence[str] = (),
-    se_site: str = "stackoverflow",
-    lemmy_instance: str | None = None,
-    timeout: float = 20.0,
-    delay: float = 1.0,
-    respect_robots: bool = True,
-    snippets_only: bool = False,
-) -> tuple[list[InputItem], SourcingReport]:
-    """Cold start: search broadly, fetch what looks promising, bundle per entity."""
-    plan = plan or load_plan()
-    report = SourcingReport(stage="find")
-    queries = find_queries(plan, tech=tech, vertical=vertical)
-    if backends:
-        queries = {b: q for b, q in queries.items() if b in set(backends)}
-    if not queries:
-        raise SourcingError("no searchable queries in the plan for this tech/vertical; nothing to run")
-
-    records: list[RawRecord] = []
-    seen_urls: set[str] = set()
-    for backend, backend_queries in queries.items():
-        for query in backend_queries:
-            report.searched += 1
-            try:
-                hits = web_search(
-                    query,
-                    backends=[backend],
-                    max_results=max_per_query,
-                    searxng_url=searxng_url,
-                    timeout=timeout,
-                    reddit_subreddits=subreddits,
-                    se_tagged=se_tagged,
-                    se_site=se_site,
-                    discourse_url=discourse_url,
-                    lemmy_instance=lemmy_instance or "https://programming.dev",
-                )
-            except Exception as exc:
-                report.skipped.append({"backend": backend, "query": query, "reason": str(exc)[:200]})
-                continue
-            records.extend(_fetch_hits(
-                hits, timeout=timeout, respect_robots=respect_robots,
-                snippets_only=snippets_only, report=report, seen=seen_urls,
-            ))
-
-    # File each hit under the entity it is actually about. A page that names
-    # nobody it could be filed under is a lead, not evidence; so is a page that
-    # never mentions doing the work (a vendor blog, a news article, a thread).
-    signals = practice_signals(plan)
-    filed: list[InputItem] = []
-    for item in to_input_items(records):
-        if not has_practice_signal(item.text, signals):
-            report.dropped_no_practice_signal += 1
-            continue
-        placed = False
-        for entity in candidate_entities(item.source_uri, item.text):
-            if is_attributed(item.text, item.source_uri, entity):
-                filed.append(item.model_copy(update={"item_id": entity}))
-                placed = True
-        if not placed:
-            report.dropped_unattributed += 1
-    report.candidates = sorted({item.item_id for item in filed})
-
-    items = bundle_records(filed)
-    report.kept = len(items)
-    return items, report
-
-
 def enrich_partner(
     entity: str,
     *,
@@ -417,8 +291,7 @@ def enrich_partner(
     vendor_stories: bool = True,
     vendor_story_limit: int = 20,
 ) -> tuple[list[InputItem], SourcingReport]:
-    """Enrich one partner (from find, or from a list you already have)."""
-    plan = plan or load_plan()
+    """Deepen one partner from its own surfaces, with no plan to read."""
     report = SourcingReport(stage="enrich", candidates=[entity])
     domain = canonicalize_entity_id(entity) or entity
     records: list[RawRecord] = []

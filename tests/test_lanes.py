@@ -87,3 +87,28 @@ def test_a_lane_may_gate_on_its_own_evidence_instead_of_the_tier_ladder():
     with pytest.raises(Exception) as excinfo:
         validate_lane(Lane(name="career", preset="triage", tier="tier_9"))
     assert "tier" in str(excinfo.value)
+
+
+def test_a_lane_names_its_axes_once_and_searches_all_of_them():
+    """Two literal queries find two things. The same templates over five
+    technologies and four verticals find dozens, which is the difference
+    between a handful of candidates and hundreds."""
+    from harness_fleet.cli import expand_lane_queries
+    from harness_fleet.lanes import Lane
+
+    lane = Lane(
+        name="partner", preset="partner-research",
+        queries=['"{tech}" partner', "literal query"],
+        query_terms={"tech": ["Kafka", "dbt"]},
+        max_queries=10,
+    )
+    assert expand_lane_queries(lane) == ['"Kafka" partner', '"dbt" partner', "literal query"]
+
+    capped = Lane(
+        name="partner", preset="partner-research",
+        queries=['"{tech}" partner'], query_terms={"tech": ["a", "b", "c"]}, max_queries=2,
+    )
+    assert expand_lane_queries(capped) == ['"a" partner', '"b" partner'], "breadth is capped"
+
+    plain = Lane(name="x", preset="triage", queries=["one", "two"])
+    assert expand_lane_queries(plain) == ["one", "two"], "no terms means no expansion"

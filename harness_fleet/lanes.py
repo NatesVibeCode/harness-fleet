@@ -48,6 +48,14 @@ class Lane(ClosedModel):
     #: the bar requires — so this is what makes a large candidate set scorable.
     #: Each resolution is one search; zero leaves the candidates as names.
     resolve_stories: int = 0
+    #: Values for the placeholders a lane's queries use, e.g.
+    #: ``{"tech": ["Kafka", "dbt"], "vertical": ["fintech"]}``. One template
+    #: becomes one query per combination, which is how a lane gathers from many
+    #: sources instead of asking two questions and calling it research.
+    query_terms: dict[str, list[str]] = {}
+    #: Ceiling on expanded queries. Breadth costs a search per query, so the
+    #: expansion is capped rather than left to the size of the term lists.
+    max_queries: int = 40
     #: Which published story paths name the kind of company this lane wants.
     #: A vendor's ``/customers/`` index names firms that buy the product; its
     #: ``/partners/`` and award pages name the firms that implement it. Empty
@@ -105,6 +113,11 @@ def validate_lane(lane: Lane, *, channels: set[str] | None = None, backends: set
         raise LaneError("stories: cannot be negative")
     if lane.resolve_stories < 0:
         raise LaneError("resolve_stories: cannot be negative")
+    if lane.max_queries < 1:
+        raise LaneError("max_queries: must be at least 1")
+    for term, values in lane.query_terms.items():
+        if not isinstance(values, list) or not values:
+            raise LaneError(f"query_terms: '{term}' must be a non-empty list of values")
     if lane.min_score is not None and not 0 <= lane.min_score <= 100:
         raise LaneError("min_score: must be between 0 and 100")
 

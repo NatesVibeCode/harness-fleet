@@ -6,98 +6,27 @@ that genuinely attribute the work to a named firm become evidence.
 """
 from __future__ import annotations
 
-import json
-
 import pytest
 
 from harness_fleet import partner_sourcing
 from harness_fleet.discover import RawRecord, SearchHit
 from harness_fleet.partner_sourcing import (
-    SourcingError,
     attribution_terms,
     candidate_entities,
     enrich_partner,
     enrich_urls,
     filter_attributed,
-    find_partners,
-    find_queries,
     is_attributed,
     is_source_host,
-    load_plan,
 )
 
 # ---------------------------------------------------------------------------
 # Plan
 # ---------------------------------------------------------------------------
 
-def test_packaged_plan_holds_the_product_and_the_surfaces_are_shared():
-    """What is specific to this product is its queries; where evidence lives is not.
-
-    The enrich and vendor-story blocks moved to the shared surface plan the day
-    every lane started walking the same surfaces — a second copy here is a
-    second thing to keep true.
-    """
-    plan = load_plan()
-    assert plan["schema"] == "partner_sources_v1"
-    assert set(plan["stages"]) >= {"find"}
-    assert plan["evidence_rules"]["attribution"]
-
-    from harness_fleet.enrich import load_surfaces
-
-    surfaces = load_surfaces()
-    assert surfaces["schema"] == "source_surfaces_v1"
-    assert set(surfaces) >= {
-        "discovery", "first_party_paths", "match", "templates", "channels", "ats", "vendor_stories",
-    }
-    assert "/sitemap.xml" in surfaces["discovery"]["paths"], "the surface that answers everywhere"
-    assert surfaces["ats"]["greenhouse"].endswith("jobs?content=true"), "the API, not the HTML board"
-    # A surface that answered 403 on every domain probed is not fetchable; the
-    # data file records why it went rather than leaving a silent hole.
-    fetchable = str(surfaces.get("templates")) + str(surfaces.get("first_party_paths"))
-    assert "clutch.co" not in fetchable and "g2.com" not in fetchable
-    assert "clutch.co" in str(surfaces.get("removed")), "recorded, not forgotten"
-    assert surfaces["vendor_stories"]["vendors"], "the vendor hubs every lane can read"
-    assert "/case-studies" in surfaces["first_party_paths"]["case_studies"]
 
 
-def test_load_plan_rejects_a_plan_without_stages(tmp_path):
-    bad = tmp_path / "bad.json"
-    bad.write_text(json.dumps({"schema": "partner_sources_v1"}), encoding="utf-8")
-    with pytest.raises(SourcingError, match="no stages"):
-        load_plan(bad)
 
-
-def test_load_plan_reports_missing_and_malformed_files(tmp_path):
-    with pytest.raises(SourcingError, match="could not read"):
-        load_plan(tmp_path / "absent.json")
-    broken = tmp_path / "broken.json"
-    broken.write_text("{not json", encoding="utf-8")
-    with pytest.raises(SourcingError, match="not valid JSON"):
-        load_plan(broken)
-
-
-def test_find_queries_resolves_placeholders_and_drops_unfillable_ones():
-    plan = {
-        "stages": {
-            "find": {
-                "comment": "not a backend",
-                "ddgs": {"queries": ['"{tech}" "{vertical}" case study', "generic query"]},
-                "hn": ["who is hiring {tech}"],
-                "fetch": {"urls": ["https://example.com"]},
-            }
-        }
-    }
-    resolved = find_queries(plan, tech="Kafka", vertical="fintech")
-    assert resolved["ddgs"] == ['"Kafka" "fintech" case study', "generic query"]
-    assert resolved["hn"] == ["who is hiring Kafka"]
-    # A backend whose only query needs a missing placeholder disappears entirely.
-    assert "fetch" not in resolved
-    assert "comment" not in resolved
-
-
-def test_find_queries_skips_templates_that_need_an_absent_value():
-    plan = {"stages": {"find": {"ddgs": ['"{tech}" partner', "no placeholders"]}}}
-    assert find_queries(plan, tech="", vertical="") == {"ddgs": ["no placeholders"]}
 
 
 def test_enrich_urls_expands_domain_slug_and_origin():
@@ -193,32 +122,6 @@ def test_linked_domains_needs_a_real_suffix_and_skips_source_hosts():
     assert linked_domains("https://example.com https://example.com/x") == ["example.com"]
     assert linked_domains("") == []
 
-
-def test_practice_signal_gate_keeps_practice_pages_and_drops_commentary():
-    from harness_fleet.partner_sourcing import has_practice_signal, practice_signals
-
-    signals = practice_signals(load_plan())
-    assert "case study" in signals and "hiring" in signals
-    assert has_practice_signal("We are hiring a Snowflake solutions architect", signals)
-    assert has_practice_signal("Their client migrated to Kafka last year", signals)
-    # Commentary about the technology is not a partner page.
-    assert not has_practice_signal("the importance of distributed tracing for kafka", signals)
-    assert not has_practice_signal("", signals)
-
-
-def test_find_partners_drops_pages_with_no_practice_language(monkeypatch):
-    plan = {"stages": {"find": {"ddgs": {"queries": ['"{tech}"']}}}}
-    _patch_search(monkeypatch, {find_queries(plan, tech="Kafka")["ddgs"][0]: [
-        SearchHit(url="https://blog.example.com/kafka-tuning", title="", snippet="", backend="ddgs"),
-        SearchHit(url="https://trace3.com/services", title="", snippet="", backend="ddgs"),
-    ]})
-    _patch_fetch(monkeypatch, {
-        "https://blog.example.com/kafka-tuning": "tuning kafka consumer groups for throughput at scale",
-        "https://trace3.com/services": "Trace3 provides implementation services for Kafka clients",
-    })
-    items, report = find_partners(plan=plan, tech="Kafka", backends=["ddgs"], delay=0.0)
-    assert [item.item_id for item in items] == ["trace3.com"]
-    assert report.dropped_no_practice_signal == 1
 
 
 def test_enrich_rejects_a_partner_with_no_delivery_evidence(monkeypatch):
@@ -375,103 +278,10 @@ def _patch_crawl(monkeypatch, result=None, exc=None):
     monkeypatch.setattr(discover, "crawl_site", fake_crawl)
 
 
-def test_find_partners_keeps_attributed_hits_and_drops_the_rest(monkeypatch):
-    plan = {"stages": {"find": {"ddgs": {"queries": ['"{tech}" case study']}, "hn": ["who is hiring {tech}"]}}}
-    queries = find_queries(plan, tech="Kafka")
-    _patch_search(monkeypatch, {
-        queries["ddgs"][0]: [
-            SearchHit(url="https://trace3.com/kafka", title="Kafka", snippet="", backend="ddgs"),
-            SearchHit(url="https://conduktor.io/blog/tracing", title="Tracing", snippet="", backend="ddgs"),
-        ],
-        queries["hn"][0]: [
-            SearchHit(url="https://news.ycombinator.com/item?id=9", title="HN", snippet="", backend="hn"),
-            SearchHit(url="https://news.ycombinator.com/item?id=10", title="HN", snippet="", backend="hn"),
-        ],
-    })
-    _patch_fetch(monkeypatch, {
-        "https://trace3.com/kafka": "Trace3 delivers Kafka migration work for named clients.",
-        "https://conduktor.io/blog/tracing": "the importance of distributed tracing for kafka pipelines",
-        "https://news.ycombinator.com/item?id=9": (
-            "we are hiring Kafka engineers at Trace3 (see https://trace3.com/careers)"
-        ),
-        # Practice signal, no attributable firm: a lead, not a candidate.
-        "https://news.ycombinator.com/item?id=10": "we hired a consulting firm for our kafka migration",
-    })
-
-    items, report = find_partners(plan=plan, tech="Kafka", backends=["ddgs", "hn"], delay=0.0)
-
-    # The HN thread is about Trace3, so it files under Trace3; nothing files
-    # under news.ycombinator.com, and the tracing page is unattributed noise.
-    assert [item.item_id for item in items] == ["trace3.com"]
-    assert report.stage == "find"
-    assert report.searched == 2
-    assert report.fetched == 4
-    assert report.kept == 1
-    # The tracing blog never mentions doing the work; the HN thread mentions
-    # doing the work but names nobody.
-    assert report.dropped_no_practice_signal == 1
-    # The second HN thread links nobody; it is a lead, not a dossier.
-    assert report.dropped_unattributed == 1
-    assert report.candidates == ["trace3.com"]
-    assert "news.ycombinator.com" not in report.candidates
-    assert "Trace3 delivers Kafka migration work" in items[0].text
-    assert "hiring Kafka engineers" in items[0].text
 
 
-def test_find_partners_records_fetch_failures_instead_of_raising(monkeypatch):
-    plan = {"stages": {"find": {"ddgs": {"queries": ['"{tech}"']}}}}
-    _patch_search(monkeypatch, {find_queries(plan, tech="Kafka")["ddgs"][0]: [
-        SearchHit(url="https://trace3.com/dead", title="", snippet="", backend="ddgs"),
-    ]})
-    _patch_fetch(monkeypatch, {})
-
-    items, report = find_partners(plan=plan, tech="Kafka", backends=["ddgs"], delay=0.0)
-    assert items == []
-    assert report.fetched == 0
-    assert report.skipped and "404" in report.skipped[0]["reason"]
 
 
-def test_find_partners_snippets_only_never_fetches(monkeypatch):
-    plan = {"stages": {"find": {"ddgs": {"queries": ['"{tech}"']}}}}
-    _patch_search(monkeypatch, {find_queries(plan, tech="Kafka")["ddgs"][0]: [
-        SearchHit(url="https://trace3.com/kafka", title="Trace3 Kafka", snippet="Trace3 delivers Kafka migrations for banks", backend="ddgs"),
-    ]})
-
-    def explode(*args, **kwargs):
-        raise AssertionError("snippets-only must not fetch")
-
-    monkeypatch.setattr(partner_sourcing, "fetch_text", explode)
-    items, report = find_partners(plan=plan, tech="Kafka", backends=["ddgs"], snippets_only=True, delay=0.0)
-    assert [item.item_id for item in items] == ["trace3.com"]
-    assert report.fetched == 1
-
-
-def test_find_partners_refuses_a_plan_with_nothing_to_search():
-    with pytest.raises(SourcingError, match="no searchable queries"):
-        find_partners(plan={"stages": {"find": {"ddgs": {"queries": ["{tech} only"]}}}}, tech="")
-
-
-def test_find_partners_survives_a_backend_that_raises(monkeypatch):
-    plan = {"stages": {"find": {"ddgs": {"queries": ['"{tech}"']}, "hn": ["who is hiring {tech}"]}}}
-    queries = find_queries(plan, tech="Kafka")
-
-    def flaky(query, backends=None, **kwargs):
-        if backends == ["hn"]:
-            raise RuntimeError("rate limited")
-        return [SearchHit(url="https://trace3.com/x", title="", snippet="Trace3 delivers Kafka consulting", backend="ddgs")]
-
-    monkeypatch.setattr(partner_sourcing, "web_search", flaky)
-    monkeypatch.setattr(partner_sourcing, "fetch_text",
-                        lambda url, **kw: RawRecord(text="Trace3 delivers Kafka consulting", source_uri=url))
-    items, report = find_partners(plan=plan, tech="Kafka", backends=["ddgs", "hn"], delay=0.0)
-    assert [item.item_id for item in items] == ["trace3.com"]
-    assert any(s.get("backend") == "hn" and "rate limited" in s["reason"] for s in report.skipped)
-    assert queries  # the plan really did expand
-
-
-# ---------------------------------------------------------------------------
-# enrich — offline
-# ---------------------------------------------------------------------------
 
 def test_enrich_partner_bundles_first_party_ats_and_mentions(monkeypatch):
     plan = {"stages": {"find": {}}}
@@ -559,15 +369,3 @@ def test_enrich_partner_reports_crawl_failure_and_still_searches(monkeypatch):
     assert any("connection refused" in s["reason"] for s in report.skipped)
 
 
-def test_report_serializes_for_the_cli(monkeypatch):
-    plan = {"stages": {"find": {"ddgs": {"queries": ['"{tech}"']}}}}
-    _patch_search(monkeypatch, {})
-    items, report = find_partners(plan=plan, tech="Kafka", backends=["ddgs"], delay=0.0)
-    payload = report.as_dict()
-    assert payload["stage"] == "find"
-    assert set(payload) == {
-        "stage", "searched", "fetched", "kept", "dropped_unattributed",
-        "dropped_no_practice_signal", "vendor_stories", "rejected", "candidates", "skipped",
-    }
-    assert json.loads(json.dumps(payload))["kept"] == 0
-    assert items == []

@@ -1,6 +1,8 @@
 import json
 from argparse import Namespace
 
+import pytest
+
 from harness_fleet import cli
 from harness_fleet.profile import IdealCompanyProfile
 from harness_fleet.store import HarnessStore
@@ -166,28 +168,21 @@ def test_export_refuses_to_overwrite_the_runs_own_packet(tmp_path, monkeypatch, 
 
 
 def test_partners_fails_when_every_backend_is_unavailable(tmp_path, monkeypatch):
-    """A missing dependency must not read as 'found nothing'."""
-    import pytest
-
+    """A missing dependency must not read as "found nothing"."""
     from harness_fleet.partner_sourcing import SourcingReport
 
     monkeypatch.chdir(tmp_path)
 
-    def fake_find(**kwargs):
-        report = SourcingReport(stage="find", searched=5)
-        report.skipped = [{"backend": "ddgs", "query": "q", "reason": "ddgs is not installed"}]
-        report.skipped *= 5
+    def fake_enrich(entity, **kwargs):
+        report = SourcingReport(stage="enrich", searched=5, candidates=[entity])
+        report.skipped = [{"backend": "ddgs", "query": "q", "reason": "ddgs is not installed"}] * 5
         return [], report
 
-    monkeypatch.setattr("harness_fleet.partner_sourcing.find_partners", fake_find)
-    with pytest.raises(ValueError) as err:
-        cli.cmd_partners(Namespace(
-            partners_command="find", tech="Kafka", vertical="", subreddit=None, backend=["ddgs"],
-            max=2, delay=0.0, snippets_only=True, plan=None, output=str(tmp_path / "p.csv"),
-            db=str(tmp_path / "p.db"), json=True, domain=None, max_pages=1, no_fetch=False,
-        ))
-    assert "every search backend was unavailable" in str(err.value)
-
+    monkeypatch.setattr("harness_fleet.partner_sourcing.enrich_partner", fake_enrich)
+    parser = cli.build_parser()
+    args = parser.parse_args(["partners", "enrich", "trace3.com"])
+    with pytest.raises(ValueError, match="unavailable"):
+        cli.cmd_partners(args)
 
 def test_validate_is_offline_and_strict(tmp_path, capsys):
     db = tmp_path / "state.db"

@@ -274,6 +274,21 @@ def vendor_story_urls(
     return list(dict.fromkeys(urls)), skipped
 
 
+def _pace_host(url: str, delay: float) -> None:
+    """Space requests to one host while other hosts proceed.
+
+    The walk handles many entities at once, and a hiring board or a code host is
+    the same host for all of them, so politeness has to be per host rather than
+    per entity.
+    """
+    from .discover import _space_host
+    from .sources import host_of
+
+    host = host_of(url)
+    if host:
+        _space_host(host, delay)
+
+
 def fetch_vendor_stories(
     entity: str,
     *,
@@ -282,6 +297,8 @@ def fetch_vendor_stories(
     max_per_vendor: int = 20,
     timeout: float = 20.0,
     respect_robots: bool = True,
+    urls: Sequence[str] | None = None,
+    pace: float = 0.0,
 ) -> tuple[list[RawRecord], list[dict[str, str]]]:
     """Vendor stories that actually name *entity*.
 
@@ -293,13 +310,21 @@ def fetch_vendor_stories(
     from .discover import fetch_text
 
     domain = canonicalize_entity_id(entity) or entity
-    urls, skipped = vendor_story_urls(
-        sources, vendors=vendors, max_per_vendor=max_per_vendor, timeout=timeout,
-        respect_robots=respect_robots,
-    )
+    # An already-enumerated list is reused: enumerating a vendor's index costs a
+    # dozen requests, and doing that again for every entity turned the walk into
+    # the slowest stage of a run.
+    if urls is None:
+        candidates, skipped = vendor_story_urls(
+            sources, vendors=vendors, max_per_vendor=max_per_vendor, timeout=timeout,
+            respect_robots=respect_robots,
+        )
+    else:
+        candidates, skipped = list(urls), []
     records: list[RawRecord] = []
-    for url in urls:
+    for url in candidates:
         try:
+            if pace > 0:
+                _pace_host(url, pace)
             record = fetch_text(url, timeout=timeout, respect_robots=respect_robots)
         except Exception as exc:
             skipped.append({"url": url, "reason": str(exc)[:200]})
@@ -731,6 +756,8 @@ def enrich_entity(
     respect_robots: bool = True,
     vendor_stories: bool = True,
     vendor_story_limit: int = 20,
+    story_urls: Sequence[str] | None = None,
+    pace: float = 0.0,
 ) -> tuple[list[Any], EnrichReport]:
     """Walk the surfaces that carry the kinds this entity is missing.
 
@@ -813,6 +840,8 @@ def enrich_entity(
 
     def fetch_into(url: str, surface: str) -> bool:
         report.visited += 1
+        if pace > 0:
+            _pace_host(url, pace)
         try:
             add(fetch_text(url, timeout=timeout, respect_robots=respect_robots), surface)
             return True
@@ -884,6 +913,7 @@ def enrich_entity(
             story_records, story_skipped = fetch_vendor_stories(
                 domain, sources=plan, max_per_vendor=vendor_story_limit,
                 timeout=timeout, respect_robots=respect_robots,
+                urls=story_urls, pace=pace,
             )
             report.visited += len(story_records)
             for record in story_records:

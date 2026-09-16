@@ -105,7 +105,7 @@ Search these channels directly:
 | **Agency Directories** | Clutch.co / G2 Service Providers | `site:clutch.co/it-services "Kafka" OR "Snowflake"` |
 | **Services & Case Studies** | `*.com/services`, `*.com/case-studies` | `site:example.com/case-studies "implemented" OR "migrated"` |
 
-The automated path is the sourcing runner: `harness-fleet partners find --tech <x> --vertical <y>` reads `harness_fleet/data/partner_sources.json`, expands the plan into search calls across every configured backend, keeps only hits that actually attribute the work to a named firm (`is_attributed`), and emits one dossier per candidate entity. Then `harness-fleet partners enrich <domain>` adds first-party pages, ATS boards, vendor registries and community mentions. Manual curation is still fine; both feed the same CSV contract.
+The automated path is the lane: `harness-fleet research --lane partner` searches the technology and vertical axes the lane declares, walks each candidate's own website for its case studies and services pages, and emits one dossier per firm. `harness-fleet partners enrich <domain>` then deepens a single partner. Manual curation is still fine; both feed the same CSV contract.
 
 Compile discovered items into `partners.csv` with columns:
 - `item_id`: Partner agency domain or identifier (e.g. `slalom.com`, `trace3.com`)

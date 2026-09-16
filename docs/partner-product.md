@@ -33,7 +33,7 @@ Say the word if you prefer `partner-finder-harness`, `partners`, or keeping
 | Piece | Today | Where it goes |
 | --- | --- | --- |
 | Partner pipeline | `harness_fleet/partner_sourcing.py` (638 lines), `partner.py` (97) | stays in the **shared engine** — it is the mechanism, not the product |
-| Source plan | `harness_fleet/data/partner_sources.json` (286) | shared engine (data, not branding) |
+| Source plan | ~~`harness_fleet/data/partner_sources.json`~~ — deleted: the lanes and the shared surface walk replaced it | shared engine (data, not branding) |
 | Skill | `skills/partner-fleet/` + `.agents/skills/partner-fleet/` + `harness_fleet/resources/partner_skill/` | becomes the product's own skill, procedure per S7 with `lanes/partner.json` carrying the specifics |
 | Examples | `examples/partner_research/` | moves to the new repo |
 | Tests | `test_partner_sourcing.py`, `test_partner_research.py`, `test_vendor_stories.py` | split: engine tests stay, product tests move |

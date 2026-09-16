@@ -2,8 +2,12 @@
   "name": "partner",
   "description": "Implementation partners and consultancies, from vendor-published stories",
   "queries": [
-    "\"partner of the year\" (\"case study\" OR \"customer story\") -site:medium.com",
-    "\"premier partner\" (\"systems integrator\" OR consultancy) \"customer story\""
+    "\"{tech}\" \"implementation partner\" (\"case study\" OR \"customer story\")",
+    "\"{tech}\" \"systems integrator\" (certified OR \"premier partner\")",
+    "\"{tech}\" consultancy \"our client\" (migration OR implementation)",
+    "\"{tech}\" \"professional services\" partner -site:medium.com",
+    "\"managed service provider\" \"{tech}\" \"{vertical}\"",
+    "\"{tech}\" data consultancy (\"case study\" OR \"we built\")"
   ],
   "backends": [
     "ddgs",
@@ -12,11 +16,27 @@
   "preset": "partner-research",
   "tier": "tier_1",
   "top": 25,
-  "revision": 4,
+  "revision": 5,
   "stories": 80,
   "resolve_stories": 60,
   "story_paths": [
     "/partners/"
   ],
-  "story_partner_half": true
+  "story_partner_half": true,
+  "query_terms": {
+    "tech": [
+      "Kafka",
+      "Snowflake",
+      "Databricks",
+      "dbt",
+      "Kubernetes"
+    ],
+    "vertical": [
+      "fintech",
+      "healthcare",
+      "retail",
+      "logistics"
+    ]
+  },
+  "max_queries": 34
 }
