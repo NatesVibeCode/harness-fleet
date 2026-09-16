@@ -113,6 +113,34 @@ def test_a_story_naming_nobody_is_dropped_not_misfiled(monkeypatch, markup):
     assert records == [], "no attribution means no dossier entry"
 
 
+def test_story_pages_fetch_in_parallel_not_in_sequence(monkeypatch):
+    """Eight pages at 0.5s each cannot finish in 2s one at a time."""
+    import time
+
+    from harness_fleet import discover
+    from harness_fleet.discover import RawRecord
+
+    pages = {
+        f"https://aws.example/partners/success/acme-{index}/":
+        f"Acme {index} built a platform with Presidio engineers."
+        for index in range(8)
+    }
+
+    def slow_fetch(url, **kw):
+        time.sleep(0.5)
+        return RawRecord(text=pages[url], source_uri=url)
+
+    monkeypatch.setattr(discover, "fetch_text", slow_fetch)
+    started = time.monotonic()
+    records, skipped = fetch_vendor_stories(
+        "presidio.com", sources=PLAN, urls=list(pages), respect_robots=False,
+    )
+    elapsed = time.monotonic() - started
+    assert [record.source_uri for record in records] == list(pages), "input order preserved"
+    assert skipped == []
+    assert elapsed < 2.0, f"8 pages at 0.5s each took {elapsed:.2f}s: fetched in sequence"
+
+
 def test_vendor_story_records_classify_as_vendor_registry():
     """Vendor-published stories are the non-first-party evidence the gate needs."""
     from harness_fleet.bundler import classify_source_category

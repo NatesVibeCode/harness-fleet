@@ -35,6 +35,37 @@ def test_the_three_products_ship_as_lanes():
     assert set(lane_module.shipped_lanes()) >= {"account", "career", "partner"}
 
 
+def test_the_account_lane_does_not_sweep_vendor_customer_indexes():
+    """Accounts come from the lane's queries, not from software vendors' sites.
+
+    The vendor-story sweep walks Snowflake/Databricks/Elastic/Datadog/MongoDB
+    customer indexes — firms that *buy* the product, not firms doing the work
+    the account lane hunts. Bulk-gathering them burned hundreds of page fetches
+    on the wrong population, so the account lane leaves the stage off
+    (`stories: 0` skips it in `research`) while its queries still find any
+    customer story worth scoring.
+    """
+    account = lane_module.shipped_lanes()["account"]
+    assert account.stories == 0, "account lane must not bulk-gather vendor stories"
+    assert account.resolve_stories == 0
+
+
+def test_the_partner_lane_finds_sis_directly_not_on_vendor_sites():
+    """Net-new integrators are found, not harvested from a vendor's site.
+
+    A partner already sitting on a vendor's customer-story index is by
+    definition not net new, and those indexes name the vendors' buyers anyway.
+    The lane therefore runs no vendor-story sweep (`stories: 0` skips it in
+    `research`): candidates come from its queries, are qualified layer by layer
+    on their own pages, and score on the tools they implement, the verticals
+    they serve and the expertise they show.
+    """
+    partner = lane_module.shipped_lanes()["partner"]
+    assert partner.stories == 0, "partner lane must not bulk-gather vendor stories"
+    assert partner.resolve_stories == 0
+    assert partner.story_partner_half is False
+
+
 def test_the_career_lane_is_the_role_search_it_claims_to_be():
     """The lane that motivates the tuning plan: titles, remote, its own preset."""
     career = lane_module.shipped_lanes()["career"]

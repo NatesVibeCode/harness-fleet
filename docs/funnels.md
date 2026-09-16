@@ -99,6 +99,7 @@ by hand — so this picture cannot drift from what a run does. Regenerate with
   gates     : location
     read    : careers       paths: /careers, /jobs, /join-us
     read    : about         paths: /about, /about-us, /company
+    read    : ats           channel: greenhouse, ashby, lever
   earns     : confirms the employer from the posting page itself
 ──────────────────────────────────────────────────────────────────────────────
                       v
@@ -110,8 +111,7 @@ by hand — so this picture cannot drift from what a run does. Regenerate with
                       |  survivors, bundled per company
                       v
   BAR . require_kinds needs: delivery_hiring
-    GAP delivery_hiring          carried by ats   <- NO RUNG READS THIS
-  !! delivery_hiring cannot be gathered by this ladder as written
+    OK  delivery_hiring          carried by ats   <- rung reads: ats
 
   FIELDS THE ROW CARRIES . preset triage
     claims: priority, reason
@@ -158,6 +158,7 @@ by hand — so this picture cannot drift from what a run does. Regenerate with
     read    : partners      paths: /partners, /partnerships, /alliances
     read    : blog          paths: /blog, /insights, /resources...
     read    : news          paths: /news, /newsroom, /press
+    read    : vendor_stories6 vendor story indexes (snowflake, databricks, elastic, ...)
   earns     : settles the vertical gate, which only the case studies can answer
 ──────────────────────────────────────────────────────────────────────────────
                       v
@@ -170,35 +171,44 @@ by hand — so this picture cannot drift from what a run does. Regenerate with
                       v
   BAR . tier_1 needs: delivery_proof, independent_validation, stack_delivery
     OK  delivery_proof           carried by case_studies, services   <- rung reads: case_studies, services
-    GAP independent_validation   carried by vendor_stories, community   <- NO RUNG READS THIS
+    OK  independent_validation   carried by vendor_stories, community   <- rung reads: vendor_stories
     OK  stack_delivery           carried by services, case_studies, blog, code   <- rung reads: services, case_studies, blog
-  !! independent_validation cannot be gathered by this ladder as written
 
   FIELDS THE ROW CARRIES . preset partner-research
     claims: checklist, score, identified_practice, revenue_hypothesis, source_diversity_count, fit_tier, reasoning
     answers (14): target_stack, service_model, industry_verticals, delivery_coverage, vendor_alliances, case_study_outcome, client_logos, hiring_signals, commercial_terms, revenue_motion, third_party_mentions, engineering_output, growth_signals, evidence_categories
              required by the preset: yes
-
 ## What this says today
 
-**partner** — the population question is right (`services`: a delivery firm, not
-a product vendor) and the query breadth is real (6 templates over 5 technologies
-and 4 verticals = 34 queries). But the bar is `tier_1`, which requires
-`independent_validation`, and that evidence is carried by `vendor_stories` and
-`community` — **neither of which any rung reads**. As written the lane cannot
-qualify anything. Story indexes are also off (`stories: 0`), so candidates come
-from search alone.
+**No lane has a GAP any more** — every evidence kind a bar names is now carried
+by a surface some rung reads. Three things changed to get there:
 
-**account** — the population question is right for its definition (`any`: a
-competitor's customers are buyers, and a buyer may be a product company). But it
-carries **no structured fields at all**: `account-research` defines no `answers`,
-so a scored row has claims and a score and no verticals, no stack, no named
-clients. It also gathers almost nothing — 2 queries and no story indexes.
+- **partner** — `vendor_stories` is named on the stories rung, which makes
+  `tier_1`'s `independent_validation` reachable. It is cheap now: the address
+  filter reads the handful of stories that could name the firm, not the whole
+  index.
+- **career** — `ats` is named on the posting rung, which makes `delivery_hiring`
+  reachable. That bar was unreachable, which is why the lane returned single
+  digits however it was tuned.
+- **account and career firmographics** — the ICP and the employer profile now
+  carry typed `size_min`, `size_max`, `target_territories` and
+  `target_industries`, so an operator has somewhere to state theirs.
 
-**career** — the bar is `delivery_hiring`, carried by `ats`, and **no rung reads
-it**. Same shape of gap as partner: the lane cannot gather the evidence its own
-bar requires.
+**What is still missing**, in the order I would take it:
 
-The pattern across all three: the *questions* are now right and the *coverage* is
-not. A bar names evidence the ladder never reads, or a lane asks for fields its
-preset never defines.
+1. **The account row carries no fields.** `account-research` defines no
+   `answers`, so a scored account has a score and a gap and no verticals, no
+   stack, no named clients. The ICP names them (`required_stack`,
+   `trigger_pain_phrases`, `target_roles`, `anchor_logos`) and they have nowhere
+   to land.
+2. **The platform vendors are not excluded by name.** The classifier now fails
+   a vendor's own homepage — "book a demo", "our platform", "pricing plans" beat
+   "our customers" — but snowflake.com and friends enter through `{tech}` terms
+   and nothing rejects the domain outright. Belt and braces: an exclusion list.
+3. **GSI / RSI / SI is not a field.** The partner profile has `partner_kind`,
+   and the class is derivable from headcount and territory, but nothing writes
+   it onto the row.
+4. **An empty profile means rung one eliminates nothing.** That is the honest
+   behaviour — a gate with no threshold is not run — but a run should say so out
+   loud rather than quietly walking every candidate. Right now the only place it
+   shows is this document.

@@ -30,7 +30,7 @@
     "delivery_hiring"
   ],
   "top": 50,
-  "revision": 4,
+  "revision": 5,
   "funnel": {
     "allows": "any",
     "ladder": [
@@ -50,7 +50,8 @@
         ],
         "surfaces": [
           "careers",
-          "about"
+          "about",
+          "ats"
         ],
         "earns": "confirms the employer from the posting page itself"
       }

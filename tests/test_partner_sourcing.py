@@ -210,6 +210,35 @@ def test_candidate_entities_ignores_path_stopwords_and_empty_urls():
 # find — offline
 # ---------------------------------------------------------------------------
 
+def test_mention_searches_run_in_parallel_not_in_sequence(monkeypatch):
+    """Slow searches across backends must overlap: sequential is the old run."""
+    import time
+
+    from harness_fleet.discover import SearchHit
+
+    def slow_search(query, backends=None, max_results=10, **kwargs):
+        time.sleep(0.5)
+        return [SearchHit(url="https://trace3.com/about", title="About",
+                          snippet="Trace3 implements Kafka migrations for clients.",
+                          backend=(backends or ["hn"])[0])]
+
+    monkeypatch.setattr(partner_sourcing, "web_search", slow_search)
+    _patch_fetch(monkeypatch, {
+        "https://trace3.com/about": "Trace3 implements Kafka migrations for clients.",
+    })
+    started = time.monotonic()
+    items, report = enrich_partner(
+        "trace3.com", plan=None, backends=["hn", "ddgs"],
+        include_fetch=False, delay=0.0,
+    )
+    elapsed = time.monotonic() - started
+    assert report.searched > 4, "enough searches to tell parallel from sequential"
+    floor = report.searched * 0.5
+    assert elapsed < floor / 2, (
+        f"{report.searched} searches at 0.5s each took {elapsed:.2f}s: searched in sequence"
+    )
+    assert [item.item_id for item in items] == ["trace3.com"]
+
 def _patch_search(monkeypatch, hits_by_query):
     def fake_search(query, backends=None, max_results=10, **kwargs):
         return list(hits_by_query.get(query, []))

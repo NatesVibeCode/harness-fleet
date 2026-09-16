@@ -154,6 +154,61 @@ def test_extract_text_stdlib_last_resort(monkeypatch):
     assert "var x = 1" not in text
 
 
+# --- Semantic detail: meta description, alt text, outbound hosts ------------
+
+def test_meta_description_leads_the_extracted_text():
+    """The page's own one-sentence self-description is evidence the body misses."""
+    html = (
+        "<html><head>"
+        '<meta name="description" content="Northwind is a data consultancy implementing Kafka for banks.">'
+        "</head><body><article><p>Case studies and more prose.</p></article></body></html>"
+    )
+    text = extract_text(html)
+    assert text.startswith("Northwind is a data consultancy")
+    assert "Case studies and more prose." in text
+
+
+def test_meta_description_prefers_opengraph_and_never_repeats_itself():
+    og = (
+        "<html><head>"
+        '<meta property="og:description" content="A boutique systems integrator in Leeds.">'
+        '<meta name="description" content="The og one wins.">'
+        "</head><body><p>A boutique systems integrator in Leeds.</p></body></html>"
+    )
+    text = extract_text(og)
+    assert "The og one wins." not in text
+    assert text.count("A boutique systems integrator in Leeds.") == 1
+
+
+def test_image_alts_become_quotable_but_generic_ones_are_dropped():
+    html = (
+        "<html><body><article>"
+        '<img src="logo.png" alt="logo">'
+        '<img src="client.png" alt="Acme Bank">'
+        "<p>Our clients trust us.</p></article></body></html>"
+    )
+    text = extract_text(html)
+    assert "Acme Bank" in text, "a named client logo is evidence"
+    assert "logo" not in text.lower().replace("acme bank", ""), "a generic alt names nothing"
+
+
+def test_records_carry_meta_description_and_outbound_hosts(fake_http):
+    html = (
+        "<html><head><title>Trace3</title>"
+        '<meta name="description" content="Trace3 is an IT consultancy delivering data platforms.">'
+        "</head><body><article><p>We partner with the best.</p>"
+        '<a href="https://www.snowflake.com/partners/">Snowflake partnership</a>'
+        '<a href="https://trace3.com/about">About us</a>'
+        "</article></body></html>"
+    )
+    FakeClient.routes["https://trace3.com/"] = FakeResponse(
+        headers={"content-type": "text/html"}, content=html.encode(), url="https://trace3.com/",
+    )
+    rec = fetch_text("https://trace3.com/", respect_robots=False)
+    assert rec.metadata["meta_description"] == "Trace3 is an IT consultancy delivering data platforms."
+    assert rec.metadata["outbound_hosts"] == ["www.snowflake.com"], "own host excluded, deduped, sorted"
+
+
 # --- Fetch -----------------------------------------------------------------
 
 def test_fetch_text_parses_html(fake_http):

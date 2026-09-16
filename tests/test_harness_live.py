@@ -14,6 +14,7 @@ config) with a model its build no longer recognizes, which is a stale machine,
 not a fleet bug. That skips *only* while our recipe passes no model of its own;
 the moment a recipe names a model, a rejected model is ours again and fails.
 """
+import os
 import shutil
 
 import pytest
@@ -62,6 +63,8 @@ CASES = [
 
 @pytest.mark.parametrize("name,binary,provider_cls,route_id", CASES)
 def test_live_ping(name, binary, provider_cls, route_id):
+    if os.environ.get("HARNESS_FLEET_LIVE_TESTS") != "1":
+        pytest.skip("Set HARNESS_FLEET_LIVE_TESTS=1 to authorize live inference")
     if shutil.which(binary) is None:
         pytest.skip(f"{binary} not installed")
     ok, text, receipt = provider_cls().run_prompt(

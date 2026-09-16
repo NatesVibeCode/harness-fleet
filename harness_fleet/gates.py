@@ -226,15 +226,24 @@ def read_verticals(text: str) -> tuple[str, ...]:
 def read_kind(text: str) -> str:
     """Whether a text reads as a delivery firm, a product company, or neither.
 
-    Delivery wins a tie: a consultancy that also sells a small product is still
-    a services firm, which is the population a partner lane wants.
+    **The product markers decide, not the delivery ones.** That is the opposite
+    of what this did, and the old precedence was a hole in the gate that exists
+    to keep product vendors out: the delivery vocabulary contains "our clients",
+    "our customers" and "we build", which is how a software company's own
+    homepage describes itself. A vendor read as a delivery firm, passed the kind
+    gate, and the size and location gates had no opinion about Snowflake.
+
+    The markers are not symmetric. "Book a demo", "our platform", "pricing
+    plans", "per seat" and "free trial" are near-certain evidence of a product
+    company; "our customers" is evidence of nothing at all. So a text carrying
+    both is a product company that also talks about its customers — which is
+    every product company.
     """
-    services = bool(matches_any(text, SERVICES_TERMS))
     software = bool(matches_any(text, SOFTWARE_TERMS))
-    if services:
-        return "services"
     if software:
         return "software"
+    if matches_any(text, SERVICES_TERMS):
+        return "services"
     return ""
 
 

@@ -1,13 +1,13 @@
 {
   "name": "partner",
-  "description": "Implementation partners and consultancies, from vendor-published stories",
+  "description": "Net-new systems integrators and consultancies, found directly and qualified layer by layer",
   "queries": [
-    "\"{tech}\" \"implementation partner\" (\"case study\" OR \"customer story\")",
-    "\"{tech}\" \"systems integrator\" (certified OR \"premier partner\")",
-    "\"{tech}\" consultancy \"our client\" (migration OR implementation)",
-    "\"{tech}\" \"professional services\" partner -site:medium.com",
-    "\"managed service provider\" \"{tech}\" \"{vertical}\"",
-    "\"{tech}\" data consultancy (\"case study\" OR \"we built\")"
+    "\"{tech}\" consultancy \"our clients\" (implementation OR migration)",
+    "\"{tech}\" systems integrator consulting services",
+    "\"data consultancy\" \"{tech}\" (\"case study\" OR \"we built\")",
+    "\"{tech}\" implementation services firm {vertical}",
+    "\"{tech}\" managed services provider consultancy",
+    "\"systems integration\" \"{tech}\" clients practice"
   ],
   "backends": [
     "ddgs",
@@ -16,13 +16,9 @@
   "preset": "partner-research",
   "tier": "tier_1",
   "top": 25,
-  "revision": 5,
-  "stories": 80,
-  "resolve_stories": 60,
-  "story_paths": [
-    "/partners/"
-  ],
-  "story_partner_half": true,
+  "revision": 7,
+  "stories": 0,
+  "resolve_stories": 0,
   "query_terms": {
     "tech": [
       "Kafka",
@@ -61,11 +57,13 @@
           "location"
         ],
         "surfaces": [
+          "home",
           "about",
           "services",
+          "partners",
           "careers"
         ],
-        "earns": "qualifies the cheap gates on their own pages, where a snippet may not"
+        "earns": "qualifies the cheap gates on their own pages, landing first, where a snippet may not"
       },
       {
         "name": "stories",
@@ -77,7 +75,8 @@
           "case_studies",
           "partners",
           "blog",
-          "news"
+          "news",
+          "vendor_stories"
         ],
         "earns": "settles the vertical gate, which only the case studies can answer"
       }
