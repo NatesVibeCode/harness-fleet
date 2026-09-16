@@ -22,7 +22,11 @@ OWN_BINARY = "harness-fleet"
 
 def _shipped_binaries() -> set[str]:
     """Every command this distribution installs, from its own packaging."""
-    import tomllib
+    try:
+        import tomllib
+    except ModuleNotFoundError:  # Python 3.10, which this project still supports
+        pytest.importorskip("tomli", reason="needs a TOML parser: tomllib (3.11+) or tomli")
+        import tomli as tomllib  # type: ignore[no-redef]
 
     data = tomllib.loads((REPO / "pyproject.toml").read_text(encoding="utf-8"))
     return set(data.get("project", {}).get("scripts", {}))
