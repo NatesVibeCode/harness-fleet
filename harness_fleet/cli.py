@@ -1914,6 +1914,33 @@ def cmd_research(args: argparse.Namespace) -> None:
         min_source_coverage=min_source_coverage if min_source_coverage is not None else 0.0,
         min_chars=getattr(args, "min_chars", None),
     )
+    # 1a. Candidate entities from the stories vendors publish about customers.
+    # One query returns a handful of hits; a vendor's story index holds hundreds,
+    # and each story is vendor-published prose about a named company. The lane
+    # states its own volume: this is a page budget, not a search.
+    story_limit = int(getattr(args, "stories", None) or 0)
+    if story_limit <= 0 and lane is not None:
+        story_limit = int(lane.stories or 0)
+    if story_limit > 0:
+        from .enrich import story_candidates
+
+        stories, story_skipped = story_candidates(
+            per_vendor=story_limit,
+            timeout=float(getattr(args, "timeout", 20.0) or 20.0),
+            respect_robots=not getattr(args, "ignore_robots", False),
+        )
+        print(
+            f"Vendor stories: {len(stories)} candidate comp"
+            f"{'y' if len(stories) == 1 else 'ies'} from the vendors' own story indexes"
+            + (f" ({len(story_skipped)} skipped)" if story_skipped else "")
+        )
+        report["stories"] = {
+            "candidates": len(stories),
+            "skipped": story_skipped[:20],
+            "per_vendor": story_limit,
+        }
+        if stories:
+            items = list(items) + list(stories)
     # Persist what discovery saw before anything can fail: the lane report's
     # yield is captured-vs-attempted, and a run that captured nothing is exactly
     # the run whose reasons a person needs to read.
@@ -1944,7 +1971,15 @@ def cmd_research(args: argparse.Namespace) -> None:
     keyed = []
     unnamed = 0
     for item in items:
-        key = entity_key_for(item.source_uri or "", item.text or "", item.metadata or {})
+        metadata = item.metadata or {}
+        if metadata.get("attribution"):
+            # The source that gathered this already said who it is about — a
+            # vendor story names its customer in its own address. Re-deriving it
+            # from the text's linked domains collapsed 213 companies onto the 10
+            # firms they happened to link.
+            keyed.append(item)
+            continue
+        key = entity_key_for(item.source_uri or "", item.text or "", metadata)
         if not key:
             unnamed += 1
             continue
@@ -1970,7 +2005,10 @@ def cmd_research(args: argparse.Namespace) -> None:
         extra, walk_report = _enrich_entities(
             dossiers, lane,
             per_surface=int(getattr(args, "enrich_pages", 3) or 3),
-            max_entities=int(getattr(args, "enrich_entities", 25) or 25),
+            # Zero means every entity short of the bar. A cap of 25 could not
+            # cover a lane that gathers hundreds of candidates, so most of them
+            # were scored on search snippets alone and came back unfit.
+            max_entities=int(getattr(args, "enrich_entities", 0) or 0) or 10_000,
             timeout=float(getattr(args, "timeout", 20.0) or 20.0),
             delay=float(getattr(args, "delay", 1.0) or 0.0),
             respect_robots=not getattr(args, "ignore_robots", False),
@@ -1999,6 +2037,14 @@ def cmd_research(args: argparse.Namespace) -> None:
     merged = len(keyed) - len(dossiers)
     print(f"Bundled {len(keyed)} sources into {len(dossiers)} account dossiers"
           + (f" ({merged} merged)" if merged else "") + f" -> {input_path}")
+    # The report is written before the bundle, so it held only the search hits
+    # while the run shipped hundreds of dossiers. A run's account of itself has
+    # to describe what it produced, not the first stage of producing it.
+    report["sources_bundled"] = len(keyed)
+    report["dossiers"] = len(dossiers)
+    if merged:
+        report["merged"] = merged
+    _write_discovery_report(workspace, run_id, report)
 
     # 2. Ensure the task exists (a preset is enough for a first run).
     try:
@@ -2867,8 +2913,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Pages to keep per surface when walking an entity's own site (default 3)",
     )
     research.add_argument(
-        "--enrich-entities", type=_positive_int, default=25,
-        help="Most entities to walk per run (default 25)",
+        "--stories", type=_non_negative_int, default=None,
+        help="Vendor-published customer stories to gather per vendor as candidate entities "
+             "(default: whatever the lane declares; 0 turns the source off)",
+    )
+    research.add_argument(
+        "--enrich-entities", type=_non_negative_int, default=0,
+        help="Most entities to walk per run (default 0: every entity short of the bar; "
+             "each one is bounded by --enrich-pages)",
     )
     research.add_argument("--workspace-root", default=".", help="Workspace root for relative paths")
     _policy_options(research)

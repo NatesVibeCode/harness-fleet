@@ -38,6 +38,11 @@ class Lane(ClosedModel):
     queries: list[str] = []
     backends: list[str] = []
     channels: list[str] = []
+    #: Vendor-published stories to gather per vendor as candidate entities. A
+    #: vendor's own story index holds hundreds and each story is prose about a
+    #: named company, which is the independent half of the evidence bar. Zero
+    #: turns the source off.
+    stories: int = 0
     #: Filters the lane cares about (e.g. "enterprise sales", "sales ops").
     title_include: list[str] = []
     title_exclude: list[str] = []
@@ -84,6 +89,8 @@ def validate_lane(lane: Lane, *, channels: set[str] | None = None, backends: set
                 )
     if lane.top < 1:
         raise LaneError("top: must be at least 1")
+    if lane.stories < 0:
+        raise LaneError("stories: cannot be negative")
     if lane.min_score is not None and not 0 <= lane.min_score <= 100:
         raise LaneError("min_score: must be between 0 and 100")
 

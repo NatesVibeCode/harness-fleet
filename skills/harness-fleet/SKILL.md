@@ -20,8 +20,39 @@ file, not a different tool:
 | `career` | enterprise sales/ops roles, remote, by title | `triage` | tier_3 |
 | `partner` | implementation partners from vendor stories | `partner-research` | tier_1 |
 
+## Two stages: find, then go and look
+
+A search returns pages *about* a company, which is rarely the evidence a lane's
+bar asks for — the stack a firm delivers, who it is hiring and what it charges
+live on its own site, its hiring board and the stories its vendors publish. So a
+run has two stages:
+
+1. **Discovery** — search the lane's queries, and (for lanes that declare
+   `stories`) enumerate the customer stories vendors publish about their
+   customers. One query returns a handful of hits; a vendor's own story index
+   holds hundreds, and every story is prose the vendor published about a named
+   company. This is where volume comes from.
+2. **The walk** — for each entity still short of the lane's bar, visit the
+   surfaces that carry the missing kinds: its sitemap (which answers for every
+   domain tested and names the real case-study URLs), its case studies and
+   services pages, its hiring board through its JSON API, the vendor stories
+   that name it, and the communities discussing it. `--no-enrich` stops after
+   stage 1.
+
+Every surface is aimed rather than swept: only entities short of the bar are
+walked, only for the kinds they are missing, and what a surface contributes to
+one dossier is bounded — with the surplus counted and reported, never dropped
+quietly.
+
+Surfaces that answer are declared once in `harness_fleet/data/source_surfaces.json`;
+so are the ones that turned out not to (clutch.co and g2.com answer 403 for
+every domain, Bluesky's public search 403s, YouTube transcripts are gated) —
+each removal is recorded with its reason so nobody re-adds one from memory.
+
 ```bash
 harness-fleet lane list                    # the lanes this install can run
+harness-fleet research --lane partner --stories 80   # hundreds of candidates from vendor story indexes
+harness-fleet research --lane account --no-enrich    # search only: skip the walk
 harness-fleet research --lane career          # the whole pipeline for one lane
 harness-fleet lane report <run_id> --lane career   # what it actually produced
 ```

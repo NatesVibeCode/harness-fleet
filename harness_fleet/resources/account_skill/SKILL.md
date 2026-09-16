@@ -15,6 +15,12 @@ carries what is specific to the `account` lane:
 - **Lane config:** `lanes/account.json` — seeds, queries, sources, filters.
 - **Preset:** `account-research` · **Bar:** the tier ladder, floor `tier_3` (a record clearing tier_3, tier_2 or tier_1 has met it) · **Output:** top 25.
 - **Looks for:** companies doing the work, and companies hiring for it.
+- **Volume:** `stories: 60` in the lane file — candidates come from the customer
+  stories vendors publish about their customers, as well as from the lane's
+  queries.
+- **The walk:** each account short of the bar is visited on its own surfaces
+  (sitemap, case studies, services, blog, GitHub org, community) for the
+  evidence it is missing, and only for that.
 
 Run it with `harness-fleet research --lane account`, or over MCP by passing
 `lane: "account"` to the pipeline tools.

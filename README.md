@@ -417,8 +417,8 @@ mechanism. Three ship in the package:
 | Lane | Answers | Scores with | Bar |
 | --- | --- | --- | --- |
 | `account` | Which accounts are doing the work (and hiring for it) | `account-research` | the tier ladder, floor `tier_3` |
-| `career` | Which employers are hiring for this kind of role | `triage` | `require_kinds: ["delivery_hiring"]` |
 | `partner` | Which implementation partners can generate revenue with us | `partner-research` | the tier ladder, floor `tier_1` |
+| `career` | Which employers are hiring for this kind of role | `triage` | `delivery_hiring` |
 
 ```jsonc
 {
@@ -435,6 +435,25 @@ mechanism. Three ship in the package:
   "top": 25, "min_score": null,        // presentation
   "revision": 1
 }
+```
+
+**How a lane returns hundreds.** Two stages, and the first one is not search.
+Lanes that declare `stories` enumerate the customer stories each vendor
+publishes about its customers — Snowflake, Databricks, Elastic, Datadog,
+MongoDB — and take one candidate per story: a vendor's own index holds hundreds,
+and every story is prose the vendor published about a named company. The second
+stage then *goes and looks*: for each entity still short of the bar, it visits
+that entity's own surfaces for exactly the evidence it is missing — its sitemap
+first (which answered for every domain tested and names the real case-study
+URLs), then its case studies, services, partners and blog, its hiring board
+through its JSON API, the vendor stories that name it, and the communities
+discussing it. `--no-enrich` stops after the first stage; `--stories N` and
+`--enrich-pages N` set the volume.
+
+```bash
+harness-fleet research --lane partner                 # hundreds of candidates, then the walk
+harness-fleet research --lane partner --no-enrich     # search and story indexes only
+harness-fleet lane report <run_id>                    # what that run actually produced
 ```
 
 - **Unknown keys are refused.** A lane cannot smuggle in a mechanism override; if it
@@ -504,6 +523,8 @@ Free routes are used by default. A paid route approved in an earlier session mus
 | `studio` | Serve the localhost settings companion (pick harnesses and models; saves the selection to SQLite) |
 | `research` | One command from a question to a ranked deliverable: discover → bundle per entity → score → export (`--lane`, `--query`, `--backend`, `--max-results`, `--min-chars`, `--top`) |
 | `lane list` | The lanes this install can run: preset, evidence bar, query count, and whether the lane came from the package or your workspace |
+| `--stories N` | Vendor-published customer stories to gather per vendor as candidate entities (a lane declares its own default) |
+| `--enrich-pages N` · `--no-enrich` | Pages kept per surface when walking an entity's own site, or skip the walk entirely |
 | `lane report` | Measure a finished run against its lane: yield per source, records meeting the evidence bar, claims carried vs refused with reasons, a re-fetched truth sample, cost (`RUN_ID`, `--lane`, `--sample`, `--freeze`) |
 | `sources` | The learned source registry: `list`, `propose`, `promote`, `demote`, `channels` — which hosts count as evidence, and why |
 | `discover` | Broad web search (`ddgs`, self-hosted SearXNG, HN Algolia, YC, Reddit, Stack Exchange, Discourse, Lobsters, Lemmy, Dev.to) to an accounts file |

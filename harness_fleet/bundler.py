@@ -7,6 +7,7 @@ into consolidated, section-tagged composite dossiers per canonical entity.
 from __future__ import annotations
 
 import csv
+import sys
 from collections import defaultdict
 from collections.abc import Iterable, Sequence
 from pathlib import Path
@@ -44,6 +45,11 @@ from .sources import (
 from .sources import (
     classify_source_category as classify_source_category,
 )
+
+# A bundled dossier is one row, and a row can be far larger than csv's 128KB
+# default field limit. Without this the export fails after the whole run is
+# done, and a company's thorough evidence reads as a parse error.
+csv.field_size_limit(min(2**31 - 1, sys.maxsize))
 
 
 def bundle_records(

@@ -315,6 +315,117 @@ class EnrichReport:
         }
 
 
+def story_entity(url: str, *, sources: dict[str, Any] | None = None) -> tuple[str, str]:
+    """The company a vendor story is about, and the vendor that published it.
+
+    A story's own address names the customer: vendors file them under
+    ``/customers/<slug>`` or ``/case-studies/<slug>``, declared per vendor in the
+    surface plan. That slug is a *name*, not a host, so a candidate found this
+    way can be scored on the vendor's prose — which is exactly the independent
+    evidence the bar asks for — but the walk has no website to visit and says so
+    rather than looking for one.
+
+    AWS is the exception and is left unnamed: its stories are filed as
+    ``<customer>-<partner>`` and nothing in the slug says which half is which,
+    and guessing would attribute the story to the wrong firm.
+    """
+    from .sources import host_of
+
+    plan = sources or load_surfaces()
+    vendors = (plan.get("vendor_stories") or {}).get("vendors") or {}
+    path = urlparse(url).path.lower()
+    host = host_of(url)
+    for vendor, spec in vendors.items():
+        if not isinstance(spec, dict):
+            continue
+        declared = host_of(str(spec.get("sitemap") or spec.get("hub") or ""))
+        # The vendor is whoever's own site the story is on. Matching on the path
+        # prefix instead labelled a Snowflake story as Databricks, because both
+        # file their stories under /customers/.
+        if not declared or not (host == declared or host.endswith("." + declared)):
+            continue
+        if spec.get("hub"):
+            # A hub feed files stories as <customer>-<partner> and nothing in
+            # the slug says which half is which; guessing would credit the
+            # wrong firm, so the story is left unattributed.
+            return "", vendor
+        for prefix in spec.get("story_paths") or ():
+            marker = str(prefix).lower()
+            if marker not in path:
+                continue
+            tail = path.split(marker, 1)[1]
+            slug = tail.strip("/").split("/")[0].strip()
+            slug = re.sub(r"\.(html?|php|aspx)$", "", slug)
+            slug = re.sub(r"[-_](?:\d{4,}|[0-9a-f]{8,})$", "", slug)
+            if len(slug) < 3:
+                continue
+            return slug.replace("-", "_"), vendor
+    return "", ""
+
+
+def story_candidates(
+    *,
+    per_vendor: int = 40,
+    sources: dict[str, Any] | None = None,
+    timeout: float = 20.0,
+    respect_robots: bool = True,
+    max_pages: int | None = None,
+) -> tuple[list[Any], list[dict[str, str]]]:
+    """Candidate entities from the stories vendors publish about their customers.
+
+    One search query returns a handful of hits. A vendor's own story index holds
+    hundreds, and each story is prose the vendor published about a named
+    company: the independent half of the evidence bar, available in bulk
+    without scraping a directory that refuses to be read.
+    """
+    from .discover import fetch_text
+    from .models import InputItem
+
+    plan = sources or load_surfaces()
+    urls, skipped = vendor_story_urls(
+        plan, max_per_vendor=per_vendor, timeout=timeout, respect_robots=respect_robots,
+    )
+    budget = max_pages if max_pages is not None else per_vendor * 6
+    items: list[Any] = []
+    seen: set[str] = set()
+    for url in urls:
+        if len(items) >= budget:
+            skipped.append({
+                "source": "vendor_stories",
+                "reason": f"stopped after {budget} stories (the run's own page budget)",
+            })
+            break
+        entity, vendor = story_entity(url, sources=plan)
+        if not entity:
+            skipped.append({
+                "url": url,
+                "reason": "the story's address does not name one company, so it cannot be attributed",
+            })
+            continue
+        if entity in seen:
+            continue
+        try:
+            record = fetch_text(url, timeout=timeout, respect_robots=respect_robots)
+        except Exception as exc:
+            skipped.append({"url": url, "reason": str(exc)[:200]})
+            continue
+        seen.add(entity)
+        metadata = dict(getattr(record, "metadata", None) or {})
+        metadata.update({
+            "backend": f"stories:{vendor}",
+            "enrich_surface": "vendor_stories",
+            "attribution": "vendor story slug",
+        })
+        items.append(InputItem(
+            item_id=entity,
+            text=str(getattr(record, "text", "") or ""),
+            title=getattr(record, "title", None),
+            source_uri=getattr(record, "source_uri", None),
+            metadata=metadata,
+        ))
+    return items, skipped
+
+
 def surface_urls(
     surface: str,
     domain: str,

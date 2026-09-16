@@ -12,5 +12,6 @@
   "preset": "partner-research",
   "tier": "tier_1",
   "top": 25,
-  "revision": 1
+  "revision": 2,
+  "stories": 80
 }

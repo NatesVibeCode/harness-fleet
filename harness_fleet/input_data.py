@@ -5,6 +5,7 @@ import csv
 import html as _html
 import json
 import re
+import sys
 from collections.abc import Iterator
 from html.parser import HTMLParser
 from pathlib import Path
@@ -13,6 +14,11 @@ from typing import Any
 from pydantic import ValidationError
 
 from .models import InputItem
+
+# A bundled dossier is one row, and a row can be far larger than csv's 128KB
+# default field limit. Without this the export fails after the whole run is
+# done, and a company's thorough evidence reads as a parse error.
+csv.field_size_limit(min(2**31 - 1, sys.maxsize))
 
 
 class _TextExtractor(HTMLParser):
