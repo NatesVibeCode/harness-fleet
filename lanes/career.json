@@ -1,13 +1,12 @@
 {
   "name": "career",
-  "description": "Enterprise sales and operations roles, remote",
+  "description": "Enterprise sales and operations roles, remote. The lane states what it wants; which boards carry it is learned, not listed.",
   "seeds": [
     "enterprise software"
   ],
   "queries": [
-    "site:jobs.ashbyhq.com \"enterprise sales\" remote",
-    "site:boards.greenhouse.io \"sales operations\" remote",
-    "site:jobs.lever.co \"enterprise sales\" remote"
+    "\"enterprise sales\" remote (\"apply now\" OR \"job description\" OR \"join our team\")",
+    "\"sales operations\" remote hiring (\"apply now\" OR \"job description\")"
   ],
   "backends": [
     "ddgs",
