@@ -1,5 +1,11 @@
 # Partner Finder — the first surface under the one-repo model
 
+> **Status: closed, not executed.** The naming question below was answered by
+> [one-repo.md](one-repo.md): there is one repo, one version and one CLI, and the
+> partner product is a lane in it. Nothing in this document should be acted on as
+> a plan; it is kept for the inventory of what had to move.
+
+
 > **Superseded in shape by [one-repo.md](one-repo.md).** Partner does not need its
 > own repo, distribution or version: it becomes a lane, a preset and a paragraph in
 > the one skill. The inventory below is still the checklist of what has to move;
@@ -39,7 +45,7 @@ Say the word if you prefer `partner-finder-harness`, `partners`, or keeping
 | # | Step | Check |
 | --- | --- | --- |
 | P1 | Pick the name (yours) and add `branding.py` for the new distribution | `partner-finder --version` reports its own name; MCP server and `setup` name the installed product (already dynamic) |
-| P2 | New repo from the engine, exactly like `account-fleet`: same `harness_fleet/` (drift-locked), `branding.py`, `pyproject.toml`, `lane` file | drift compares **four** repos; the new one is byte-identical on every locked file |
+| P2 | ~~New repo from the engine, exactly like `account-fleet`~~ — **overtaken**: the sibling repositories were archived and every product became a lane here. The partner lane ships in `harness_fleet/resources/lanes/partner.json` with a preset and a skill, and there is nothing to install. | no second repo to keep byte-identical; drift compares this checkout alone |
 | P3 | Rename inside the skill, docs and packaged copies (`skills/partner-finder/…`) | `tests/test_docs_commands.py` green in every repo — no documented command that does not parse, no foreign binary |
 | P4 | The skill: one procedure, lane config inside (S7 rule — no sub-skill unless the lane has genuinely different *procedure*) | the skill declares its lane and defers procedure to the shared playbook |
 | P5 | Public repo hygiene: README, FREE-ACCESS, SECURITY, CONTRIBUTING, LICENSE, examples, `pip install` verified from a clean venv | install works with no extras; `research --lane partner` runs offline on the demo route |

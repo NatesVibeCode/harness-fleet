@@ -33,7 +33,7 @@ ruff check harness_fleet/ tests/
 mypy harness_fleet/
 ```
 
-Install one fleet per environment: the `harness-fleet` distribution ships the single `harness-fleet` console script (`uv tool install .` then `harness-fleet --help`). The account-fleet and career-fleet distributions ship their own scripts from their own checkouts and share the `harness_fleet` engine package.
+There is one install and one script: the `harness-fleet` distribution ships the single `harness-fleet` console script (`uv tool install .` then `harness-fleet --help`). The account, career and partner products are lanes — JSON over the same engine — and their skills ship in this package.
 
 Do not include credentials, customer data, provider responses containing private data, or local machine paths in issues, fixtures, commits, or receipts.
 

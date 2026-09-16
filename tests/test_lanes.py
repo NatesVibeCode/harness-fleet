@@ -31,14 +31,17 @@ def test_unknown_keys_are_refused(tmp_path):
 
 
 def test_each_bad_field_is_named(tmp_path):
-    for fields, expected in (
+    # The case directory is indexed, not hashed: `hash()` of a string varies per
+    # process, so two cases could collide and the second mkdir would fail. A
+    # test that fails once in a few runs is worse than no test.
+    for index, (fields, expected) in enumerate((
         ({"preset": "no-such-preset"}, "preset"),
         ({"tier": "tier_9"}, "tier"),
         ({"require_kinds": ["vibes"]}, "require_kinds"),
         ({"top": 0}, "top"),
         ({"min_score": 140}, "min_score"),
-    ):
-        where = tmp_path / f"case{abs(hash(str(fields))) % 1000}"
+    )):
+        where = tmp_path / f"case{index}"
         where.mkdir()
         _write(where, "broken", **fields)
         with pytest.raises(lanes.LaneError) as err:

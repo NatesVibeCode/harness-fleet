@@ -5,7 +5,13 @@ to decide for itself, and how every claim, score and insight moves between
 those layers without losing its meaning. Written to be executed, not admired:
 each step names its boundary, its deliverable and the check that proves it.
 
-> **See also:** [partner-product.md](partner-product.md) — the Partner Finder extraction (rename, own public repo, its own skill and lane). Queued, not started.
+> **See also:** [partner-product.md](partner-product.md) — the Partner Finder extraction. Closed unexecuted: partner shipped as a lane instead.
+
+> **Superseded:** this plan was written when there were three public
+> distributions. The siblings are archived and there is one distribution whose
+> products are lanes; the boundary it argues for (mechanism shared, product at
+> the edges) is exactly what shipped, with `branding.py` plus the lane files as
+> the only product-specific surface.
 
 Applies to all three public distributions (`harness-fleet`, `account-fleet`,
 `career-fleet`), which share one engine and differ only in branding and

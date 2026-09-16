@@ -20,6 +20,7 @@ from urllib.parse import urlparse
 
 from pydantic import ValidationError
 
+from . import __version__
 from .catalog import RouteCatalog
 from .engine import Engine
 from .input_data import InputItem
@@ -243,7 +244,7 @@ def _run_step(
 
 
 class StudioHandler(BaseHTTPRequestHandler):
-    server_version = "HarnessStudio/0.3"
+    server_version = f"HarnessFleetStudio/{__version__}"
 
     def log_message(self, *args: Any) -> None:  # keep studio output machine-clean
         pass
