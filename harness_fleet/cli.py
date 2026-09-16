@@ -1876,6 +1876,22 @@ def cmd_research(args: argparse.Namespace) -> None:
         policy=policy,
     )
 
+    # 3b. Nothing scored is a failure, not an empty deliverable: say why.
+    verified = int(packet.get("total_verified_records") or 0)
+    if verified == 0:
+        reasons = []
+        for receipt in (packet.get("receipts") or [])[:3]:
+            if isinstance(receipt, dict):
+                error = str(receipt.get("error") or "").strip()
+                route = str(receipt.get("requested_route") or "?")
+                if error:
+                    reasons.append(f"{route}: {error[:120]}")
+        detail = ("\n  " + "\n  ".join(reasons)) if reasons else ""
+        raise ValueError(
+            f"no records were scored: every attempt failed, so there is no deliverable.{detail}\n"
+            f"  Check the routes this install can actually use: `{branding.CLI_NAME} routes --json`"
+        )
+
     # 4. Export the ranked deliverable and say where it is.
     from .export import export_clean_packet
 

@@ -115,8 +115,8 @@ def test_the_bar_decides_whether_a_claim_is_scored():
     assert task.support_strengths([quote], "https://acme.com/cs", text=first) == {}
 
     vendor = first + ("\n\n=== SECTION: VENDOR_REGISTRY (URI: https://aws.amazon.com/partners/success/acme/) ===\n"
-                      "Acme built a streaming platform with Kafka.")
-    vendor_quote = {"text": "Acme built a streaming platform with Kafka.",
+                      "Acme built a streaming platform with Kafka. The vendor publishes a detailed customer story describing the migration, the platform it ran on, the team that delivered it and the measured result.")
+    vendor_quote = {"text": "Acme built a streaming platform with Kafka. The vendor publishes a detailed customer story describing the migration, the platform it ran on, the team that delivered it and the measured result.",
                     "start": vendor.index("Acme built"), "supports": ["q8_independent_validation"]}
     scored = task.support_strengths([vendor_quote], "https://acme.com/cs", text=vendor)
     assert scored["q8_independent_validation"] == 1.0
@@ -126,7 +126,7 @@ def test_the_readout_shows_two_levels():
     from harness_fleet.evidence import entity_evidence
 
     vendor = ("=== SECTION: VENDOR_REGISTRY (URI: https://aws.amazon.com/partners/success/a/) ===\n"
-              "Acme built a Kafka platform.")
+              "Acme built a Kafka platform for a bank. The vendor publishes a detailed customer story describing the migration, the platform it ran on, the team that delivered it and the measured result.")
     levels = {f["kind"]: f["confidence"] for f in entity_evidence(vendor)["confidences"]}
     assert levels["independent_validation"] == "reported"
     assert all(level in {"reported", "unsupported"} for level in levels.values())

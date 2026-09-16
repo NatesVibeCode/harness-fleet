@@ -91,6 +91,10 @@ PLATFORM_HOSTS = (
     "blogspot.com",
     "carrd.co",
     "readthedocs.io",
+    "medium.com",
+    "substack.com",
+    "hashnode.dev",
+    "ghost.io",
 )
 
 # Hosts that *talk about* entities rather than being entities: directories,
@@ -288,4 +292,10 @@ def entity_key_for(source_uri: str, text: str = "", metadata: dict[str, Any] | N
         named = [domain for domain in linked_domains(text) if not is_source_host(domain)]
         if named:
             return named[0]
+        # A platform page (YouTube, Medium, LinkedIn) that names nobody is not an
+        # entity: filing it under the platform turned a copyright line into an
+        # "account". Vendor registries and job boards keep their own key, because
+        # a story there is evidence about somebody even when unnamed.
+        if any(marker in key for marker in PLATFORM_HOSTS):
+            return ""
     return key or "unknown_entity"

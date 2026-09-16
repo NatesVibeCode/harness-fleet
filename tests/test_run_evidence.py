@@ -11,7 +11,9 @@ from harness_fleet.store import HarnessStore
 
 CASE_STUDY = (
     "Acme implemented a Kafka migration for Northwind Bank and cut latency by 40%. "
-    "Acme is certified Premier Partner."
+    "Acme is certified Premier Partner. The programme covered the ingestion path, the "
+    "streaming platform and the operating model, and the team published the measured "
+    "result alongside the design decisions it made along the way."
 )
 
 

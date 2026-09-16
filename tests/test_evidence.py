@@ -17,13 +17,13 @@ Acme implemented a Kafka migration for Northwind Bank in 2025 and cut latency by
 Certified Snowflake Premier Partner.
 
 === SECTION: FIRST_PARTY_PRACTICE (URI: https://acme.example/services) ===
-We deliver managed services and integration work for clients.
+We deliver managed services and integration work for clients. The story names the client, the platform, the delivery team and the measured outcome, and it describes how the work was run.
 
 === SECTION: ATS_REQUISITIONS (URI: https://boards.greenhouse.io/acme) ===
 Senior Kafka Solutions Architect, remote, posted 2026.
 
 === SECTION: VENDOR_REGISTRY (URI: https://aws.amazon.com/partners/success/acme-bank/) ===
-Acme built a streaming platform for Northwind Bank on AWS.
+Acme built a streaming platform for Northwind Bank on AWS. The story names the client, the platform, the delivery team and the measured outcome, and it describes how the work was run.
 """
 
 FIRST_PARTY_ONLY = """# Multi-Source Evidence Dossier: solo.example
@@ -97,7 +97,7 @@ def test_contradictions_name_the_claim_and_the_missing_counterpart():
 def test_contradictions_stay_quiet_when_a_third_party_echoes_the_claim():
     """A stack the vendor story itself names is corroborated, not contradicted."""
     corroborated = DOSSIER.replace(
-        "Acme built a streaming platform for Northwind Bank on AWS.",
+        "Acme built a streaming platform for Northwind Bank on AWS. The story names the client, the platform, the delivery team and the measured outcome, and it describes how the work was run.",
         "Acme built a Kafka streaming platform for Northwind Bank on AWS and Snowflake.",
     )
     kinds = {f["kind"] for f in contradictions(corroborated)}

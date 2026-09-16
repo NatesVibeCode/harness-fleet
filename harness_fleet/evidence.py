@@ -119,6 +119,21 @@ def _technologies(text: str) -> set[str]:
     return found
 
 
+#: Boilerplate that appears on every page and states nothing.
+_BOILERPLATE_RE = re.compile(r"(all rights reserved|©|copyright|privacy policy|terms of (use|service)|cookie)", re.I)
+
+
+def _has_prose(text: str, min_words: int = 20) -> bool:
+    """Real sentences, not chrome: a copyright line is not evidence of anything.
+
+    A kind may only be credited when the page says something. Counting a URL's
+    category was enough to make "© 2026 Google LLC" an independent validation of
+    a firm's work.
+    """
+    stripped = _BOILERPLATE_RE.sub(" ", text or "").strip()
+    return len(stripped.split()) >= min_words
+
+
 def coverage(text: str, source_uri: str = "") -> dict[str, bool]:
     """Which data kinds this dossier actually carries, from its own prose."""
     sections = document_sections(text, source_uri)
@@ -138,12 +153,17 @@ def coverage(text: str, source_uri: str = "") -> dict[str, bool]:
         "delivery_proof": bool(delivery_proof),
         "named_clients": bool(CLIENT_RE.search(everything)),
         "stack_delivery": bool(first_party_stack and any(DELIVERY_VERB_RE.search(s["text"]) for s in sections)),
-        "independent_validation": bool(vouching),
+        "independent_validation": any(_has_prose(s["text"]) for s in vouching),
         "delivery_hiring": any(s["category"] == "ATS_REQUISITIONS" for s in sections),
         "commercial_terms": bool(COMMERCIAL_RE.search(everything)),
         "certification": bool(CERT_RE.search(everything)),
         "engineering_output": any(
-            s["category"] == "COMMUNITY_AND_SOCIAL" or "github.com" in s["uri"] or "/blog" in s["uri"]
+            _has_prose(s["text"])
+            and (
+                s["category"] == "COMMUNITY_AND_SOCIAL"
+                or "github.com" in s["uri"]
+                or "/blog" in s["uri"]
+            )
             for s in sections
         ),
         "growth_signal": bool(GROWTH_RE.search(everything) and YEAR_RE.search(everything)),
