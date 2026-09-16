@@ -7,8 +7,8 @@ shapes beyond the JSON envelope are not pinned by the CLI contract, so text is
 extracted conservatively per line and a turn with no text fails closed.
 Approval-bypass flags are deliberately absent: fleet workers run tool-less
 JSON prompts unattended, and anything demanding approvals fails closed
-instead (this deviates from the skill's bypass-by-default, which targets
-agentic coding rather than batch inference). The skill mandates fresh-only
+instead (this deviates from the CLI's bypass-by-default, which targets
+agentic coding rather than batch inference). The contract requires fresh-only
 sessions, so no resume path exists by design.
 """
 from __future__ import annotations

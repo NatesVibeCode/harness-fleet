@@ -41,7 +41,7 @@ TaskConfigStrategy = Literal["opencode_deny_all", "cursor_sandbox_enabled", "non
 
 
 class HarnessSpec(ClosedModel):
-    """Closed per-harness contract. Every flag below cites its handoff skill."""
+    """Closed per-harness contract: the flags and shapes an adapter is written against."""
 
     name: str
     binary: str

@@ -5,7 +5,7 @@ CLI contract (verified against the installed CLI): ``cursor-agent --workspace W
 (the CLI advertises no prompt-file flag; long prompts travel as a single
 argument, never shell text). ``--model`` selects an explicit model from
 ``cursor-agent models`` discovery, and ``--sandbox enabled`` is the
-skill-documented lockdown for unattended runs. ``--resume`` continues an
+documented lockdown for unattended runs. ``--resume`` continues an
 exact chat and is documented but never executed: the engine fresh-runs
 every prompt.
 """
