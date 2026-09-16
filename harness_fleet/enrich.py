@@ -964,14 +964,37 @@ def enrich_entity(
         return [], report
 
     wanted_kinds = [str(k) for k in (kinds or bar_kinds)]
-    # A lane's ladder may name surfaces beyond the ones its missing kinds map
-    # to — a landing page, a partner page — and the walk reads them in the
-    # lane's own rung order, landing first. The order is lane data; the walk
-    # itself stays lane-agnostic and only reads the names.
-    wanted = list(dict.fromkeys([
-        *surface_order, *contracts.surfaces_for_kinds(wanted_kinds),
-    ]))
+    # A rung is the authority on what this call reads. The rung's surfaces are
+    # read in the lane's own order, landing first; the walk itself stays
+    # lane-agnostic and only reads the names.
+    #
+    # This used to *union* the rung with the surfaces the missing kinds map to,
+    # which made the ladder decorative: the partner lane names neither community
+    # nor code nor vendor_stories, and yet every entity short of
+    # independent_validation searched six community backends and read a vendor's
+    # story index — 38 of 51 measured seconds on a single entity. A lane that
+    # wants those surfaces asks for them in a rung.
+    declared = list(dict.fromkeys(str(surface) for surface in surface_order))
+    if declared:
+        wanted = declared
+        narrowed = [
+            surface for surface in contracts.surfaces_for_kinds(wanted_kinds)
+            if surface not in wanted
+        ]
+    else:
+        # No rung was given — a lane with no ladder — so the kinds decide, as
+        # they did before ladders existed.
+        wanted = list(contracts.surfaces_for_kinds(wanted_kinds))
+        narrowed = []
     report.surfaces = list(wanted)
+    for surface in narrowed:
+        report.skipped.append({
+            "surface": surface,
+            "reason": (
+                "the lane's ladder does not name this surface, so it was not read "
+                f"(it carries evidence this entity is missing: {', '.join(wanted_kinds)})"
+            ),
+        })
     if not wanted:
         report.skipped.append({
             "surface": "all",

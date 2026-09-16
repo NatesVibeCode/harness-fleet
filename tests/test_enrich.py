@@ -490,3 +490,57 @@ def test_only_plausible_stories_are_read(monkeypatch):
     records, _skipped = enrich.fetch_vendor_stories("nowhere.io", urls=urls)
     assert seen[0] == [], "not being in the index is not a reason to read the index"
     assert records == []
+
+
+def test_the_ladder_is_the_authority_on_what_is_read(monkeypatch):
+    """A rung names the surfaces, and a surface it does not name is not read.
+
+    The rung used to be *unioned* with the surfaces the missing kinds map to,
+    which made the ladder decorative: the partner lane names neither community
+    nor code nor vendor_stories, yet every entity short of
+    independent_validation searched six community backends and read a vendor's
+    story index — 38 of 51 measured seconds on a single entity.
+    """
+    from harness_fleet import discover, enrich
+
+    calls: list[str] = []
+
+    monkeypatch.setattr(discover, "web_search", lambda *a, **k: calls.append("community") or [])
+    monkeypatch.setattr(discover, "fetch_github_org", lambda *a, **k: calls.append("code") or ([], []))
+
+    def no_stories(*a, **k):
+        calls.append("vendor_stories")
+        return [], []
+
+    monkeypatch.setattr(enrich, "fetch_vendor_stories", no_stories)
+    monkeypatch.setattr(discover, "discover_sitemap_url", lambda site, **kw: "")
+    monkeypatch.setattr(discover, "crawl_site", lambda *a, **k: ([], []))
+    monkeypatch.setattr(discover, "fetch_text", lambda url, **kw: (_ for _ in ()).throw(RuntimeError("404")))
+    monkeypatch.setattr(enrich, "_fetch_pages_many", lambda urls, fetch, **kw: [])
+
+    # The kinds want surfaces the rung does not name; the rung wins.
+    records, report = enrich.enrich_entity(
+        "acme.com",
+        kinds=("independent_validation", "engineering_output"),
+        surface_order=("home", "services"),
+    )
+    assert calls == [], f"a surface the rung does not name was read anyway: {calls}"
+    reasons = " ".join(str(s.get("reason", "")) for s in report.skipped)
+    assert "ladder does not name this surface" in reasons, "the narrowing is reported, not silent"
+    assert records == []
+
+
+def test_a_lane_with_no_ladder_still_walks_by_kind(monkeypatch):
+    """The fallback: without rungs, the missing kinds decide, as before."""
+    from harness_fleet import discover, enrich
+
+    called: list[str] = []
+    monkeypatch.setattr(discover, "web_search", lambda *a, **k: called.append("community") or [])
+    monkeypatch.setattr(discover, "_source_ready", lambda *a, **k: True)
+    monkeypatch.setattr(discover, "discover_sitemap_url", lambda site, **kw: "")
+    monkeypatch.setattr(discover, "crawl_site", lambda *a, **k: ([], []))
+    monkeypatch.setattr(enrich, "_fetch_pages_many", lambda urls, fetch, **kw: [])
+
+    _records, report = enrich.enrich_entity("acme.com", kinds=("independent_validation",))
+    assert "community" in called, "with no ladder, the kind's surfaces are read"
+    assert "community" in report.surfaces
