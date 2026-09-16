@@ -1935,15 +1935,32 @@ def cmd_research(args: argparse.Namespace) -> None:
             f"nothing captured that matches this lane ({lane.name if lane else 'no lane'})"
             + _skip_reasons_note(report.get("skipped"))
         )
-    keyed = [
-        item.model_copy(
-            update={
-                "item_id": entity_key_for(item.source_uri or "", item.text or "", item.metadata or {})
-                or item.item_id
-            }
+    # An empty attribution means the page names nobody: a repository on a code
+    # host, a forum post, a platform page that credits no company. Falling back
+    # to the generated record id filed those as dossiers of their own — a live
+    # run shipped a row called "github.com-github---yuvraj1507-bankingsystem-
+    # microservices-kafka", which is nobody's account. They are dropped and
+    # counted, with the reason.
+    keyed = []
+    unnamed = 0
+    for item in items:
+        key = entity_key_for(item.source_uri or "", item.text or "", item.metadata or {})
+        if not key:
+            unnamed += 1
+            continue
+        keyed.append(item.model_copy(update={"item_id": key}))
+    if unnamed:
+        print(
+            f"Dropped {unnamed} source(s) that name no company: a page on a platform "
+            "that credits nobody is evidence about nobody."
         )
-        for item in items
-    ]
+        report["dropped_unnamed"] = unnamed
+    if not keyed:
+        raise DiscoverError(
+            "every captured page names no company (they are platform pages or "
+            "repositories that credit nobody), so there is no entity to score"
+            + _skip_reasons_note(report.get("skipped"))
+        )
     dossiers = bundle_records(keyed)
     print(f"Captured {len(keyed)} sources into {len(dossiers)} account dossiers")
 

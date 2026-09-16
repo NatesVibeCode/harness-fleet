@@ -357,3 +357,18 @@ def test_every_declared_channel_is_actually_dispatched():
         assert surface in contracts.surfaces_for_kinds([kind]) or channel == "community", (
             f"'{channel}' is declared but no kind asks for it"
         )
+
+
+def test_a_repository_is_not_a_dossier():
+    """A page on a platform that credits nobody is evidence about nobody.
+
+    The attribution rule returns "" for those; falling back to the generated
+    record id filed them anyway, and a live run shipped a row named after a
+    stranger's GitHub repository.
+    """
+    from harness_fleet.sources import entity_key_for
+
+    assert entity_key_for("https://github.com/Yuvraj1507/-BankingSystem-Kafka", "a repo") == ""
+    assert entity_key_for("https://medium.com/@someone/post", "a post") == ""
+    assert entity_key_for("https://acme.com/case-studies/x", "delivered a thing") == "acme.com"
+    assert entity_key_for("https://github.com/acme/tool", "see https://acme.com/x") == "acme.com"
