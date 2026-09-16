@@ -36,6 +36,9 @@ from .store import STREAMING_INPUT_DIGEST, HarnessStore
 #: not keep re-picking a CLI that needs a human to sign in, short enough that
 #: logging in mid-session unblocks the route without a restart.
 AUTH_ERROR_COOLDOWN_SEC = 900.0
+#: A route that timed out is parked for a while: the ladder has other routes,
+#: and a hang costs the run its whole attempt budget.
+TIMEOUT_COOLDOWN_SEC = 30 * 60
 
 
 class _InputManifest:
@@ -287,13 +290,20 @@ class Engine:
                 error_type = receipt.error_type
                 retry_after = receipt.retry_after
 
-                if error_type in ("rate_limit", "transient_http", "auth_error"):
+                # A timeout is a route that would not answer in time. Retrying it
+                # immediately spends the whole budget on hangs: a live run burned
+                # five attempts at exactly the 180s ceiling on routes that never
+                # replied, which is time the run never gets back. It is parked like
+                # a refusal, so the ladder moves on to a route that does answer.
+                if error_type in ("rate_limit", "transient_http", "auth_error", "timeout"):
                     # Temporarily cool down route without burning batch attempt
                     # budget (adaptive if retry_after is None). An unauthenticated
                     # harness is parked the same way: retrying it cannot succeed,
                     # so it must not consume the run's attempts.
                     if error_type == "auth_error" and retry_after is None:
                         retry_after = AUTH_ERROR_COOLDOWN_SEC
+                    if error_type == "timeout" and retry_after is None:
+                        retry_after = TIMEOUT_COOLDOWN_SEC
                     self.catalog.set_cooldown(route_id, retry_after, reason=f"{error_type}: {last_err}")
                     attempt_record.update({
                         "transport_status": error_type,
