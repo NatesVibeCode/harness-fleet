@@ -62,6 +62,85 @@ _LOCATION_RE = re.compile(
 )
 
 
+#: Terms are matched by their variants, because companies do not use your
+#: words: a firm calls itself an "advisory" while the profile says
+#: "consultancy", it says "banking" while the profile says "fintech", and it
+#: says "London" while the profile says "United Kingdom". Matching literally
+#: makes a gate fire on wording instead of on substance, which is how a real
+#: consultancy reads as "nothing here says what kind of company it is".
+#:
+#: This is data, and it is the layer to edit when a gate misjudges a candidate.
+SYNONYM_GROUPS: dict[str, tuple[str, ...]] = {
+    # what kind of company it is
+    "consultancy": ("consultancy", "consulting", "advisory", "advisers", "advisors", "consultants"),
+    "systems integrator": (
+        "systems integrator", "system integrator", "integration partner", "si partner",
+        "solution integrator",
+    ),
+    "implementation": (
+        "implementation partner", "implementation services", "implementing",
+        "we implement", "deployment partner", "delivery partner",
+    ),
+    "managed services": ("managed services", "managed service provider", "msp", "outsourcing"),
+    "professional services": (
+        "professional services", "services firm", "services company", "services partner",
+        "delivery firm", "engineering services",
+    ),
+    # the industries a firm serves
+    "fintech": (
+        "fintech", "financial services", "financial technology", "banking", "banks",
+        "payments", "capital markets", "insurance", "asset management", "lending",
+    ),
+    "healthcare": (
+        "healthcare", "health care", "life sciences", "medical", "providers",
+        "payers", "pharma", "clinical", "biotech",
+    ),
+    "retail": ("retail", "ecommerce", "e-commerce", "consumer goods", "cpg", "merchandising"),
+    "logistics": ("logistics", "supply chain", "freight", "shipping", "fulfilment", "fulfillment"),
+    # where it operates: a country is written as its cities and abbreviations
+    "united states": (
+        "united states", "usa", "u.s.", "us-based", "america", "new york", "san francisco",
+        "chicago", "austin", "boston", "seattle", "denver", "atlanta", "dallas", "houston",
+        "los angeles", "philadelphia", "phoenix", "minneapolis", "charlotte", "nashville",
+    ),
+    "united kingdom": (
+        "united kingdom", "uk", "u.k.", "britain", "england", "scotland", "wales",
+        "london", "manchester", "leeds", "bristol", "edinburgh", "glasgow", "birmingham",
+    ),
+    "canada": ("canada", "toronto", "vancouver", "montreal", "ottawa", "ontario", "quebec", "calgary"),
+    "ireland": ("ireland", "dublin", "cork", "galway"),
+    "australia": ("australia", "sydney", "melbourne", "brisbane", "perth", "adelaide"),
+    "germany": ("germany", "deutschland", "berlin", "munich", "munchen", "frankfurt", "hamburg", "cologne"),
+    "netherlands": ("netherlands", "amsterdam", "rotterdam", "utrecht", "the hague"),
+    "india": ("india", "bangalore", "bengaluru", "hyderabad", "pune", "mumbai", "chennai", "delhi", "noida"),
+}
+
+
+def variants(term: str) -> tuple[str, ...]:
+    """Every way a term gets written, the term itself first."""
+    key = str(term or "").strip().lower()
+    if not key:
+        return ()
+    for canonical, group in SYNONYM_GROUPS.items():
+        if key == canonical or key in group:
+            return tuple(dict.fromkeys((key, canonical, *group)))
+    return (key,)
+
+
+def matches_any(text: str, terms: Any) -> list[str]:
+    """Which of these terms the text says, synonyms included.
+
+    Returns the reader's own term, not the word that happened to match, so a
+    report says "serves fintech" whether the page said fintech or banking.
+    """
+    lowered = (text or "").lower()
+    found: list[str] = []
+    for term in terms or ():
+        if any(variant in lowered for variant in variants(str(term))):
+            found.append(str(term))
+    return found
+
+
 @dataclass
 class Firmographics:
     """What a page or a snippet says about a company's shape."""
@@ -86,10 +165,33 @@ def read_size(text: str) -> int | None:
     return None
 
 
+#: The synonym groups that name somewhere a company can be.
+PLACE_GROUPS = (
+    "united states", "united kingdom", "canada", "ireland", "australia",
+    "germany", "netherlands", "india",
+)
+
+
 def read_location(text: str) -> str:
-    """The place a text says the company is, or ""."""
+    """The place a text says the company is, or "".
+
+    An explicit "based in X" first, because that is the company telling us.
+    Failing that, a place it names: a snippet reading "200 people in London"
+    states its location without ever using the word, and requiring the formal
+    phrasing made a resolvable gate read as unknown.
+    """
     match = _LOCATION_RE.search(text or "")
-    return match.group(1).strip().rstrip(",") if match else ""
+    if match:
+        return match.group(1).strip().rstrip(",")
+    # Otherwise report the words the text actually used: "London" is what the
+    # page said, and the gate decides it is the United Kingdom. Quoting the
+    # page lets a reader see why a gate fired instead of taking its word.
+    lowered = (text or "").lower()
+    for place in PLACE_GROUPS:
+        for variant in variants(place):
+            if variant in lowered:
+                return variant.title()
+    return ""
 
 
 def read_kind(text: str) -> str:
@@ -98,9 +200,8 @@ def read_kind(text: str) -> str:
     Delivery wins a tie: a consultancy that also sells a small product is still
     a services firm, which is the population a partner lane wants.
     """
-    lowered = (text or "").lower()
-    services = any(term in lowered for term in SERVICES_TERMS)
-    software = any(term in lowered for term in SOFTWARE_TERMS)
+    services = bool(matches_any(text, SERVICES_TERMS))
+    software = bool(matches_any(text, SOFTWARE_TERMS))
     if services:
         return "services"
     if software:
@@ -214,8 +315,7 @@ def check_location(location: str, *, allowed: tuple[str, ...]) -> GateResult:
         return _gate("location", "unknown", "the profile names no territory", SNIPPET)
     if not location:
         return _gate("location", "unknown", "no location stated anywhere we have read", SNIPPET)
-    lowered = location.lower()
-    if any(place.lower() in lowered for place in allowed):
+    if matches_any(location, allowed):
         return _gate("location", "pass", f"in territory ({location})", SNIPPET)
     return _gate("location", "fail", f"{location} is outside the profile's territory", SNIPPET)
 
@@ -229,7 +329,8 @@ def check_vertical(verticals: tuple[str, ...], *, wanted: tuple[str, ...]) -> Ga
             "vertical", "unknown",
             "verticals are not visible yet; they live in the case studies", FETCHED,
         )
-    matched = [v for v in verticals if any(w.lower() in v.lower() for w in wanted)]
+    joined = ", ".join(verticals)
+    matched = matches_any(joined, wanted)
     if matched:
         return _gate("vertical", "pass", f"serves {', '.join(matched)}", FETCHED)
     return _gate("vertical", "fail", "serves none of the profile's verticals", FETCHED)

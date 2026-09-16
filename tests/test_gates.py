@@ -29,7 +29,9 @@ def test_a_snippet_may_eliminate_but_never_qualify():
     kind = report.results[0]
     assert kind.outcome == "unknown" and kind.evidence == SNIPPET
     assert report.verdict == "lead", "not qualified on a snippet"
-    assert report.unresolved == ["kind", "location"], report.unresolved
+    locations = {r.gate: r for r in report.results}
+    assert locations["location"].outcome == "pass", "Boston is in the United States"
+    assert report.unresolved == ["kind"], "only the gate a snippet cannot settle"
 
 
 def test_a_product_company_is_eliminated_at_the_first_gate():
@@ -110,3 +112,39 @@ def test_a_report_survives_the_round_trip_a_reader_sees():
     assert payload["because"].startswith("size:")
     assert payload["fetched"] is False, "an eliminated candidate never spends a fetch"
     assert all({"gate", "outcome", "reason", "evidence"} <= set(g) for g in payload["gates"])
+
+
+def test_the_gates_match_substance_not_wording():
+    """Companies do not use your words.
+
+    A firm calls itself an "advisory" while the profile says "consultancy", says
+    "banking" while the profile says "fintech", says "London" while the profile
+    says "United Kingdom". Matching literally makes a gate fire on wording, and
+    a real consultancy reads as "nothing here says what kind of company it is".
+    """
+    from harness_fleet.gates import variants
+
+    assert "consultancy" in variants("advisory")
+    assert "fintech" in variants("banking")
+    assert "united kingdom" in variants("london")
+
+    firm = "An advisory firm of 200 people in London serving banking and insurance clients"
+    report = run_funnel("acme.co.uk", snippet=firm, profile=PROFILE)
+    kinds = {r.gate: r for r in report.results}
+    assert kinds["kind"].outcome == "unknown", "a snippet still cannot qualify"
+    assert kinds["size"].outcome == "pass", "200 people is inside the range"
+    assert kinds["location"].outcome == "pass", "London is the United Kingdom"
+    assert "London" in kinds["location"].reason, "the report quotes what the page said"
+
+    vertical = check_vertical(("banking", "insurance"), wanted=("fintech",))
+    assert vertical.outcome == "pass" and "fintech" in vertical.reason
+    assert check_vertical(("retail",), wanted=("fintech",)).outcome == "fail"
+
+
+def test_synonyms_do_not_widen_a_gate_into_nonsense():
+    """A synonym group is a vocabulary, not a licence to match anything."""
+    from harness_fleet.gates import matches_any
+
+    assert matches_any("we do data engineering", ("fintech",)) == []
+    assert matches_any("headquartered in Berlin", ("germany",)) == ["germany"]
+    assert matches_any("", ("fintech",)) == []
