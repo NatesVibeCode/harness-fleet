@@ -8,9 +8,9 @@
 
 Harness Fleet turns a pile of text into answers you can check. You describe the job — *score these accounts*, *pull the pricing out of these pages*, *flag the ones that matter* — and it returns a typed result for every record with the exact sentence it relied on. It runs on free or local AI models by default, keeps all state in a local file, and ships the assistant playbooks for every fleet product, so one install gives your AI client the account, partner, and career skills too.
 
-*Canonical CLI is `harness-fleet`. The account-fleet and career-fleet distributions ship their own entry points from their own checkouts — install one fleet per environment.*
+*One install, one CLI: `harness-fleet`. The account, career and partner products are **lanes** — configuration over the same engine — and every skill they need ships here. There is no second distribution to install.*
 
-**New here?** [One-click install](#one-click-install) → [60-second demo](#quickstart--60-second-demo-no-api-keys) → [which fleet do I want?](#which-fleet-do-i-want)
+**New here?** [One-click install](#one-click-install) → [60-second demo](#quickstart--60-second-demo-no-api-keys) → [which lane do I want?](#which-lane-do-i-want)
 
 ## Start here (no coding needed)
 
@@ -28,22 +28,24 @@ Harness Fleet turns a pile of text into answers you can check. You describe the 
 
 Rather click than type? `harness-fleet studio` opens a local page for choosing which AI tools and models your runs are allowed to use.
 
-## Which fleet do I want?
+## Which lane do I want?
 
-Every distribution shares one engine — typed claims, SQLite checkpoints, and character-exact quote verification — and ships the assistant skills below. Install one per environment.
+One engine — typed claims, SQLite checkpoints, character-exact quote verification — and one command per job. A **lane** is the whole of a product's specificity: what it looks for, which sources it asks, which checklist it scores with, what bar it demands. It is a JSON file, so tuning a lane is editing a file rather than installing something else.
 
-| If you want to… | Install | CLI | Skill that drives it |
-| --- | --- | --- | --- |
-| Score, classify, extract, or triage **your own** text at volume | **harness-fleet** ← you are here | `harness-fleet` | `harness-fleet` |
-| Turn an ICP into **scored target accounts** | [account-fleet](https://github.com/NatesVibeCode/account-fleet) | `account-fleet` | `account-fleet` |
-| Find and rank **employers and job postings** | [career-fleet](https://github.com/NatesVibeCode/career-fleet) | `career-fleet` | `career-fleet` |
-| Find **implementation partners and SIs** | harness-fleet, preset `partner-research` | `harness-fleet` | `partner-fleet` |
+| If you want to… | Run | Skill that drives it |
+| --- | --- | --- |
+| Score, classify, extract, or triage **your own** text at volume | `harness-fleet run` | `harness-fleet` |
+| Turn an ICP into **scored target accounts** | `harness-fleet research --lane account` | `account-fleet` |
+| Find and rank **employers hiring for a role** | `harness-fleet research --lane career` | `career-fleet` |
+| Find **implementation partners and SIs** | `harness-fleet research --lane partner` | `partner-fleet` |
 
-Skills are installed into your workspace by `harness-fleet setup` — see [Assistant skills](#assistant-skills-what-installs-where).
+`harness-fleet research` runs the whole pipeline in one command — discover, bundle evidence per entity, score, export — and `harness-fleet lane report <run_id> --lane <name>` then measures what that run actually produced: yield per search source, how many records clear the lane's evidence bar, which claims a quote carries and which were refused, a re-fetched truth sample, and cost. Lanes ship in the package; drop `<workspace>/lanes/<name>.json` to override one or add your own. See [Lanes](#lanes) below.
+
+Every skill is installed into your workspace by `harness-fleet setup` — see [Assistant skills](#assistant-skills-what-installs-where).
 
 ## Contents
 
-- [Which fleet do I want?](#which-fleet-do-i-want)
+- [Which lane do I want?](#which-lane-do-i-want) · [Lanes](#lanes)
 - [One-click install](#one-click-install) · [Quickstart — 60-second demo](#quickstart--60-second-demo-no-api-keys)
 - [30-Second Example: raw accounts in → scored, grounded CSV out](#30-second-example-raw-accounts-in--scored-grounded-csv-out)
 - [Why you can trust the output](#why-you-can-trust-the-output) · [Core capabilities](#core-capabilities) · [Source quality](#source-quality)
@@ -64,7 +66,7 @@ harness-fleet mcp install                # re-installs client configs
 
 Old packets (`free_fleet_v2` / `bulk_lanes_v2`) no longer read; re-export them from SQLite before upgrading. The `FREE_FLEET_DB` / `BULK_LANES_DB` / `ACCOUNT_FLEET_DB` variables are replaced by the single `HARNESS_FLEET_DB`. There is no downgrade path — restore your backup to go back.
 
-Python 3.10+ is required. This is a command-line tool with an optional AI-assistant integration. It scores source text you supply; the CLI does not browse for companies or fetch job postings automatically. The bundled account-fleet skill guides a connected assistant through that research.
+Python 3.10+ is required. This is a command-line tool with an optional AI-assistant integration. It scores source text you supply, and it also goes and gets that text: `harness-fleet research --lane <name>` searches the open web, fetches the pages, bundles the evidence per entity and scores it in one command. The bundled skill for each lane guides a connected assistant through the same pipeline.
 
 Install and try the offline demo below before running a real list. Real research requires a configured model provider and your own qualification criteria.
 
@@ -105,6 +107,13 @@ rank,item_id,score,identified_gap,fit_tier,primary_quote_text
 ```
 
 Illustrative values only; real exports also include source URLs, digests, and quote details. Set your ICP and scoring rubric in the task's `TaskSpec` — a preset plus a task JSON file, edited by hand or by your AI client using the bundled skill. An exact source quote proves the text exists, not that a company will buy your product.
+
+**Or let it fetch the text for you.** If you do not already have the sources, the lane pipelines search the open web, fetch the pages, bundle what each company's own pages say, and score it — one command, same verified output:
+
+```bash
+harness-fleet research --lane account --max-results 12 --top 25   # dossiers -> accounts_ranked.csv
+harness-fleet lane report <run_id> --lane account                 # what that run actually produced
+```
 
 ---
 
@@ -398,6 +407,50 @@ floor and report backend/query provenance for fetched records. Use `--json`
 for the `source_quality` report; lower the floor with
 `--min-source-coverage 0` only for an intentional sparse-source audit.
 
+---
+
+## Lanes
+
+A lane is one JSON file — the whole of a product's specificity, and nothing of the
+mechanism. Three ship in the package:
+
+| Lane | Answers | Scores with | Bar |
+| --- | --- | --- | --- |
+| `account` | Which accounts are doing the work (and hiring for it) | `account-research` | the tier ladder, floor `tier_3` |
+| `career` | Which employers are hiring for this kind of role | `triage` | `require_kinds: ["delivery_hiring"]` |
+| `partner` | Which implementation partners can generate revenue with us | `partner-research` | the tier ladder, floor `tier_1` |
+
+```jsonc
+{
+  "name": "partner",
+  "description": "Implementation partners and consultancies, from vendor-published stories",
+  "seeds": ["snowflake"],              // anchors the lane starts from
+  "queries": ["\"partner of the year\" (\"case study\" OR \"customer story\")"],
+  "backends": ["ddgs", "hn"],          // search surfaces, or a channel you installed
+  "channels": [],                      // <workspace>/sources/*.json|py you can also search
+  "title_include": [], "title_exclude": [], "remote": false,   // deterministic filters
+  "preset": "partner-research",        // the checklist it scores with
+  "tier": "tier_1",                    // evidence floor, or null to gate on require_kinds
+  "require_kinds": [],                 // evidence kinds every scored record must carry
+  "top": 25, "min_score": null,        // presentation
+  "revision": 1
+}
+```
+
+- **Unknown keys are refused.** A lane cannot smuggle in a mechanism override; if it
+  needs a source the engine cannot speak to, that is a channel, and if it needs a claim
+  the contracts do not know, that is a contract change that applies to every lane.
+- **Tiers nest.** `tier_1` requires `delivery_proof`, `independent_validation` and
+  `stack_delivery`; `tier_2` requires the first two; `tier_3` requires `stack_delivery`.
+  A lane's `tier` is the *floor*: a record clearing any tier at or above it has met the
+  bar. A lane whose rows are pages rather than companies sets `"tier": null` and names
+  the evidence it does demand in `require_kinds`.
+- **Workspace overrides shipped.** A file at `<workspace>/lanes/<name>.json` replaces
+  the packaged lane of the same name, and the run records which one it used.
+  `harness-fleet lane report <run_id> --lane <name>` measures the result.
+
+---
+
 ## SQLite Control Plane
 
 `harness-fleet` uses SQLite in WAL mode with `BEGIN IMMEDIATE` atomic leases. If a worker crashes or a laptop closes, the run can be resumed seamlessly:
@@ -448,6 +501,9 @@ Free routes are used by default. A paid route approved in an earlier session mus
 | `board` | Serve the read-only results board for a run: every attribute, the checklist behind each score, verbatim quotes, and provenance (`--run-id`, `--port`, `--open`, `--json`) |
 | `settings` | Print, or `--clear`, the harness/model selection the studio saved (`run --from-studio` uses it) |
 | `studio` | Serve the localhost settings companion (pick harnesses and models; saves the selection to SQLite) |
+| `research` | One command from a question to a ranked deliverable: discover → bundle per entity → score → export (`--lane`, `--query`, `--backend`, `--max-results`, `--min-chars`, `--top`) |
+| `lane report` | Measure a finished run against its lane: yield per source, records meeting the evidence bar, claims carried vs refused with reasons, a re-fetched truth sample, cost (`RUN_ID`, `--lane`, `--sample`, `--freeze`) |
+| `sources` | The learned source registry: `list`, `propose`, `promote`, `demote`, `channels` — which hosts count as evidence, and why |
 | `discover` | Broad web search (`ddgs`, self-hosted SearXNG, HN Algolia, YC, Reddit, Stack Exchange, Discourse, Lobsters, Lemmy, Dev.to) to an accounts file |
 | `fetch` | Fetch URLs, sitemaps, site crawls, ATS boards (Greenhouse/Ashby/Lever), YC profiles, HN/Reddit threads, or Q&A forums to an accounts file |
 | `partners find` | Run the partner sourcing plan cold: fans `harness_fleet/data/partner_sources.json` across every search backend, keeps only hits that attribute the work to a named firm, and writes one dossier per candidate (`--tech`, `--vertical`, `--backend`, `--max`, `--delay`, `--snippets-only`, `--plan`, `--output`) |
@@ -467,6 +523,7 @@ Skills are the playbooks your AI client reads to drive this CLI. `harness-fleet 
 | `harness-fleet` | `.agents/skills/harness-fleet/` | This CLI: task contracts, runs, export, MCP, troubleshooting |
 | `account-fleet` | `.agents/skills/account-fleet/` | `--preset account-research`: an ICP in, scored target accounts out |
 | `partner-fleet` | `.agents/skills/partner-fleet/` | `--preset partner-research`: ecosystem requirements in, scored implementation partners out |
+| `career-fleet` | `.agents/skills/career-fleet/` | `research --lane career`: which employers are hiring for a role, remote and filtered |
 
 Every skill is plain markdown with a `SKILL.md` plus a `references/` folder (`operations.md`, `task-contracts.md`, discovery playbooks, scoring-rubric guides, MCP recipes). Read them straight from this repo under `skills/`, or preview what setup would install:
 
