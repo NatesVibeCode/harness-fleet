@@ -44,7 +44,12 @@ class Lane(ClosedModel):
     remote: bool = False
     #: Scoring: which checklist, and the bar the lane demands.
     preset: str = "account-research"
-    tier: str = "tier_2"
+    #: The tier ladder's floor, or None when the lane is not judged by it. The
+    #: ladder asks what a *company* can prove about its vendor work; a lane whose
+    #: rows are pages rather than companies (a role posting, a document) says so
+    #: by leaving this unset and naming the evidence it does demand in
+    #: ``require_kinds``.
+    tier: str | None = "tier_2"
     require_kinds: list[str] = []
     #: Presentation.
     top: int = 25
@@ -60,7 +65,7 @@ def validate_lane(lane: Lane, *, channels: set[str] | None = None, backends: set
         raise LaneError(f"preset: '{lane.preset}' is not a preset (have: {', '.join(sorted(PRESETS))})")
     from .contracts import TIER_MINIMUMS
 
-    if lane.tier not in TIER_MINIMUMS:
+    if lane.tier is not None and lane.tier not in TIER_MINIMUMS:
         raise LaneError(f"tier: '{lane.tier}' is not a tier (have: {', '.join(sorted(TIER_MINIMUMS))})")
     from .contracts import EVIDENCE_KINDS
 

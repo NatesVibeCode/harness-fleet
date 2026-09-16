@@ -59,7 +59,9 @@ def test_a_non_discover_error_is_also_retried(monkeypatch):
         return []
 
     monkeypatch.setattr(discover, "_run_backend", weird)
-    hits, attempts = discover.run_backend_retrying("ddgs", "q", sleep=lambda _s: None, max_results=5)
+    hits, attempts = discover.run_backend_retrying(
+        "ddgs", "q", empty_attempts=1, sleep=lambda _s: None, max_results=5
+    )
     assert (hits, attempts) == ([], 2)
 
 
@@ -71,18 +73,65 @@ def test_no_results_is_an_answer_not_a_failure():
     assert not discover._is_empty_result(Exception("HTTP 429 rate limited"))
 
 
-def test_an_empty_result_backend_is_not_retried(monkeypatch):
-    """A query that genuinely matches nothing must not burn three attempts.
+def test_an_empty_answer_is_re_asked_a_bounded_number_of_times(monkeypatch):
+    """A free surface answers zero for a query that has results, then answers.
 
-    ddgs raises for an empty result; search_ddgs turns that back into ``[]``
-    before the retry wrapper ever sees it (see tests/test_ddgs_contract.py).
+    A run whose every query comes back empty fails entirely, so a zero is worth
+    re-asking — but only a bounded number of times: a query that genuinely
+    matches nothing must not turn into an unbounded retry loop.
     """
     calls = {"n": 0}
 
-    def fine(backend, query, **kwargs):
+    def first_empty_then_hits(backend, query, **kwargs):
+        calls["n"] += 1
+        return [] if calls["n"] == 1 else ["hit"]
+
+    monkeypatch.setattr(discover, "_run_backend", first_empty_then_hits)
+    hits, attempts = discover.run_backend_retrying("ddgs", "q", sleep=lambda _s: None, max_results=5)
+    assert (hits, attempts, calls["n"]) == (["hit"], 2, 2)
+
+    def always_empty(backend, query, **kwargs):
         calls["n"] += 1
         return []
 
-    monkeypatch.setattr(discover, "_run_backend", fine)
+    monkeypatch.setattr(discover, "_run_backend", always_empty)
+    calls["n"] = 0
     hits, attempts = discover.run_backend_retrying("ddgs", "q", sleep=lambda _s: None, max_results=5)
+    assert (hits, attempts, calls["n"]) == ([], discover.SEARCH_EMPTY_ATTEMPTS, discover.SEARCH_EMPTY_ATTEMPTS)
+
+
+def test_only_a_backend_whose_zero_is_unreliable_is_re_asked(monkeypatch):
+    """A first-party API that answers empty is answering.
+
+    ddgs returns zero for queries that have results; HN Algolia does not. Re-
+    asking the second one three times made every run slower for no gain.
+    """
+    calls = {"n": 0}
+
+    def always_empty(backend, query, **kwargs):
+        calls["n"] += 1
+        return []
+
+    monkeypatch.setattr(discover, "_run_backend", always_empty)
+    hits, attempts = discover.run_backend_retrying("hn", "q", sleep=lambda _s: None, max_results=5)
     assert (hits, attempts, calls["n"]) == ([], 1, 1)
+
+    calls["n"] = 0
+    hits, attempts = discover.run_backend_retrying("ddgs", "q", sleep=lambda _s: None, max_results=5)
+    assert (hits, attempts, calls["n"]) == ([], 3, 3)
+
+
+def test_an_explicit_empty_attempt_setting_still_wins(monkeypatch):
+    """The knob stays usable for a caller that knows its own surface."""
+    calls = {"n": 0}
+
+    def always_empty(backend, query, **kwargs):
+        calls["n"] += 1
+        return []
+
+    monkeypatch.setattr(discover, "_run_backend", always_empty)
+    discover.run_backend_retrying("hn", "q", empty_attempts=2, sleep=lambda _s: None, max_results=5)
+    assert calls["n"] == 1, "hn is not an empty-retry backend; the default is one attempt"
+    calls["n"] = 0
+    discover.run_backend_retrying("ddgs", "q", empty_attempts=2, sleep=lambda _s: None, max_results=5)
+    assert calls["n"] == 2

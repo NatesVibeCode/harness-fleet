@@ -63,3 +63,24 @@ def test_a_lane_can_only_use_channels_that_exist(tmp_path):
 
 def test_an_empty_workspace_has_no_lanes(tmp_path):
     assert lanes.load_lanes(tmp_path) == {}
+
+
+def test_a_lane_may_gate_on_its_own_evidence_instead_of_the_tier_ladder():
+    """The tier ladder asks what a company proved about its vendor work.
+
+    A lane whose rows are role postings is not answering that question, so it
+    declares no floor and names the evidence it does demand. Leaving the field
+    out entirely still means tier_2, so no existing lane changes meaning.
+    """
+    from harness_fleet.lanes import Lane, validate_lane
+
+    default = Lane(name="account", preset="account-research")
+    assert default.tier == "tier_2"
+
+    career = Lane(name="career", preset="triage", tier=None, require_kinds=["delivery_hiring"])
+    validate_lane(career)
+    assert career.tier is None
+
+    with pytest.raises(Exception) as excinfo:
+        validate_lane(Lane(name="career", preset="triage", tier="tier_9"))
+    assert "tier" in str(excinfo.value)

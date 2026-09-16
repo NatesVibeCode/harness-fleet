@@ -25,7 +25,10 @@
   ],
   "remote": true,
   "preset": "triage",
-  "tier": "tier_3",
+  "tier": null,
+  "require_kinds": [
+    "delivery_hiring"
+  ],
   "top": 50,
-  "revision": 2
+  "revision": 3
 }

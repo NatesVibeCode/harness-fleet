@@ -80,3 +80,42 @@ def test_a_plain_page_names_no_employer():
     assert _json_ld_employer(
         '<script type="application/ld+json">{"@type":"Article","headline":"x"}</script>'
     ) == ("", "")
+
+
+def test_a_single_posting_path_is_hiring_evidence():
+    """Niche boards publish full requisitions under /job/<slug>.
+
+    Filed as general_web, a real, detailed posting could not count as hiring
+    evidence at all; filed as a requisition, a listing page would count as one.
+    The path is what separates them.
+    """
+    from harness_fleet.sources import classify_source_category
+
+    assert classify_source_category(
+        "https://www.virtualvocations.com/job/enterprise-sales-executive-3250725-i.html"
+    ) == "ats_requisitions"
+    assert classify_source_category(
+        "https://careers.toasttab.com/jobs/vice-president-enterprise-sales-remote-united-states"
+    ) == "ats_requisitions"
+    for listing in (
+        "https://www.indeed.com/q-Enterprise-Sales-jobs.html",
+        "https://www.simplyhired.com/search?q=sales+operations&l=remote",
+        "https://www.glassdoor.com/Job/remote-sales-operations-jobs-SRCH_IL.0,6_IS11047_KO7,23.htm",
+        "https://migratemate.co/remote-sales-operations-jobs",
+        "https://www.indeed.com/jobs?q=sales&l=remote",
+        "https://acme.com/careers",
+    ):
+        assert classify_source_category(listing) != "ats_requisitions", listing
+
+
+def test_a_posting_path_closes_the_hiring_gate():
+    """The category is what carries `delivery_hiring`, so the path decides it."""
+    from harness_fleet.evidence import coverage
+
+    page = ("=== SECTION: ATS_REQUISITIONS (URI: https://x.test/job/enterprise-sales-executive) ===\n"
+            "Seeking a motivated Enterprise Sales Executive in Managed Security Services, this "
+            "full-time remote position will drive new business opportunities, build relationships "
+            "with enterprise clients, and promote cybersecurity and compliance solutions.")
+    assert coverage(page, "https://x.test/job/enterprise-sales-executive")["delivery_hiring"] is True
+    same_page_as_listing = page.replace("ATS_REQUISITIONS", "GENERAL_WEB")
+    assert coverage(same_page_as_listing, "https://x.test/remote-sales-jobs")["delivery_hiring"] is False

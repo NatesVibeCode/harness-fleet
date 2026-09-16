@@ -445,7 +445,9 @@ def build_lane_report(
 
     bar_kinds: tuple[str, ...] = ()
     if lane is not None:
-        bar_kinds = tuple(lane.require_kinds) or tuple(contracts.TIER_MINIMUMS.get(lane.tier, ()))
+        bar_kinds = tuple(lane.require_kinds) or tuple(
+            contracts.TIER_MINIMUMS.get(lane.tier, ()) if lane.tier else ()
+        )
 
     yield_entries, notes = _yield_measurement(
         snapshot, items, run_id=run_id, runs_dir=runs_dir, channel_names=channel_names

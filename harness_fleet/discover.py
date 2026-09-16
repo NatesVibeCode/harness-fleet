@@ -559,6 +559,20 @@ def _space_host(host: str, delay: float) -> None:
 #: run found nothing", which is the difference a person actually sees.
 SEARCH_ATTEMPTS = 3
 SEARCH_RETRY_WAIT_SEC = 2.0
+#: Some free metasearch answers *zero* results for a query that has them, then
+#: answers normally seconds later. A zero is therefore worth re-asking — but
+#: only where a zero is known to be unreliable. A self-hosted instance or a
+#: first-party API that answers empty is answering; re-asking it three times
+#: just makes every run slower. The retries are bounded either way, so one query
+#: that genuinely matches nothing costs a couple of requests, not an answer.
+SEARCH_EMPTY_ATTEMPTS = 3
+#: Backends whose empty answer is not yet an answer.
+SEARCH_EMPTY_RETRY_BACKENDS = ("ddgs",)
+
+
+def empty_attempts_for(backend: str, requested: int = SEARCH_EMPTY_ATTEMPTS) -> int:
+    """How many times an empty answer from this backend is worth re-asking."""
+    return max(1, requested) if backend in SEARCH_EMPTY_RETRY_BACKENDS else 1
 
 
 def _run_backend(
@@ -608,6 +622,7 @@ def run_backend_retrying(
     query: str,
     *,
     attempts: int = SEARCH_ATTEMPTS,
+    empty_attempts: int = SEARCH_EMPTY_ATTEMPTS,
     sleep: Callable[[float], None] = time.sleep,
     **kwargs: Any,
 ) -> tuple[list[SearchHit], int]:
@@ -616,18 +631,28 @@ def run_backend_retrying(
     Returns the hits and how many attempts it took. The last failure is raised
     with its own type intact, so the caller still records precisely why a query
     produced nothing — a retry never turns a dead source into a live one, it
-    just stops treating weather as a verdict.
+    just stops treating weather as a verdict. An empty answer is re-asked too,
+    because the same surface that answers nothing often answers fully moments
+    later, and a run whose every query is empty reports no result at all.
     """
     tries = max(1, attempts)
+    empty_tries = max(1, min(empty_attempts_for(backend, empty_attempts), tries))
+    used = 0
     last: Exception | None = None
     for attempt in range(tries):
+        used = attempt + 1
         try:
-            return _run_backend(backend, query, **kwargs), attempt + 1
+            hits = _run_backend(backend, query, **kwargs)
         except Exception as exc:  # noqa: BLE001 - re-raised below with its type intact
             last = exc
             if attempt + 1 < tries:
                 sleep(SEARCH_RETRY_WAIT_SEC * (attempt + 1))
-    assert last is not None
+                continue
+            raise
+        if hits or used >= empty_tries:
+            return hits, used
+        sleep(SEARCH_RETRY_WAIT_SEC * used)
+    assert last is not None  # unreachable: the loop either returns or raises
     raise last
 
 
@@ -3841,7 +3866,11 @@ def run_discovery(
                         if used > 1:
                             retried.append({
                                 "query": query, "backend": backend, "attempts": used,
-                                "reason": f"source answered on attempt {used}",
+                                "hits": len(hits),
+                                "reason": (
+                                    f"source answered nothing once and {len(hits)} hit(s) on attempt {used}"
+                                    if hits else f"source answered nothing on all {used} attempts"
+                                ),
                             })
                     except DiscoverError as exc:
                         failures.append((index, backend, f"{query}: {exc}"))

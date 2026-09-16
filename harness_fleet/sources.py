@@ -121,6 +121,47 @@ ENTITY_SUFFIXES = (
 CASE_STUDY_PATH_RE = re.compile(r"/(case-stud|work|customers?|success-stor|clients|portfolio)", re.IGNORECASE)
 PRACTICE_PATH_RE = re.compile(r"/(services?|solutions?|practices?|about|partners?|consulting)", re.IGNORECASE)
 
+#: A path that identifies *one* posting rather than a list of them:
+#: ``/job/<slug>``, ``/careers/<slug>``, ``/positions/<slug>``. The slug must
+#: read as a title (at least two words) and must not itself be a listing name
+#: ("remote-sales-operations-jobs"), and search paths are excluded outright —
+#: a results page carries no requisition and must never satisfy a hiring gate.
+POSTING_PATH_RE = re.compile(
+    r"/(?:job|jobs|careers?|positions?|openings?|vacanc(?:y|ies)|requisitions?)/"
+    r"(?P<slug>[a-z0-9][a-z0-9._-]*[a-z0-9])",
+    re.IGNORECASE,
+)
+LISTING_PATH_RE = re.compile(r"/(?:search|q-|jobs?/?(?:$|[?#]))", re.IGNORECASE)
+LISTING_QUERY_RE = re.compile(r"[?&](?:q|query|l|location|page)=", re.IGNORECASE)
+
+
+def looks_like_posting_path(source_uri: str) -> bool:
+    """Whether a URL names a single job posting, from its own shape.
+
+    Job boards that are not applicant-tracking systems — the niche boards a
+    search actually surfaces — publish full descriptions under ``/job/<slug>``.
+    Without this they classified as ``general_web``, so a real, detailed
+    requisition could not count as hiring evidence at all.
+    """
+    uri = (source_uri or "").strip()
+    if not uri:
+        return False
+    if LISTING_QUERY_RE.search(uri):
+        return False
+    path = urlparse(uri).path or ""
+    if LISTING_PATH_RE.search(path):
+        return False
+    match = POSTING_PATH_RE.search(path)
+    if not match:
+        return False
+    slug = match.group("slug").strip("-.")
+    words = [part for part in re.split(r"[-_.]", slug) if part]
+    if len(words) < 2:
+        return False
+    # "...-jobs" / "jobs-in-..." name a listing, not a role.
+    return "jobs" not in words
+
+
 
 def canonicalize_entity_id(identifier_or_url: str) -> str:
     """Extract clean, canonical domain/entity id from a URL or raw identifier."""
@@ -216,8 +257,14 @@ def classify_source_category(source_uri: str, entity_id: str = "") -> str:
     if any(d in uri for d in COMMUNITY_DOMAINS):
         return "community_and_social"
 
-    # 4. ATS / Hiring requisitions
-    if any(ats in uri for ats in ATS_DOMAINS):
+    # 4. ATS / Hiring requisitions. The host decides — a host is the board, so
+    #    every path on it is a posting — and so does a posting's own path. The
+    #    host check is anchored to the host on purpose: matching the marker
+    #    against the whole URL once classified "www.indeed.com/q-Enterprise-
+    #    Sales-jobs.html" (a search page, matched by the "jobs." in the domain)
+    #    as a requisition, which is the one thing that must never count.
+    host = host_of(uri)
+    if any(ats in host for ats in ATS_DOMAINS) or looks_like_posting_path(uri):
         return "ats_requisitions"
 
     # 5. First-party case studies

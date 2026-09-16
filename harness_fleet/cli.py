@@ -1739,6 +1739,21 @@ def _load_lane_for_run(args: argparse.Namespace, workspace: Path) -> Any:
     return lane
 
 
+def _write_discovery_report(workspace: Path, run_id: str, report: dict[str, Any]) -> Path | None:
+    """Keep discovery's own account of the run, next to the run.
+
+    Written as soon as discovery finishes, so the reasons survive a run that
+    captured nothing — the case where a person most needs to read them.
+    """
+    path = workspace / "runs" / run_id / "discovery_report.json"
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
+    except OSError:
+        return None
+    return path
+
+
 def _lane_items(items: list[Any], lane: Any) -> tuple[list[Any], int]:
     """Apply the lane's own filters: what it is looking for, and where.
 
@@ -1811,11 +1826,18 @@ def cmd_research(args: argparse.Namespace) -> None:
         min_source_coverage=min_source_coverage if min_source_coverage is not None else 0.0,
         min_chars=getattr(args, "min_chars", None),
     )
+    # Persist what discovery saw before anything can fail: the lane report's
+    # yield is captured-vs-attempted, and a run that captured nothing is exactly
+    # the run whose reasons a person needs to read.
+    report["lane"] = lane.name if lane is not None else None
+    report["workspace"] = str(workspace)
+    report_path = _write_discovery_report(workspace, run_id, report)
     if not items:
         raise DiscoverError(
             "nothing was captured for this query"
             + _skip_reasons_note(report.get("skipped"))
             + ". Try a broader --query or a different --backend."
+            + (f" Reasons recorded: {report_path}" if report_path else "")
         )
     items, dropped = _lane_items(items, lane)
     if dropped:
@@ -1841,19 +1863,6 @@ def cmd_research(args: argparse.Namespace) -> None:
     merged = len(keyed) - len(dossiers)
     print(f"Captured {len(keyed)} sources into {len(dossiers)} account dossiers"
           + (f" ({merged} merged)" if merged else "") + f" -> {input_path}")
-
-    # Persist what discovery saw, next to the run: the lane report's yield is
-    # captured-vs-attempted, and attempted is only knowable if the run kept it.
-    # The lane that asked for it is recorded too, so a later reader (the board,
-    # the lane report) knows what this run was for without guessing from paths.
-    report_path = workspace / "runs" / run_id / "discovery_report.json"
-    report["lane"] = lane.name if lane is not None else None
-    report["workspace"] = str(workspace)
-    try:
-        report_path.parent.mkdir(parents=True, exist_ok=True)
-        report_path.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
-    except OSError:
-        pass
 
     # 2. Ensure the task exists (a preset is enough for a first run).
     try:

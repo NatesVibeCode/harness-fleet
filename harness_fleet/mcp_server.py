@@ -179,7 +179,7 @@ def create_mcp_server(workspace_root: str | Path, db_path: str | Path | None = N
             lanes=[
                 LaneSummary(
                     name=lane.name, description=lane.description, preset=lane.preset,
-                    tier=lane.tier, top=lane.top, title_include=list(lane.title_include),
+                    tier=lane.tier or "", top=lane.top, title_include=list(lane.title_include),
                     remote=lane.remote, source=lane_source(workspace.root, lane.name),
                 )
                 for lane in sorted(lanes.values(), key=lambda item: item.name)

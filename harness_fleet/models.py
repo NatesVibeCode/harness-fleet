@@ -1373,6 +1373,7 @@ class LaneSummary(ClosedModel):
     name: str
     description: str = ""
     preset: str = ""
+    #: Empty when the lane is not judged by the tier ladder.
     tier: str = ""
     top: int = 0
     title_include: list[str] = []
