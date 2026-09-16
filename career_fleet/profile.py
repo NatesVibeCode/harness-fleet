@@ -93,6 +93,33 @@ class IdealEmployerProfile(BaseModel):
         default_factory=list,
         description="Exemplar companies retained as context for calibration and external evaluation; not a direct deterministic score."
     )
+    #: Firmographics the gates run on. A lane ships no thresholds, so this is
+    #: where the operator states theirs; an unset field leaves its gate off
+    #: rather than inventing a bound.
+    size_min: int = Field(default=0, ge=0, description="Employer headcount floor; 0 leaves it unbounded.")
+    size_max: int = Field(default=0, ge=0, description="Employer headcount ceiling; 0 leaves it unbounded.")
+    target_territories: list[str] = Field(
+        default_factory=list, description="Where the employer must be (e.g. United Kingdom)."
+    )
+    target_industries: list[str] = Field(
+        default_factory=list, description="Industries the employer must be in (e.g. fintech)."
+    )
+
+    def funnel_profile(self) -> dict[str, Any]:
+        """The firmographics the gate engine runs on, in the shape it reads.
+
+        An employer is never asked the partner question — "is this a delivery
+        firm?" — because a product company employs people too, so this lane asks
+        nothing of the kind. The ceiling falls back to the dealbreaker this
+        profile already states, so an author who filled that in gets the gate.
+        """
+        return {
+            "allows": "any",
+            "size_min": self.size_min,
+            "size_max": self.size_max or self.dealbreakers.max_headcount or 0,
+            "locations": tuple(self.target_territories),
+            "verticals": tuple(self.target_industries),
+        }
 
     @classmethod
     def load(cls, path: Path | str) -> IdealEmployerProfile:

@@ -29,6 +29,18 @@ class IdealCompanyProfile(BaseModel):
     trigger_pain_phrases: list[str] = Field(default_factory=list)
     target_roles: list[str] = Field(default_factory=list)
     anchor_logos: list[str] = Field(default_factory=list)
+    #: Firmographics the gates run on. Nothing is hard-coded per lane — a lane
+    #: ships no size range, no territory and no vertical list — so this is where
+    #: an operator states theirs. An unset field leaves its gate off rather than
+    #: inventing a bound, which is the honest reading and names the field to add.
+    size_min: int = Field(default=0, ge=0, description="Headcount floor; 0 leaves it unbounded (e.g. 50)")
+    size_max: int = Field(default=0, ge=0, description="Headcount ceiling; 0 leaves it unbounded (e.g. 5000)")
+    target_territories: list[str] = Field(
+        default_factory=list, description="Where the company must be (e.g. United Kingdom, United States)"
+    )
+    target_industries: list[str] = Field(
+        default_factory=list, description="Industries the company must be in (e.g. fintech, healthcare)"
+    )
     calibrated_scoring_rubric: dict[str, JsonValue] = Field(default_factory=dict)
 
     @model_validator(mode="before")
@@ -85,11 +97,17 @@ class IdealCompanyProfile(BaseModel):
             return tuple(str(item) for item in value if str(item).strip())
 
         return {
-            "allows": "services" if self.anchor_logos or self.target_roles else "any",
-            "size_min": whole("size_min"),
-            "size_max": whole("size_max"),
-            "locations": terms("locations"),
-            "verticals": terms("verticals"),
+            # A target account is a *buyer*. It may be a product company, so the
+            # ICP never puts the partner question ("is this a delivery firm?") to
+            # a candidate: that test belongs to the partner profile, and asking
+            # it here eliminated firms this lane exists to find.
+            "allows": "any",
+            # Typed fields first, the rubric behind them so a profile authored
+            # before these fields existed still gates on what it does say.
+            "size_min": self.size_min or whole("size_min"),
+            "size_max": self.size_max or whole("size_max"),
+            "locations": tuple(self.target_territories) or terms("locations"),
+            "verticals": tuple(self.target_industries) or terms("verticals"),
         }
 
     def to_prompt_context(self) -> str:
