@@ -16,14 +16,14 @@
   "preset": "partner-research",
   "tier": "tier_1",
   "top": 25,
-  "revision": 7,
+  "revision": 8,
   "stories": 0,
   "resolve_stories": 0,
   "query_terms": {
     "tech": [
       "Kafka",
-      "Snowflake",
-      "Databricks",
+      "data platform",
+      "data engineering",
       "dbt",
       "Kubernetes"
     ],
@@ -75,10 +75,9 @@
           "case_studies",
           "partners",
           "blog",
-          "news",
-          "vendor_stories"
+          "news"
         ],
-        "earns": "settles the vertical gate, which only the case studies can answer"
+        "earns": "settles the vertical gate, which only the case studies can answer — read on the firm's own site, never a vendor's story index"
       }
     ]
   }

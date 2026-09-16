@@ -3,7 +3,7 @@
   "description": "Target accounts for a technical ICP: a competitor's customers — the firms that buy in this space, and what they run",
   "queries": [
     "\"case study\" \"Kafka\" implementation bank -site:medium.com",
-    "\"customer story\" (\"Snowflake\" OR \"Databricks\" OR \"Confluent\") implementation partner"
+    "\"customer story\" (\"Snowflake\" OR \"Databricks\" OR \"Confluent\") (\"we migrated\" OR \"our data platform\")"
   ],
   "backends": [
     "ddgs",
@@ -12,7 +12,7 @@
   "preset": "account-research",
   "tier": "tier_3",
   "top": 25,
-  "revision": 6,
+  "revision": 7,
   "stories": 0,
   "resolve_stories": 0,
   "funnel": {
