@@ -1,0 +1,149 @@
+{
+  "version": 1,
+  "placeholders": [
+    "<prompt>",
+    "<model>",
+    "<workspace>",
+    "<prompt-file>",
+    "<workdir>"
+  ],
+  "harnesses": {
+    "antigravity": {
+      "binary": "agy",
+      "prompt_delivery": "argv_last",
+      "prompt_file_flag": null,
+      "parser": "json_object",
+      "model_from_route": false,
+      "discovery_argv": [
+        "models"
+      ],
+      "call_workdir": false,
+      "task_config_strategy": "none",
+      "oneshot_argv": [
+        "--output-format",
+        "json",
+        "--print",
+        "<prompt>"
+      ]
+    },
+    "claude": {
+      "binary": "claude",
+      "prompt_delivery": "stdin",
+      "prompt_file_flag": null,
+      "parser": "json_object",
+      "model_from_route": false,
+      "discovery_argv": null,
+      "call_workdir": false,
+      "task_config_strategy": "none",
+      "oneshot_argv": [
+        "-p",
+        "--output-format",
+        "json"
+      ]
+    },
+    "codex": {
+      "binary": "codex",
+      "prompt_delivery": "stdin",
+      "prompt_file_flag": null,
+      "parser": "codex_jsonl",
+      "model_from_route": false,
+      "discovery_argv": null,
+      "call_workdir": true,
+      "task_config_strategy": "none",
+      "oneshot_argv": [
+        "exec",
+        "-C",
+        "<workspace>",
+        "--json",
+        "-o",
+        "<workdir>/final.md",
+        "-"
+      ]
+    },
+    "cursor": {
+      "binary": "cursor-agent",
+      "prompt_delivery": "argv_last",
+      "prompt_file_flag": null,
+      "parser": "json_object",
+      "model_from_route": true,
+      "discovery_argv": [
+        "models"
+      ],
+      "call_workdir": false,
+      "task_config_strategy": "cursor_sandbox_enabled",
+      "oneshot_argv": [
+        "--workspace",
+        "<workspace>",
+        "--sandbox",
+        "enabled",
+        "--print",
+        "--output-format",
+        "json",
+        "--model",
+        "<model>",
+        "<prompt>"
+      ]
+    },
+    "grok": {
+      "binary": "grok",
+      "prompt_delivery": "file_flag",
+      "prompt_file_flag": "--prompt-file",
+      "parser": "json_object",
+      "model_from_route": false,
+      "discovery_argv": [
+        "models"
+      ],
+      "call_workdir": true,
+      "task_config_strategy": "none",
+      "oneshot_argv": [
+        "--cwd",
+        "<workspace>",
+        "--prompt-file",
+        "<prompt-file>",
+        "--output-format",
+        "json"
+      ]
+    },
+    "muse": {
+      "binary": "muse",
+      "prompt_delivery": "file_flag",
+      "prompt_file_flag": "--prompt-file",
+      "parser": "muse_jsonl",
+      "model_from_route": false,
+      "discovery_argv": null,
+      "call_workdir": true,
+      "task_config_strategy": "none",
+      "oneshot_argv": [
+        "exec",
+        "--json",
+        "--workspace",
+        "<workspace>",
+        "--worktree",
+        "off",
+        "--prompt-file",
+        "<prompt-file>"
+      ]
+    },
+    "opencode": {
+      "binary": "opencode",
+      "prompt_delivery": "argv_last",
+      "prompt_file_flag": null,
+      "parser": "opencode_jsonl",
+      "model_from_route": true,
+      "discovery_argv": [
+        "models",
+        "--verbose"
+      ],
+      "call_workdir": false,
+      "task_config_strategy": "opencode_deny_all",
+      "oneshot_argv": [
+        "run",
+        "--format",
+        "json",
+        "--model",
+        "<model>",
+        "<prompt>"
+      ]
+    }
+  }
+}

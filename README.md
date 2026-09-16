@@ -343,6 +343,8 @@ Route Performance:
     Attempts: 24 | Verified: 23 | Rate limits: 0 | Latency: 1.8s
 ```
 
+Fleet progress above is proven and durable (leases, attempts, receipts). Running lanes can additionally self-report presence with the shared advisory vocabulary (`started`, `milestone`, `blocked`, `done`) implemented by work-coordination: claimed, ephemeral, and never proof of completion — the complement to receipts, not a substitute.
+
 ### 3. Continuous Route Evaluation
 Benchmark available routes against test datasets to determine which models excel at your specific task:
 

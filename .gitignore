@@ -15,6 +15,9 @@ build/
 *.egg-info/
 .eggs/
 .venv/
+.env
+.env.*
+!.env.example
 env/
 venv/
 *.lock
@@ -50,4 +53,4 @@ generate_carousel.py
 .scratch/
 
 # The career product lives here as its own checkout; never commit it into harness.
-career-fleet/
+/career-fleet/
