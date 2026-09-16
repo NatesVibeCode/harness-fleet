@@ -448,12 +448,13 @@ def test_a_story_index_is_read_once_not_once_per_company():
     assert not story_could_name("https://www.elastic.co/customers/cvs/", "phdata.io")
 
 
-def test_only_plausible_stories_are_read_and_an_empty_filter_falls_back(monkeypatch):
-    """Read what could be about them; if nothing could, read everything.
+def test_only_plausible_stories_are_read(monkeypatch):
+    """Read what could be about them; do not read the rest on spec.
 
-    A confident zero from a filter we cannot trust is a silent zero wearing a
-    reason, so an address scheme that matches nothing falls back to reading the
-    index rather than reporting that no story names the company.
+    A whole-index fallback ("nothing resembles them, so read everything") is not
+    a safety net — it fires for every company that simply is not in the index,
+    which is most of them. Measured on one entity it accounted for 65 of 79
+    requests, which is to say the filter had become a no-op.
     """
     from harness_fleet import enrich
     from harness_fleet.discover import RawRecord
@@ -467,20 +468,25 @@ def test_only_plausible_stories_are_read_and_an_empty_filter_falls_back(monkeypa
 
     monkeypatch.setattr(enrich, "_fetch_pages_many", fake_many)
 
-    matched = [
+    urls = [
         "https://www.snowflake.com/customers/accenture/",
         "https://www.databricks.com/customers/comcast/",
+        "https://www.elastic.co/customers/cvs/",
     ]
-    records, skipped = enrich.fetch_vendor_stories("accenture.com", urls=matched)
-    assert seen[0] == [matched[0]], "only the story whose address names them is read"
-    assert any("1 of 2 stories do not name accenture.com" in str(s.get("reason", "")) for s in skipped)
-    assert [r.source_uri for r in records] == [matched[0]]
+    records, skipped = enrich.fetch_vendor_stories("accenture.com", urls=urls)
+    assert seen[0] == [urls[0]], "only the story whose address names them is read"
+    assert [r.source_uri for r in records] == [urls[0]]
+    assert any("2 of 3 stories do not name accenture.com" in str(s.get("reason", "")) for s in skipped)
 
+    # An address that cannot be read as a name at all is still read: AWS files
+    # its stories as <customer>-<partner>, where nothing says which half is which.
     seen.clear()
-    unmatched = [
-        "https://www.snowflake.com/customers/one/",
-        "https://www.snowflake.com/customers/two/",
-    ]
-    records, skipped = enrich.fetch_vendor_stories("accenture.com", urls=unmatched)
-    assert seen[0] == unmatched, "nothing resembles them, so the index is read rather than assumed"
-    assert skipped == [], "nothing was skipped, so nothing is reported as skipped"
+    aws = ["https://aws.amazon.com/partners/success/biolytica-presidio/"]
+    enrich.fetch_vendor_stories("presidio.com", urls=aws)
+    assert seen[0] == aws, "an unreadable address cannot rule a candidate out"
+
+    # And a company simply absent from the index costs nothing.
+    seen.clear()
+    records, _skipped = enrich.fetch_vendor_stories("nowhere.io", urls=urls)
+    assert seen[0] == [], "not being in the index is not a reason to read the index"
+    assert records == []

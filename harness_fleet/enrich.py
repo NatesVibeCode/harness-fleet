@@ -380,6 +380,18 @@ def story_could_name(url: str, entity: str, *, sources: dict[str, Any] | None = 
     return label in haystack or re.sub(r"[^a-z0-9]", "", label) in squashed
 
 
+def _story_address_is_opaque(url: str, *, sources: dict[str, Any] | None = None) -> bool:
+    """Whether a story's address cannot be read as a name at all.
+
+    AWS files stories as ``<customer>-<partner>`` under one hub: the slug holds
+    two companies and nothing says which half is which, so an address like that
+    cannot rule a candidate out and has to be read. Every other vendor files
+    under ``/customers/<slug>``, which is a name we can compare.
+    """
+    slug, vendor = story_entity(url, sources=sources)
+    return bool(vendor) and not slug
+
+
 def fetch_vendor_stories(
     entity: str,
     *,
@@ -414,23 +426,23 @@ def fetch_vendor_stories(
     # One request per story that could be about this entity, not one per story
     # the vendor ever published. Reading the whole index to keep one or two was
     # the single largest cost in a run; the address usually settles it.
+    # Filter where the address can be read, and read blind only where it cannot.
+    # A whole-index fallback ("nothing resembles them, so read everything") is
+    # not a safety net: it fires for every company that simply is not in the
+    # index, which is most of them, and it turned this filter into a no-op —
+    # measured at 65 of 79 requests on a single entity.
     plausible = [url for url in candidates if story_could_name(url, domain, sources=sources)]
-    if not plausible and candidates:
-        # Nothing in the index looks like them. That is more likely to be an
-        # unusual naming scheme than an absence of stories, so read the index
-        # rather than report a confident zero from a filter we cannot trust.
-        # Nothing is recorded as skipped: nothing was — every page is read.
-        plausible = list(candidates)
-    else:
-        ruled_out = len(candidates) - len(plausible)
-        if ruled_out:
-            skipped.append({
-                "source": "vendor_stories",
-                "reason": (
-                    f"{ruled_out} of {len(candidates)} stories do not name {domain} in their "
-                    "address, so they were not read"
-                ),
-            })
+    blind = [url for url in candidates if _story_address_is_opaque(url, sources=sources)]
+    plausible = list(dict.fromkeys(plausible + blind))
+    ruled_out = len(candidates) - len(plausible)
+    if ruled_out:
+        skipped.append({
+            "source": "vendor_stories",
+            "reason": (
+                f"{ruled_out} of {len(candidates)} stories do not name {domain} in their "
+                "address, so they were not read"
+            ),
+        })
     fetched = _fetch_pages_many(
         plausible, fetch_text, timeout=timeout,
         respect_robots=respect_robots, pace=pace,
