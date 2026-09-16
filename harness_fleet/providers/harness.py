@@ -186,6 +186,19 @@ def classify_failure(err_msg: str) -> str:
     )):
         return "auth_error"
     if any(marker in lowered for marker in (
+        # The model cannot accept the request we send. OpenRouter says it
+        # plainly: "No endpoints found that support tool use". Retrying spends
+        # the run's budget on a route that can never answer — the two models
+        # that produced this were listed as tools:false in OpenRouter's own
+        # public model list, so the failure was predictable all along.
+        "support tool use",
+        "does not support tools",
+        "tools are not supported",
+        "tool use is not supported",
+        "does not support function calling",
+    )):
+        return "unsupported"
+    if any(marker in lowered for marker in (
         "unexpected server error",
         "internal server error",
         "bad gateway",

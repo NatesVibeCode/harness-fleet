@@ -297,6 +297,8 @@ class EnrichReport:
     #: Records collected per surface. A surface that returned nothing is as
     #: much a fact about the run as one that returned five.
     by_surface: dict[str, int] = field(default_factory=dict)
+    #: Records a surface produced that were left out of the dossier, by surface.
+    trimmed: dict[str, int] = field(default_factory=dict)
     skipped: list[dict[str, str]] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:
@@ -308,6 +310,7 @@ class EnrichReport:
             "visited": self.visited,
             "kept": self.kept,
             "by_surface": dict(self.by_surface),
+            "trimmed": dict(self.trimmed),
             "skipped": self.skipped,
         }
 
@@ -451,7 +454,7 @@ def _channel_records(
         return records, skipped
 
     if channel == "community":
-        backends = (surfaces.get("channels") or {}).get("community") or []
+        backends = (surfaces.get("community") or {}).get("backends") or []
         hits = []
         for backend in backends:
             try:
@@ -462,11 +465,20 @@ def _channel_records(
                 skipped.append({"surface": "community", "backend": backend, "reason": str(exc)[:200]})
         for hit in hits[: max_per_channel * 2]:
             try:
-                # Stack Exchange and Reddit answer 403 to a plain HTML fetch;
-                # fetch_smart_url routes them through the APIs that do answer.
-                records.append(discover.fetch_smart_url(
-                    hit.url, timeout=timeout, respect_robots=respect_robots,
-                ))
+                site = discover.se_site_for_url(hit.url)
+                if site:
+                    # Stack Exchange serves 403 to every plain HTML fetch; its
+                    # API serves the same question. This is the difference
+                    # between a channel that reports refusals and one that
+                    # reads the answers.
+                    records.append(discover.fetch_stackexchange_question(
+                        hit.url, timeout=timeout,
+                    ))
+                else:
+                    # HN items and Reddit posts resolve through their own APIs.
+                    records.append(discover.fetch_smart_url(
+                        hit.url, timeout=timeout, respect_robots=respect_robots,
+                    ))
             except Exception as exc:
                 skipped.append({"surface": "community", "url": hit.url, "reason": str(exc)[:200]})
         return records, skipped
@@ -520,13 +532,20 @@ def enrich_entity(
         })
         return [], report
 
+    record_budget = max(1, int(per_surface))
     plan = surfaces or load_surfaces()
     paths = plan.get("first_party_paths") or {}
     templates = plan.get("templates") or {}
     channels = plan.get("channels") or {}
+    # Channel surfaces are declared in two places — the named-fetcher map and
+    # the community block — so the dispatch reads both. Missing one silently
+    # disabled a whole channel.
+    channel_names = {name for name in channels if not name.startswith("_")}
+    if plan.get("community"):
+        channel_names.add("community")
     first_party = [s for s in wanted if s in paths]
     probe_surfaces = [s for s in wanted if s in templates]
-    channel_surfaces = [s for s in wanted if s in channels]
+    channel_surfaces = [s for s in wanted if s in channel_names]
     records: list[Any] = []
     seen: set[str] = set()
     #: Records reached by addressing the entity's own account (a hiring board
@@ -535,6 +554,13 @@ def enrich_entity(
     addressed: list[Any] = []
 
     def add(record: Any, surface: str, *, by_address: bool = False) -> None:
+        # Bounded on purpose. A dossier is one input item to one model request,
+        # and a channel can hand back a dozen records at once; the run that
+        # bundled 46 sources died in scoring with a context overflow. What is
+        # left out is counted and reported rather than silently dropped.
+        if report.by_surface.get(surface, 0) >= record_budget:
+            report.trimmed[surface] = report.trimmed.get(surface, 0) + 1
+            return
         key = str(getattr(record, "source_uri", "") or getattr(record, "item_id", "") or "")
         if key and key in seen:
             return
@@ -638,6 +664,14 @@ def enrich_entity(
     # the vendor stories and none names this entity" is a different fact from
     # "we never looked", and a zero with no reason is the one thing this fleet
     # does not report.
+    for surface, left_out in sorted(report.trimmed.items()):
+        report.skipped.append({
+            "surface": surface,
+            "reason": (
+                f"kept the first {report.by_surface.get(surface, 0)} record(s) from this surface; "
+                f"{left_out} more were not bundled (dossier size is bounded)"
+            ),
+        })
     spoken_for = {str(entry.get("surface") or "") for entry in report.skipped}
     attempted = set(first_party) | set(probe_surfaces) | set(channel_surfaces)
     if vendor_stories and "vendor_stories" in wanted:

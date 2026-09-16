@@ -37,7 +37,7 @@ def test_every_kind_maps_to_surfaces_that_exist():
     declared = set(plan.get("first_party_paths") or {})
     declared |= set(plan.get("templates") or {})
     declared |= set(plan.get("channels") or {})
-    declared |= {"vendor_stories"}
+    declared |= {"vendor_stories", "community"}
 
     for kind in contracts.EVIDENCE_KINDS:
         surfaces = contracts.surfaces_for_kinds([kind])
@@ -104,6 +104,10 @@ def _patch_sitemap(monkeypatch, urls, *, error=None):
 
 def _raise(exc):
     raise exc
+
+
+def _raise_offline(url, **kw):
+    raise RuntimeError(f"offline: {url} not reached in tests")
 
 
 def test_the_sitemap_names_the_pages_and_deepest_wins(monkeypatch):
@@ -223,7 +227,8 @@ def test_a_surface_that_yields_nothing_says_so(monkeypatch):
     An entity whose only gap is independent validation produced a walk with no
     records and no refusals, which reads as a surface that was never visited.
     """
-    _offline(monkeypatch, markup=lambda url, **kw: (_raise(RuntimeError("offline"))))
+    _offline(monkeypatch)
+    monkeypatch.setattr(enrich, "fetch_markup", _raise_offline)
     records, report = enrich_entity("acme.com", kinds=["independent_validation"])
     assert records == []
     reasons = {entry.get("surface"): entry.get("reason", "") for entry in report.skipped}
@@ -286,3 +291,69 @@ def test_a_lease_is_held_longer_than_a_batch_can_take():
     window = max(300, engine.prompt_timeout_sec * max(1, engine.max_attempts_per_batch) + 60)
     assert window >= 180 * 3, "three timed attempts must fit inside one lease"
     assert window > 300, "the old default was the bug"
+
+
+def test_a_channel_that_returns_a_pile_is_bounded_and_says_so(monkeypatch):
+    """One GitHub org can hand back a dozen records; a dossier holds a few.
+
+    The run that bundled 46 sources died in scoring with a context overflow, so
+    the walk bounds what any one surface contributes — and counts what it left
+    out rather than dropping it quietly.
+    """
+    from harness_fleet.discover import RawRecord
+
+    _offline(monkeypatch)
+    github = [
+        RawRecord(text=f"repo {i} readme about acme", source_uri=f"https://github.com/acme/repo{i}")
+        for i in range(9)
+    ]
+    from harness_fleet import discover
+
+    monkeypatch.setattr(discover, "fetch_github_org", lambda org, **kw: (github, []))
+
+    records, report = enrich_entity("acme.com", kinds=["engineering_output"], per_surface=3)
+    assert len(records) == 3, "the budget is the budget"
+    assert report.trimmed.get("code") == 6
+    reason = " ".join(entry.get("reason", "") for entry in report.skipped if entry.get("surface") == "code")
+    assert "6 more were not bundled" in reason
+
+
+def test_a_route_that_cannot_take_tools_is_recognised_and_parked():
+    """The refusal is predictable, so it must not cost an attempt every run.
+
+    "No endpoints found that support tool use" is OpenRouter saying the model
+    cannot accept the request opencode sends. Two routes hit this on every run
+    while their public model records said tools:false.
+    """
+    from harness_fleet.engine import UNSUPPORTED_COOLDOWN_SEC
+    from harness_fleet.providers.harness import classify_failure
+
+    assert classify_failure("No endpoints found that support tool use. Try disabling bash") == "unsupported"
+    assert classify_failure("model does not support tools") == "unsupported"
+    assert UNSUPPORTED_COOLDOWN_SEC >= 24 * 60 * 60, "a capability does not come back in minutes"
+
+    # And a genuinely different failure is not swept up by the new rule.
+    assert classify_failure("HTTP 429 rate limit exceeded") == "rate_limit"
+    assert classify_failure("connection reset by peer") != "unsupported"
+
+
+def test_every_declared_channel_is_actually_dispatched():
+    """A channel declared but never dispatched is dead code with a comment.
+
+    Moving the community block out of the channels map silently stopped the walk
+    from ever calling it; the mapping and the dispatch have to agree.
+    """
+    plan = enrich.load_surfaces()
+    declared = {name for name in (plan.get("channels") or {}) if not name.startswith("_")}
+    if plan.get("community"):
+        declared.add("community")
+    assert declared == {"ats", "code", "community"}, declared
+
+    for channel in sorted(declared):
+        surface = "community" if channel == "community" else channel
+        kind = {
+            "ats": "delivery_hiring", "code": "engineering_output", "community": "independent_validation",
+        }[channel]
+        assert surface in contracts.surfaces_for_kinds([kind]) or channel == "community", (
+            f"'{channel}' is declared but no kind asks for it"
+        )

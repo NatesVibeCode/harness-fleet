@@ -114,12 +114,6 @@
     ],
     "code": [
       "github"
-    ],
-    "community": [
-      "hn",
-      "reddit",
-      "stackexchange",
-      "devto"
     ]
   },
   "ats": {
@@ -134,7 +128,11 @@
     "jobs.lever.co/<slug> (HTML board)": "404 on 8 of 8, and the missing-slug baseline is 404 too. The JSON API is the readable form and is kept.",
     "boards.greenhouse.io/<slug> (HTML board)": "The board host moved to job-boards.greenhouse.io. The JSON API is kept.",
     "clutch.co/profile/<slug>": "HTTP 403 on 8 of 8 domains, flat, with no challenge page. A surface that never answers is not a source.",
-    "g2.com/products/<slug>/reviews": "HTTP 403 on 8 of 8 domains. Same."
+    "g2.com/products/<slug>/reviews": "HTTP 403 on 8 of 8 domains. Same.",
+    "bluesky (public search)": "app.bsky.feed.searchPosts answered HTTP 403 on both public hosts, 2026-09. app.bsky.actor.searchActors answers 200 but returns accounts, which is a name match rather than evidence of work.",
+    "youtube transcripts": "The watch page lists captionTracks, but every timedtext fetch returns HTTP 200 with a zero-length body: proof-of-origin gating. Reading transcripts now needs a client that implements POT (yt-dlp), which is not a dependency here.",
+    "x.com / twitter": "Paid API; no keyless read path.",
+    "linkedin": "robots.txt disallows the job paths and pages answer 403."
   },
   "vendor_stories": {
     "_comment": "Independent prose about an entity, published by the vendor it works with — and, now that the review directories refuse automated access, the half of the tier-1 evidence gate that review sites used to supply. Enumerated rather than searched: walk each vendor's sitemap index one level, keep the story paths, fetch the pages, and let attribution file each story under the entity it names.",
@@ -179,5 +177,16 @@
         "slug_form": "<customer>-<partner>"
       }
     }
+  },
+  "community": {
+    "_comment": "The social and community channels that do answer, each through its own API rather than an HTML scrape: Hacker News (Algolia), Reddit (archive + RSS), Stack Exchange (api.stackexchange), dev.to, Lobsters, Lemmy. Stack Overflow serves 403 to every plain fetch, so its questions are read through the API.",
+    "backends": [
+      "hn",
+      "reddit",
+      "stackexchange",
+      "devto",
+      "lobsters",
+      "lemmy"
+    ]
   }
 }

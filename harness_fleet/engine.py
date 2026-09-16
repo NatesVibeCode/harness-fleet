@@ -39,6 +39,10 @@ AUTH_ERROR_COOLDOWN_SEC = 900.0
 #: A route that timed out is parked for a while: the ladder has other routes,
 #: and a hang costs the run its whole attempt budget.
 TIMEOUT_COOLDOWN_SEC = 30 * 60
+#: A route that cannot accept the request shape will not learn to. Parked for a
+#: week rather than minutes: the alternative is paying for the discovery again
+#: on every run, which is what happened before this existed.
+UNSUPPORTED_COOLDOWN_SEC = 7 * 24 * 60 * 60
 
 
 class _InputManifest:
@@ -299,7 +303,7 @@ class Engine:
                 # five attempts at exactly the 180s ceiling on routes that never
                 # replied, which is time the run never gets back. It is parked like
                 # a refusal, so the ladder moves on to a route that does answer.
-                if error_type in ("rate_limit", "transient_http", "auth_error", "timeout"):
+                if error_type in ("rate_limit", "transient_http", "auth_error", "timeout", "unsupported"):
                     # Temporarily cool down route without burning batch attempt
                     # budget (adaptive if retry_after is None). An unauthenticated
                     # harness is parked the same way: retrying it cannot succeed,
@@ -308,6 +312,8 @@ class Engine:
                         retry_after = AUTH_ERROR_COOLDOWN_SEC
                     if error_type == "timeout" and retry_after is None:
                         retry_after = TIMEOUT_COOLDOWN_SEC
+                    if error_type == "unsupported" and retry_after is None:
+                        retry_after = UNSUPPORTED_COOLDOWN_SEC
                     self.catalog.set_cooldown(route_id, retry_after, reason=f"{error_type}: {last_err}")
                     attempt_record.update({
                         "transport_status": error_type,

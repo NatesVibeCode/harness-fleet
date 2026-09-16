@@ -836,7 +836,7 @@ class ProviderReceipt(ClosedModel):
     usage: dict[str, JsonValue] | None = None
     error: str | None = None
     duration_seconds: float | None = Field(default=None, ge=0)
-    error_type: Literal["rate_limit", "transient_http", "inference_error", "auth_error", "timeout"] | None = None
+    error_type: Literal["rate_limit", "transient_http", "inference_error", "auth_error", "timeout", "unsupported"] | None = None
     retry_after: float | None = Field(default=None, ge=0)
 
     @model_validator(mode="after")

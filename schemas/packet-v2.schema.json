@@ -245,7 +245,8 @@
                 "transient_http",
                 "inference_error",
                 "auth_error",
-                "timeout"
+                "timeout",
+                "unsupported"
               ],
               "type": "string"
             },
