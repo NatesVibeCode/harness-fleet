@@ -59,7 +59,12 @@ def render_dag(lane) -> str:
     with tempfile.TemporaryDirectory() as tmp:
         items = Path(tmp) / "captured.jsonl"
         items.write_text("", encoding="utf-8")
-        spec = DagSpec.model_validate(lane_spec(lane, from_items=str(items)))
+        # The whole chain, including the stage that produces the deliverable:
+        # a picture of the funnel that stopped before scoring would be a picture
+        # of half a run.
+        spec = DagSpec.model_validate(lane_spec(
+            lane, from_items=str(items), score=True, score_task=lane.preset,
+        ))
         order = spec.topo_order()
     out: list[str] = []
     add = out.append
@@ -72,6 +77,9 @@ def render_dag(lane) -> str:
             writes = "rung_rows + rung_text (the text it gated on)"
             if node.from_retrieve:
                 cost = "0 fetches (reads what the walk brought back)"
+        elif kind == "score":
+            cost = "reads the standing firms, runs the campaign"
+            writes = "rung_rows + rung_text (score, tier, facts) + the running list"
         elif kind == "resolve":
             cost = str(len(node.fields)) + " search(es) per open candidate"
             writes = "rung_rows + rung_text (what the search said)"
@@ -101,6 +109,8 @@ def render_dag(lane) -> str:
         rung_of = getattr(node, "rung_of", None) or {}
         if kind == "gate":
             asks = ", ".join(rung_of.get("gates") or [])
+        elif kind == "score":
+            asks = "the checklist and the bar, on whoever is standing"
         elif kind == "resolve":
             asks = "searches: " + ", ".join(node.fields) + " -> `" + node.query + "`"
         else:
@@ -110,6 +120,7 @@ def render_dag(lane) -> str:
             "gate": "`rung_rows`, `rung_text`",
             "resolve": "`rung_rows`, `rung_text`",
             "retrieve": "`rung_rows`, `rung_text`, items table",
+            "score": "`rung_rows`, `rung_text`, `entity_state`",
         }.get(kind, "-")
         add("  | `" + node_id + "` | " + kind + " | " + rung + " | " + asks
             + " | " + surfaces + " | " + writes + " |")
@@ -274,7 +285,9 @@ by hand — so this picture cannot drift from what a run does. Regenerate with
   as written. A GAP is a row that can never clear its own bar.
 - **DAG** — the nodes the ladder compiles to, and the table each one writes. A
   `gate` puts a rung's questions; a `resolve` answers the firmographics one flat
-  search can settle; a `retrieve` spends the page visits a rung declared. The
+  search can settle; a `retrieve` spends the page visits a rung declared; a
+  `score` judges whoever is left and writes the number and the facts onto the
+  running list. The
   nodes are the run: each one writes its population and the prose behind every
   verdict into the run's own database (`rung_rows`, `rung_text`), where the next
   node queries it. CSV is an export you ask for, not the store.

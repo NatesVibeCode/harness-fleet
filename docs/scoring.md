@@ -26,6 +26,13 @@ nothing.
 Cheapest and most decisive first. **A candidate stops at the first gate it
 fails**, and nothing further is spent on it.
 
+The funnel is a graph, not a stage inside a command: a `gate` node per rung, a
+`resolve` node wherever a rung says one flat search may settle a firmographic,
+and a `retrieve` node for the page visits a rung declared. Each node writes the
+population it was given and the verdicts it produced (into the run's database),
+so where the world shrank is a query rather than an inference. A candidate
+eliminated anywhere is absent from every table above it.
+
 | # | gate | the question | resolved from |
 |---|---|---|---|
 | 0 | keyword search | did it match at all | — |
@@ -161,6 +168,20 @@ A 0–100 score and a tier become **derived and secondary**, not the deliverable
 score answers "how well does this match" when the reader's question is "what do
 I do about this firm".
 
+**Where it lands.** Scoring is the last node in the graph (`s-score`), so the
+number is produced where every other stage is produced, and recorded where every
+other stage is recorded: the run's table, and the running list —
+`entity_state.score`, `.tier`, `.facts`, with one `entity_events` row per visit.
+Two consequences worth stating:
+
+- **The tier is capped by the evidence, not by the claim.** `enforce_tier` runs
+  against the coverage of the pages actually gathered, so a model claiming
+  `tier_1` on one case study records as the tier that evidence supports.
+- **A score is a series, not just a column.** `entity_score_history` is a view
+  over the events, so "61 last month, 87 now" is a query and
+  `harness-fleet ledger --trend` prints it. A score that moved means the world
+  changed or the lane did, and those are different things to act on.
+
 ---
 
 ## 9. Cost model
@@ -199,27 +220,39 @@ compensation.
 
 ## 11. How the funnel reports itself
 
-The first thing a run shows is not a list of companies, it is the funnel:
+The first thing a run shows is not a list of companies, it is the funnel — one
+line per node, named by the gate that did the work:
 
 ```
-candidates            412
-eliminated at kind    180
-eliminated at size     61
-eliminated at location 24
-unresolved at size     37   → need one fetch each
-needing retrieval      90
-qualified              22
+Funnel: result: 412 in -> 180 eliminated (180 at kind) [running on the kind
+  question alone: no profile states a headcount, a territory or an industry]
+  | surface: read 90, nothing on 12, 268 page(s) | stories: ...
 ```
 
-Every number is a threshold a person can tune. There are no silent zeros: a gate
-that could not be resolved is counted as unknown, with what would resolve it.
+Every number is a threshold a person can tune, and every number is counted off
+the node's own table, so the count and the rows a person reads cannot disagree.
+There are no silent zeros: a gate that could not be resolved is counted as
+unknown with what would resolve it, and a run whose gates are running on almost
+nothing says so out loud.
+
+The tables are rows in the run's database, and the running list across runs is
+what an operator reads afterwards:
+
+```
+harness-fleet ledger                       the running list, by score
+harness-fleet ledger --trend               firms with two numbers and the movement
+harness-fleet ledger --entity acme.co.uk   one firm's visits, in order
+harness-fleet ledger --csv running.csv     a file, when a file is wanted
+```
 
 ---
 
 ## 12. Open questions
 
 1. **Does a numeric score survive at all**, or is verdict + fields + the
-   recommendation the whole output?
+   recommendation the whole output? *(Still open. It now survives as a recorded
+   number with a history, which is what makes the question answerable: a score
+   that never moves is not carrying information.)*
 2. **Who authors profiles** — hand-maintained documents, or drafted from a
    paragraph you correct?
 3. **The "known firms" exclusion** — a list you maintain, or a rule (e.g. above N

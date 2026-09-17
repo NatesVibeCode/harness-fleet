@@ -21,7 +21,9 @@ by hand — so this picture cannot drift from what a run does. Regenerate with
   as written. A GAP is a row that can never clear its own bar.
 - **DAG** — the nodes the ladder compiles to, and the table each one writes. A
   `gate` puts a rung's questions; a `resolve` answers the firmographics one flat
-  search can settle; a `retrieve` spends the page visits a rung declared. The
+  search can settle; a `retrieve` spends the page visits a rung declared; a
+  `score` judges whoever is left and writes the number and the facts onto the
+  running list. The
   nodes are the run: each one writes its population and the prose behind every
   verdict into the run's own database (`rung_rows`, `rung_text`), where the next
   node queries it. CSV is an export you ask for, not the store.
@@ -84,6 +86,8 @@ lanes in.
                 reads g1-surface       | writes rung_rows + rung_text + its own items table
   g2-stories    gate     0 fetches (reads what the walk brought back)
                 reads r2-stories       | writes rung_rows + rung_text (the text it gated on)
+  s-score       score    reads the standing firms, runs the campaign
+                reads captured.jsonl   | writes rung_rows + rung_text (score, tier, facts) + the running list
 
   | node | kind | rung | asks / fields | surfaces | writes |
   |---|---|---|---|---|---|
@@ -94,6 +98,7 @@ lanes in.
   | `g1-surface` | gate | surface | size, location | `about`, `services`, `careers` | `rung_rows`, `rung_text` |
   | `r2-stories` | retrieve | stories | reads pages | `case_studies`, `blog`, `news` | `rung_rows`, `rung_text`, items table |
   | `g2-stories` | gate | stories | vertical | `case_studies`, `blog`, `news` | `rung_rows`, `rung_text` |
+  | `s-score` | score | - | the checklist and the bar, on whoever is standing | - | `rung_rows`, `rung_text`, `entity_state` |
 
   a search settles location, size at result, so no page is fetched for them
 
@@ -162,6 +167,8 @@ lanes in.
                 reads c0-result        | writes rung_rows + rung_text + its own items table
   g1-posting    gate     0 fetches (reads what the walk brought back)
                 reads r1-posting       | writes rung_rows + rung_text (the text it gated on)
+  s-score       score    reads the standing firms, runs the campaign
+                reads captured.jsonl   | writes rung_rows + rung_text (score, tier, facts) + the running list
 
   | node | kind | rung | asks / fields | surfaces | writes |
   |---|---|---|---|---|---|
@@ -170,6 +177,7 @@ lanes in.
   | `c0-result` | gate | result | location | - | `rung_rows`, `rung_text` |
   | `r1-posting` | retrieve | posting | reads pages | `careers`, `about`, `ats` | `rung_rows`, `rung_text`, items table |
   | `g1-posting` | gate | posting | location | `careers`, `about`, `ats` | `rung_rows`, `rung_text` |
+  | `s-score` | score | - | the checklist and the bar, on whoever is standing | - | `rung_rows`, `rung_text`, `entity_state` |
 
   a search settles location at result, so no page is fetched for them
 
@@ -255,6 +263,8 @@ lanes in.
                 reads g1-surface       | writes rung_rows + rung_text + its own items table
   g2-stories    gate     0 fetches (reads what the walk brought back)
                 reads r2-stories       | writes rung_rows + rung_text (the text it gated on)
+  s-score       score    reads the standing firms, runs the campaign
+                reads captured.jsonl   | writes rung_rows + rung_text (score, tier, facts) + the running list
 
   | node | kind | rung | asks / fields | surfaces | writes |
   |---|---|---|---|---|---|
@@ -265,6 +275,7 @@ lanes in.
   | `g1-surface` | gate | surface | kind, size, location | `home`, `about`, `services`, `partners`, `careers` | `rung_rows`, `rung_text` |
   | `r2-stories` | retrieve | stories | reads pages | `case_studies`, `partners`, `blog`, `news` | `rung_rows`, `rung_text`, items table |
   | `g2-stories` | gate | stories | vertical | `case_studies`, `partners`, `blog`, `news` | `rung_rows`, `rung_text` |
+  | `s-score` | score | - | the checklist and the bar, on whoever is standing | - | `rung_rows`, `rung_text`, `entity_state` |
 
   a search settles location, size at result, so no page is fetched for them
 
