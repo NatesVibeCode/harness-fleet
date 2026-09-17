@@ -2092,7 +2092,6 @@ def cmd_research(args: argparse.Namespace) -> None:
     commands remain for anyone who wants to drive the steps.
     """
     from .bundler import bundle_records, export_bundled_csv
-    from .task import create_task_from_preset
 
     store = _store(args)
     workspace = Path(getattr(args, "workspace_root", ".")).expanduser().resolve()
@@ -2254,7 +2253,16 @@ def cmd_research(args: argparse.Namespace) -> None:
             respect_robots=not getattr(args, "ignore_robots", False),
             gates=not no_funnel,
             walk=not no_enrich,
+            # Scoring is a node like everything else: it reads the survivors,
+            # writes the score and the facts, and lands them on the running list.
+            score=True,
+            score_task=preset,
+            score_run_id=run_id,
+            sessions=int(getattr(args, "sessions", 4) or 4),
+            max_attempts=int(getattr(args, "max_attempts", 300) or 300),
+            top=top,
         ))
+
         funnel_state = run_dag(
             spec, store, workspace_root=workspace, dag_id=f"{run_id}-funnel", resume=False
         )
@@ -2263,6 +2271,27 @@ def cmd_research(args: argparse.Namespace) -> None:
         print(funnel_stage_note(funnel_state))
         keyed = funnel_population(keyed, funnel_state, spec, store)
         report["gathered"] = len(keyed)
+        scored = next(
+            (
+                info for info in funnel_state["nodes"].values()
+                if isinstance(info, dict) and info.get("kind") == "score"
+            ),
+            None,
+        )
+        if scored:
+            # The deliverable is the scoring node's own table, so the report and
+            # the ranked file are the same rows the running list just recorded.
+            report["score"] = {
+                "task": scored.get("task"),
+                "judged": scored.get("judged"),
+                "verified": scored.get("verified"),
+                "mean_score": scored.get("mean_score"),
+                "run_id": scored.get("run_id"),
+            }
+            print(
+                f"Scored {scored.get('verified')} of {scored.get('judged')} standing "
+                f"candidates (mean {scored.get('mean_score')})"
+            )
         _write_discovery_report(workspace, run_id, report)
         if not keyed:
             raise DiscoverError(
@@ -2290,35 +2319,18 @@ def cmd_research(args: argparse.Namespace) -> None:
         report["merged"] = merged
     _write_discovery_report(workspace, run_id, report)
 
-    # 2. Ensure the task exists (a preset is enough for a first run).
-    try:
-        task = store.get_task(preset)
-    except Exception:
-        task = create_task_from_preset(preset, preset_name=preset)
-        store.register_task(task)
-        print(f"Registered task '{task.name}' from the '{preset}' preset")
-
-    # 3. Score, with the engine's own route selection and first-run refresh.
-    policy = _extract_policy(args)
-    _check_routes_for_run(store, policy)
+    # 2-3. The scoring stage already ran — it is a node in the graph above, and
+    # it filed its campaign under this run's id. What is left is to say what it
+    # produced, or to say why nothing was produced.
+    scored = report.get("score") or {}
+    verified = int(scored.get("verified") or 0)
     packet_path = workspace / "runs" / run_id / "clean_packet.json"
-    packet = Engine(
-        task=task, store=store, policy=policy,
-        prompt_timeout_sec=int(getattr(args, "timeout", 0) or DEFAULT_PROMPT_TIMEOUT_SEC),
-    ).run_campaign(
-        raw_items=iter_input_items(input_path, id_column="item_id", text_column="text", uri_column="source_uri"),
-        run_id=run_id,
-        input_path=str(input_path),
-        concurrency=int(getattr(args, "sessions", 4) or 4),
-        max_attempts=int(getattr(args, "max_attempts", 300) or 300),
-        output_packet_path=packet_path,
-        policy=policy,
-    )
-
-    # 3b. Nothing scored is a failure, not an empty deliverable: say why.
-    verified = int(packet.get("total_verified_records") or 0)
     if verified == 0:
-        reasons = []
+        reasons: list[str] = []
+        try:
+            packet = json.loads(packet_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            packet = {}
         for receipt in (packet.get("receipts") or [])[:3]:
             if isinstance(receipt, dict):
                 error = str(receipt.get("error") or "").strip()
@@ -2357,7 +2369,7 @@ def cmd_research(args: argparse.Namespace) -> None:
             "packet": str(packet_path),
             "ranked": str(ranked_path),
             "items": len(dossiers),
-            "verified_records": packet.get("total_verified_records"),
+            "verified_records": verified,
             "evidence": readout,
             "evidence_path": str(evidence_path),
             "report": report,

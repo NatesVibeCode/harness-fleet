@@ -65,7 +65,13 @@ def test_the_lane_supplies_queries_sources_filters_and_preset(tmp_path, monkeypa
         def run_campaign(self, **kwargs):
             return {"total_verified_records": 1}
 
-    monkeypatch.setattr(cli, "Engine", FakeEngine)
+    # The scoring stage is a node in the graph now, so the engine it builds is
+    # the DAG's — which is the point: the command no longer runs a campaign of
+    # its own.
+    monkeypatch.setattr("harness_fleet.dag.Engine", FakeEngine)
+    monkeypatch.setattr(
+        "harness_fleet.dag.verified_records_from_snapshot", lambda snapshot: ([], None)
+    )
     monkeypatch.setattr(cli.HarnessStore, "run_snapshot", lambda self, run_id: {"status": "completed"})
     # cmd_research imports the exporter inside the call, so patch it where it lives.
     monkeypatch.setattr("harness_fleet.export.export_clean_packet", lambda *a, **k: {})

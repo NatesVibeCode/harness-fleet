@@ -48,7 +48,12 @@ CREATE TABLE IF NOT EXISTS {STATE_TABLE} (
     lanes TEXT NOT NULL DEFAULT '[]',
     pages_seen INTEGER NOT NULL DEFAULT 0,
     sightings INTEGER NOT NULL DEFAULT 0,
-    attempts INTEGER NOT NULL DEFAULT 0
+    attempts INTEGER NOT NULL DEFAULT 0,
+    score REAL NOT NULL DEFAULT 0,
+    tier TEXT NOT NULL DEFAULT '',
+    facts TEXT NOT NULL DEFAULT '{{}}',
+    scored_at TEXT NOT NULL DEFAULT '',
+    run_id TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS {EVENTS_TABLE} (
     event_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -62,7 +67,10 @@ CREATE TABLE IF NOT EXISTS {EVENTS_TABLE} (
     outcome TEXT NOT NULL DEFAULT '',
     because TEXT NOT NULL DEFAULT '',
     gates_open TEXT NOT NULL DEFAULT '[]',
-    pages TEXT NOT NULL DEFAULT '[]'
+    pages TEXT NOT NULL DEFAULT '[]',
+    score REAL NOT NULL DEFAULT 0,
+    tier TEXT NOT NULL DEFAULT '',
+    facts TEXT NOT NULL DEFAULT '{{}}'
 );
 CREATE INDEX IF NOT EXISTS {EVENTS_TABLE}_entity ON {EVENTS_TABLE} (entity, at);
 """
@@ -119,11 +127,14 @@ class Ledger:
                 pages = [str(page) for page in (row.get("pages") or [])]
                 connection.execute(
                     f"INSERT INTO {EVENTS_TABLE} (entity, at, dag_id, node_id, run_seq, lane, "
-                    "rung, outcome, because, gates_open, pages) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                    "rung, outcome, because, gates_open, pages, score, tier, facts) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (
                         entity, stamp, dag_id, node_id, int(run_seq), lane,
                         str(row.get("rung") or ""), outcome, because,
                         json.dumps(open_gates), json.dumps(pages),
+                        float(row.get("score") or 0.0), str(row.get("tier") or ""),
+                        json.dumps(row.get("facts") or {}),
                     ),
                 )
                 found = connection.execute(
@@ -133,11 +144,16 @@ class Ledger:
                     connection.execute(
                         f"INSERT INTO {STATE_TABLE} (entity, first_seen, last_seen, last_dag, "
                         "last_node, last_rung, outcome, because, gates_open, lanes, pages_seen, "
-                        "sightings, attempts) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        "sightings, attempts, score, tier, facts, scored_at, run_id) "
+                        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                         (
                             entity, stamp, stamp, dag_id, node_id, str(row.get("rung") or ""),
                             outcome, because, json.dumps(open_gates),
                             json.dumps([lane] if lane else []), len(pages), 1, 1,
+                            float(row.get("score") or 0.0), str(row.get("tier") or ""),
+                            json.dumps(row.get("facts") or {}),
+                            stamp if row.get("score") else "",
+                            str(row.get("run_id") or ""),
                         ),
                     )
                     recorded += 1
@@ -152,10 +168,12 @@ class Ledger:
                     or found["outcome"] in ("",)
                 )
                 lanes = sorted({*(json.loads(found["lanes"] or "[]")), *([lane] if lane else [])})
+                scored = bool(row.get("score")) or bool(row.get("facts"))
                 connection.execute(
                     f"UPDATE {STATE_TABLE} SET last_seen=?, last_dag=?, last_node=?, "
                     "last_rung=?, outcome=?, because=?, gates_open=?, lanes=?, pages_seen=?, "
-                    "sightings=sightings+1, attempts=attempts+? WHERE entity=?",
+                    "sightings=sightings+1, attempts=attempts+?, score=?, tier=?, facts=?, "
+                    "scored_at=?, run_id=? WHERE entity=?",
                     (
                         stamp, dag_id, node_id, str(row.get("rung") or ""),
                         outcome if keeps else found["outcome"],
@@ -164,6 +182,12 @@ class Ledger:
                         json.dumps(lanes),
                         int(found["pages_seen"] or 0) + len(pages),
                         1,
+                        float(row.get("score") or found["score"] or 0.0) if scored else found["score"],
+                        str(row.get("tier") or found["tier"] or "") if scored else found["tier"],
+                        json.dumps(row.get("facts") or {}) if row.get("facts")
+                        else found["facts"],
+                        stamp if scored else found["scored_at"],
+                        str(row.get("run_id") or found["run_id"] or ""),
                         entity,
                     ),
                 )
@@ -189,10 +213,12 @@ class Ledger:
             params.append(f'%"{lane}"%')
         if standing_only:
             where.append("outcome!='eliminated'")
+        if getattr(self, "_scored_only", False):
+            where.append("scored_at!=''")
         sql = f"SELECT * FROM {STATE_TABLE}"
         if where:
             sql += " WHERE " + " AND ".join(where)
-        sql += " ORDER BY last_seen DESC, entity"
+        sql += " ORDER BY score DESC, last_seen DESC, entity"
         if limit:
             sql += " LIMIT ?"
             params.append(int(limit))
@@ -206,6 +232,10 @@ class Ledger:
                     row[column] = json.loads(row.get(column) or "[]")
                 except ValueError:
                     pass
+            try:
+                row["facts"] = json.loads(row.get("facts") or "{}")
+            except ValueError:
+                pass
             out.append(row)
         return out
 
@@ -224,6 +254,10 @@ class Ledger:
                     row[column] = json.loads(row.get(column) or "[]")
                 except ValueError:
                     pass
+            try:
+                row["facts"] = json.loads(row.get("facts") or "{}")
+            except ValueError:
+                pass
             out.append(row)
         return out
 

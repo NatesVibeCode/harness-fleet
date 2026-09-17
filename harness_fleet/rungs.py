@@ -87,6 +87,10 @@ CREATE TABLE IF NOT EXISTS {ROWS_TABLE} (
     visited INTEGER NOT NULL DEFAULT 0,
     kept INTEGER NOT NULL DEFAULT 0,
     skipped TEXT NOT NULL DEFAULT '[]',
+    score REAL NOT NULL DEFAULT 0,
+    tier TEXT NOT NULL DEFAULT '',
+    facts TEXT NOT NULL DEFAULT '{{}}',
+    run_id TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (dag_id, node_id, run_seq, seq)
 );
 CREATE INDEX IF NOT EXISTS {ROWS_TABLE}_entity ON {ROWS_TABLE} (item_id);
@@ -102,7 +106,7 @@ CREATE TABLE IF NOT EXISTS {TEXT_TABLE} (
 
 #: Columns that hold JSON, so a reader gets the structure back rather than a
 #: string that once was one.
-_JSON_COLUMNS = ("gates", "surfaces", "pages", "queries", "skipped")
+_JSON_COLUMNS = ("gates", "surfaces", "pages", "queries", "skipped", "facts")
 
 
 class RungTables:
@@ -165,6 +169,7 @@ class RungTables:
             "dag_id", "node_id", "run_seq", "seq", "kind", "lane", "rung", "item_id", "candidate",
             "evidence", "outcome", "earned", "because", "gates", "surfaces", "pages",
             "queries", "advances", "next_rung", "source_uri", "visited", "kept", "skipped",
+            "score", "tier", "facts", "run_id",
         )
         with self.store.connect() as connection:
             connection.execute(
@@ -196,6 +201,10 @@ class RungTables:
                     "visited": int(row.get("visited") or 0),
                     "kept": int(row.get("kept") or 0),
                     "skipped": row.get("skipped", []),
+                    "score": float(row.get("score") or 0.0),
+                    "tier": row.get("tier", ""),
+                    "facts": row.get("facts", {}),
+                    "run_id": row.get("run_id", ""),
                 }
                 connection.execute(
                     f"INSERT OR REPLACE INTO {ROWS_TABLE} ({', '.join(columns)}) "
@@ -439,6 +448,26 @@ def surviving_ids(rows: Sequence[dict[str, Any]]) -> list[str]:
     return [str(row["item_id"]) for row in rows if row.get("outcome") != "eliminated"]
 
 
+def population(tables: Any, dag_id: str, node_ids: Sequence[str]) -> set[str]:
+    """Who is still standing after a chain of gates.
+
+    Nobody is dropped for failing to earn more evidence, and nobody comes back
+    from a rung that eliminated them: an entity is alive when *no* rung threw it
+    out, whether or not a later rung had anything left to ask it. Reading only
+    the last table would lose every lead the ladder had finished with.
+    """
+    alive: set[str] = set()
+    eliminated: set[str] = set()
+    for node_id in node_ids:
+        for row in tables.rows(dag_id, node_id):
+            item_id = str(row.get("item_id") or "")
+            if row.get("outcome") == "eliminated":
+                eliminated.add(item_id)
+            else:
+                alive.add(item_id)
+    return alive - eliminated
+
+
 def count_rows(rows: Sequence[dict[str, Any]]) -> dict[str, Any]:
     """The shape of one rung's table: where the world shrank and what is open.
 
@@ -534,6 +563,12 @@ def lane_spec(
     resolve_results: int = 6,
     resolve_query: str = "",
     backends: Sequence[str] = (),
+    score: bool = False,
+    score_task: str = "",
+    score_run_id: str = "",
+    sessions: int = 4,
+    max_attempts: int = 300,
+    top: int | None = None,
 ) -> dict[str, Any]:
     """Compile a lane's ladder into a DAG: one gate per rung, one walk between.
 
@@ -650,6 +685,23 @@ def lane_spec(
                 "from_gate": resolve_id,
             })
             previous_gate = recheck_id
+    if score and previous_gate:
+        # The last stage is a stage: it reads the population the ladder left
+        # standing, gathers what the walks read about those firms, and writes the
+        # score and the facts onto the same running list everything else feeds.
+        nodes.append({
+            "kind": "score",
+            "id": "s-score",
+            "lane": lane.name,
+            "from_gate": previous_gate,
+            "from_nodes": [node["id"] for node in nodes if node["kind"] == "retrieve"],
+            **({"from_items": from_items} if from_items is not None else {}),
+            **({"task": score_task} if score_task else {}),
+            **({"run_id": score_run_id} if score_run_id else {}),
+            "sessions": sessions,
+            "max_attempts": max_attempts,
+            **({"top": top} if top else {}),
+        })
     return {
         "name": name or f"lane-{getattr(lane, 'name', 'lane')}",
         "nodes": nodes,

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, Literal
 
@@ -19,6 +20,7 @@ from pydantic import Field, model_validator
 
 from .calibrate import PARAM_KINDS, collect_observations, fit_calibration
 from .catalog import RouteCatalog
+from .discover import write_items_jsonl
 from .engine import Engine
 from .export import (
     _filter_and_sort_records,
@@ -33,9 +35,16 @@ from .gates import (
     LadderRung,
     _evaluable_gates,
 )
-from .input_data import load_input_items
+from .input_data import iter_input_items, load_input_items
 from .ledger import Ledger
-from .models import CalibrationReport, ClaimFilter, ClosedModel, RoutePolicy, SortSpec
+from .models import (
+    CalibrationReport,
+    ClaimFilter,
+    ClosedModel,
+    InputItem,
+    RoutePolicy,
+    SortSpec,
+)
 from .profile import IdealCompanyProfile
 from .providers.registry import ProviderRegistry, ProviderResolutionError
 from .rungs import (
@@ -45,12 +54,13 @@ from .rungs import (
     count_rows,
     gate_rows,
     next_rung,
+    population,
     record_text,
     resolved_gate_profile,
     surviving_ids,
 )
 from .store import HarnessStore
-from .task import load_task_spec
+from .task import create_task_from_preset, load_task_spec
 
 
 class DagError(ValueError):
@@ -311,9 +321,42 @@ class ResolveNode(ClosedModel):
         return self
 
 
+class ScoreNode(ClosedModel):
+    """Judge the survivors, as a node, and write the answer onto the list.
+
+    Scoring used to happen after the graph, in whatever called it, which meant
+    the one stage that produces the number and the facts landed nowhere: the
+    run's tables described the funnel, and the deliverable described the score,
+    and nothing joined them. It is a node now. It reads the population the
+    ladder left standing, gathers what the walks read about those firms, runs
+    the campaign, and writes a row per firm carrying the score and the facts —
+    which is also what the running list records, so the ledger's answer and the
+    run's answer are the same answer.
+    """
+
+    kind: Literal["score"] = "score"
+    id: str
+    lane: str
+    #: The gate whose survivors are judged. Usually the last one.
+    from_gate: str
+    #: Every node whose rows and items belong to these firms: the walks, and the
+    #: file of candidates the run started from.
+    from_nodes: list[str] = Field(default_factory=list)
+    from_items: str | None = None
+    task: str = ""
+    #: The run id this campaign is filed under. Empty derives one from the graph,
+    #: which is right for a graph nobody else is reading; a command that names
+    #: the run its deliverable lives in passes it here.
+    run_id: str = ""
+    sessions: int = 4
+    max_attempts: int = 300
+    policy: RoutePolicy | None = None
+    top: int | None = None
+
+
 DagNode = (
     RunNode | RescoreNode | CalibrateNode | FilterNode | ExportNode | ReviewNode
-    | GateNode | RetrieveNode | ResolveNode
+    | GateNode | RetrieveNode | ResolveNode | ScoreNode
 )
 
 
@@ -425,6 +468,17 @@ class DagSpec(ClosedModel):
                 if ref == node.id:
                     raise DagError(f"node '{node.id}' references itself")
                 deps[node.id] = {ref}
+            elif isinstance(node, ScoreNode):
+                refs = [node.from_gate, *node.from_nodes]
+                for source_ref in refs:
+                    target = by_id.get(source_ref)
+                    if target is None:
+                        raise DagError(
+                            f"node '{node.id}' references unknown node '{source_ref}'"
+                        )
+                    if source_ref == node.id:
+                        raise DagError(f"node '{node.id}' references itself")
+                deps[node.id] = set(refs)
             elif isinstance(node, RetrieveNode):
                 gate_ref = node.from_gate
                 if gate_ref is None:
@@ -636,7 +690,6 @@ def _execute_review_node(
     from .engine import Engine
     from .evidence import coverage
     from .export import verified_records_from_snapshot
-    from .input_data import iter_input_items
     from .sources import classify_source_category, entity_key_for
 
     def bar_kinds() -> tuple[str, ...]:
@@ -1257,6 +1310,172 @@ def _execute_resolve_node(
     }
 
 
+def _score_rows(
+    records: Sequence[Any], keys: dict[str, str], tiers: dict[str, str]
+) -> list[dict[str, Any]]:
+    """One row per scored firm: the number, the facts, and where they came from."""
+    rows: list[dict[str, Any]] = []
+    for record in records:
+        item_id = str(getattr(record, "item_id", "") or "")
+        claims = getattr(record, "claims", None)
+        claims = dict(claims) if isinstance(claims, dict) else {}
+        answers = claims.get("answers")
+        facts: dict[str, Any] = {k: v for k, v in claims.items() if k != "answers"}
+        if isinstance(answers, dict):
+            facts.update(answers)
+        score = 0.0
+        for key in ("score", "fit_score", "priority"):
+            value = claims.get(key)
+            if isinstance(value, int | float):
+                score = float(value)
+                break
+        rows.append({
+            "item_id": item_id,
+            "candidate": keys.get(item_id, item_id),
+            "rung": "score",
+            "evidence": FETCHED,
+            "outcome": str(tiers.get(item_id) or claims.get("fit_tier") or "scored"),
+            "earned": "",
+            "because": str(claims.get("reason") or claims.get("identified_gap") or "")[:400],
+            "gates": [],
+            "surfaces": {},
+            "pages": [],
+            "score": score,
+            "tier": str(tiers.get(item_id) or claims.get("fit_tier") or ""),
+            "facts": facts,
+            "advances": False,
+        })
+    return rows
+
+
+def _execute_score_node(
+    node: ScoreNode,
+    store: HarnessStore,
+    root: Path,
+    dag_dir: Path,
+    dag_id: str,
+    state: dict[str, Any],
+) -> dict[str, Any]:
+    """Judge the population the ladder left, and record what came back."""
+    from .bundler import bundle_records
+    from .evidence import coverage, enforce_tier
+
+    lane = _lane_for(node.lane, root)
+    tables = RungTables(store)
+    gates = [n.id for n in state.get("_spec_nodes", []) if n.get("kind") == "gate"] or [
+        node.from_gate
+    ]
+    standing = population(tables, dag_id, gates)
+    sources: list[Any] = []
+    empty_sources = 0
+    for source_id in [*(node.from_nodes or []), *([node.from_gate] if node.from_gate else [])]:
+        source_state = (state.get("nodes") or {}).get(source_id) or {}
+        for payload in _read_items_table(store, str(source_state.get("items_table") or "")):
+            sources.append(InputItem.model_validate(payload))
+        for row in tables.rows(dag_id, source_id):
+            item_id = str(row.get("item_id") or "")
+            text = tables.text(dag_id, source_id, item_id) if item_id else ""
+            if not item_id or not text.strip():
+                # Nothing was read about this one at this node, so it brings no
+                # evidence to judge. Counted rather than padded: a placeholder
+                # would be a source that does not exist.
+                if item_id:
+                    empty_sources += 1
+                continue
+            sources.append(InputItem(
+                item_id=item_id,
+                text=text,
+                source_uri=str(row.get("source_uri") or ""),
+                metadata={"node": source_id, "rung": row.get("rung") or ""},
+            ))
+    if node.from_items:
+        items_path = Path(node.from_items)
+        if not items_path.is_file():
+            items_path = root / node.from_items
+        if items_path.is_file():
+            for item in load_input_items(items_path):
+                if str(getattr(item, "item_id", "")) in standing:
+                    sources.append(item)
+    wanted = {source_id: None for source_id in standing}
+    dossiers = [
+        dossier for dossier in bundle_records(
+            [item for item in sources if str(getattr(item, "item_id", "")) in wanted]
+        )
+        if str(dossier.item_id) in standing
+    ]
+    if node.top:
+        dossiers = dossiers[: node.top]
+
+    name = node.task or lane.preset
+    try:
+        task = _resolve_dag_task(name, store, root)
+    except KeyError:
+        # A preset is enough for a first run: the task is registered here, which
+        # is what the command used to do before the scoring stage was a node.
+        task = create_task_from_preset(name, preset_name=name)
+        store.register_task(task)
+    run_id = node.run_id or f"{dag_id}-{node.id}"
+    dossiers_path = dag_dir / node.id / "dossiers.jsonl"
+    dossiers_path.parent.mkdir(parents=True, exist_ok=True)
+    write_items_jsonl(dossiers, dossiers_path)
+    packet = Engine(task=task, store=store, policy=node.policy).run_campaign(
+        raw_items=iter(dossiers),
+        run_id=run_id,
+        input_path=str(dossiers_path),
+        concurrency=node.sessions,
+        max_attempts=node.max_attempts,
+        output_packet_path=dag_dir / node.id / "clean_packet.json",
+        policy=node.policy,
+    )
+    records, _task = verified_records_from_snapshot(store.run_snapshot(run_id))
+    ceiling = lane.tier or ""
+    keys = {str(dossier.item_id): str(dossier.item_id) for dossier in dossiers}
+    text_by_id = {str(dossier.item_id): str(dossier.text or "") for dossier in dossiers}
+    tiers: dict[str, str] = {}
+    for record in records:
+        item_id = str(record.item_id)
+        if not ceiling:
+            tiers[item_id] = ""
+            continue
+        # A tier is a claim about evidence, so it is capped at what the gathered
+        # pages actually support rather than taken from the model's word.
+        kinds = coverage(text_by_id.get(item_id, ""), "")
+        capped, _missing = enforce_tier(ceiling, kinds)
+        tiers[item_id] = str(capped or "")
+    rows = _score_rows(records, keys, tiers)
+    attempt = tables.write(dag_id, node.id, rows, kind="score", lane=node.lane)
+    Ledger(store).record(
+        [{**row, "run_id": run_id} for row in rows],
+        dag_id=dag_id, node_id=node.id, run_seq=attempt, lane=node.lane,
+    )
+    return {
+        "kind": "score",
+        "lane": node.lane,
+        "run_id": run_id,
+        "attempt": attempt,
+        "task": task.name,
+        "dossiers": len(dossiers),
+        "judged": len(standing),
+        "empty_sources": empty_sources,
+        "verified": int(packet.get("total_verified_records") or 0),
+        "count": len(rows),
+        "scored": sum(1 for row in rows if row["score"]),
+        "mean_score": round(
+            sum(row["score"] for row in rows) / len(rows), 2
+        ) if rows else 0.0,
+        "ids": [str(row["item_id"]) for row in rows],
+        "packet": str(dag_dir / node.id / "clean_packet.json"),
+    }
+
+
+def _read_items_table(store: HarnessStore, table: str) -> list[dict[str, Any]]:
+    if not table:
+        return []
+    with store.connect() as connection:
+        found = connection.execute(f'SELECT payload FROM "{table}" ORDER BY seq').fetchall()
+    return [json.loads(row["payload"]) for row in found]
+
+
 def run_dag(
     spec: DagSpec,
     store: HarnessStore,
@@ -1280,7 +1499,17 @@ def run_dag(
     dag_dir.mkdir(parents=True, exist_ok=True)
     sidecar = dag_dir / "dag.json"
 
-    _ensure_routes(store, next((node.policy for node in spec.nodes if isinstance(node, RunNode)), None))
+    _ensure_routes(
+        store,
+        next(
+            (
+                node.policy
+                for node in spec.nodes
+                if isinstance(node, RunNode | ScoreNode)
+            ),
+            None,
+        ),
+    )
     state: dict[str, Any] = {"dag_id": dag_id, "spec_digest": spec_digest(spec), "nodes": {}}
     if resume and sidecar.is_file():
         try:
@@ -1318,6 +1547,14 @@ def run_dag(
                 id_sets[node_id] = {str(item) for item in saved.get("ids") or []}
                 continue
             saved = _execute_resolve_node(node, store, root, dag_id, state)
+            state["nodes"][node_id] = saved
+            id_sets[node_id] = {str(item) for item in saved.get("ids") or []}
+            sidecar.write_text(json.dumps(state, indent=2), encoding="utf-8")
+            continue
+        if isinstance(node, ScoreNode):
+            # A score is the thing being tuned, so it is never silently reused:
+            # running the graph again is how a lane gets judged twice.
+            saved = _execute_score_node(node, store, root, dag_dir, dag_id, state)
             state["nodes"][node_id] = saved
             id_sets[node_id] = {str(item) for item in saved.get("ids") or []}
             sidecar.write_text(json.dumps(state, indent=2), encoding="utf-8")

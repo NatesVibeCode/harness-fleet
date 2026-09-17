@@ -160,3 +160,97 @@ def test_the_ledger_command_answers_for_one_entity(tmp_path, capsys):
     payload = json.loads(capsys.readouterr().out)
     assert payload["entity"] == "acme.co.uk"
     assert payload["events"][0]["dag_id"] == "run-1"
+
+
+# --------------------------------------------------------------------------
+# The score node writes both halves of the answer
+
+
+def test_a_score_node_records_the_number_and_the_facts(tmp_path, monkeypatch):
+    """The stage that produces the deliverable is a node, and it feeds the list."""
+    from harness_fleet.dag import DagSpec, run_dag
+    from harness_fleet.gates import LadderRung
+    from harness_fleet.lanes import shipped_lanes
+    from harness_fleet.rungs import lane_spec
+
+    lane = shipped_lanes()["partner"]
+    lane.funnel.ladder = [LadderRung(name="result", evidence="snippet", gates=["kind"])]
+    captured = tmp_path / "captured.jsonl"
+    captured.write_text(
+        json.dumps({"item_id": "acme.co.uk", "text": "Acme is a systems integrator.",
+                    "content_type": "text/plain"}) + "\n",
+        encoding="utf-8",
+    )
+    store = _store(tmp_path)
+
+    def fake_records(snapshot):
+        from harness_fleet.models import ExtractedItem
+
+        return [
+            ExtractedItem(
+                item_id="acme.co.uk",
+                source_uri="https://acme.co.uk",
+                source_digest="a" * 64,
+                content_type="text/plain",
+                claims={
+                    "score": 87.5,
+                    "fit_tier": "tier_2",
+                    "reason": "delivers what the lane buys",
+                    "answers": {"service_model": "SI", "industry_verticals": "fintech"},
+                },
+                quotes=[{"slice_id": "s", "start": 0, "end": 4, "text": "Acme"}],
+            )
+        ], None
+
+    monkeypatch.setattr("harness_fleet.dag.verified_records_from_snapshot", fake_records)
+    monkeypatch.setattr(
+        "harness_fleet.dag._resolve_dag_task", lambda name, store, root: _FakeTask(name)
+    )
+
+    class _FakeEngine:
+        def __init__(self, **kwargs):
+            pass
+
+        def run_campaign(self, **kwargs):
+            return {"total_verified_records": 1}
+
+    monkeypatch.setattr("harness_fleet.dag.Engine", _FakeEngine)
+    # The campaign is faked, so the snapshot it would have written is too; the
+    # extraction above is what the node actually reads.
+    monkeypatch.setattr(
+        "harness_fleet.store.HarnessStore.run_snapshot",
+        lambda self, run_id: {"run_id": run_id, "task": {}, "batches": {}},
+    )
+    spec = DagSpec.model_validate(lane_spec(
+        lane, from_items=str(captured), workspace=tmp_path,
+        score=True, score_task="partner-research", score_run_id="run-1",
+    ))
+    assert spec.topo_order()[-1] == "s-score"
+    state = run_dag(spec, store, workspace_root=tmp_path, dag_id="f1")
+
+    scored = state["nodes"]["s-score"]
+    assert scored["run_id"] == "run-1"
+    assert scored["verified"] == 1 and scored["mean_score"] == 87.5
+    # The node's own table carries the number and the facts.
+    row = RungTables(store).rows("f1", "s-score")[0]
+    assert row["score"] == 87.5
+    assert row["facts"]["service_model"] == "SI"
+    assert row["facts"]["industry_verticals"] == "fintech"
+    # And so does the running list, which is the point of recording it.
+    listed = Ledger(store).entities()[0]
+    assert listed["entity"] == "acme.co.uk"
+    assert listed["score"] == 87.5
+    # The tier is capped at what the gathered pages actually support, not at what
+    # the model claimed: one short line of evidence does not carry tier_2.
+    assert listed["tier"] == "tier_3"
+    assert listed["facts"]["service_model"] == "SI"
+    assert listed["scored_at"] and listed["run_id"] == "run-1"
+    # Both stages logged: the gate that let it through, then the score.
+    events = Ledger(store).history("acme.co.uk")
+    assert [event["node_id"] for event in events] == ["g0-result", "s-score"]
+    assert events[1]["score"] == 87.5 and events[1]["facts"]["service_model"] == "SI"
+
+
+class _FakeTask:
+    def __init__(self, name: str) -> None:
+        self.name = name

@@ -115,8 +115,10 @@ Two tables outlive the run:
 
 - **`entity_state`** — the running list. One row per entity, forever: what is
   currently believed (last verdict, the gate that stopped it, what is still
-  open), what has been gathered, and how many times it has been seen. Every node
-  folds its rows in as it finishes. `harness-fleet ledger` reads it.
+  open), **the score and the facts the scoring node produced**, and how many
+  times it has been seen. Every node folds its rows in as it finishes, so the
+  ledger's answer and the deliverable's answer are the same answer.
+  `harness-fleet ledger` reads it, sorted by score.
 - **`entity_events`** — append-only, one row per entity per node per attempt, so
   "when did they first appear" and "why did we drop them" stay answerable after
   the state row has moved on. An elimination stands until something actually
@@ -132,8 +134,10 @@ r1-surface   retrieve home, about, services, partners, careers
 g1-surface   gate     kind, size, location — on pages the run opened
 r2-stories   retrieve case_studies, partners, blog, news, vendor_stories
 g2-stories   gate     vertical
+s-score      score    reads the firms still standing, runs the campaign,
+                      writes score + tier + facts onto the run and the list
   ▼
-bundle per firm → score → row carrying the fields below
+export → row carrying the fields below
 ```
 
 A candidate eliminated at any node is absent from every table above it, and a
@@ -253,7 +257,7 @@ that carry them are read.
 | `resolve` (one search) | `snippet` | **size and territory as published facts**, for a candidate whose result did not state them |
 | rung `surface` | `fetched` | **expertise** (services / what-we-do), **service model**, headcount, territory, **software partners they carry** (partners page), hiring signals (careers) |
 | rung `stories` | `fetched` | **verticals they work in**, named clients, client outcomes, published engineering, growth signals, **independent validation** (vendor stories naming them) |
-| score | — | checklist, `identified_practice`, `revenue_hypothesis`, and the 14 `answers` fields: `target_stack`, `service_model`, `industry_verticals`, `delivery_coverage`, `vendor_alliances`, `case_study_outcome`, `client_logos`, `hiring_signals`, `commercial_terms`, `revenue_motion`, `third_party_mentions`, `engineering_output`, `growth_signals`, `evidence_categories` |
+| `s-score` node | `fetched` | checklist, `identified_practice`, `revenue_hypothesis`, the 14 `answers` fields, and the tier the evidence supports: `target_stack`, `service_model`, `industry_verticals`, `delivery_coverage`, `vendor_alliances`, `case_study_outcome`, `client_logos`, `hiring_signals`, `commercial_terms`, `revenue_motion`, `third_party_mentions`, `engineering_output`, `growth_signals`, `evidence_categories` |
 
 ### Account
 
