@@ -332,3 +332,37 @@ def test_the_ledger_route_answers_on_its_own(tmp_path):
     finally:
         server.shutdown()
         server.server_close()
+
+
+def test_the_board_separates_the_band_from_the_tier_evidence_supports(tmp_path):
+    """Two things called a tier: where the score falls, and what was proved."""
+    import json as _json
+    from pathlib import Path
+
+    from harness_fleet.board import build_board_payload
+
+    db = _partner_run(tmp_path, "board-tiers")
+    runs_dir = tmp_path / "runs" / "board-tiers"
+    runs_dir.mkdir(parents=True, exist_ok=True)
+    (runs_dir / "evidence.json").write_text(_json.dumps({
+        "items": {
+            "cloud_solutions.io": {
+                "tier_claimed": "tier_1",
+                "tier_supported": "tier_3",
+                "tier_capped": True,
+                "tier_reasons": ["stack_delivery missing"],
+            }
+        }
+    }), encoding="utf-8")
+
+    payload = build_board_payload(db, runs_dir=tmp_path / "runs")
+    row = next(r for r in payload["partners"] if r["id"] == "cloud_solutions.io")
+
+    # The band comes from the row's own claim; the supported tier comes from the
+    # run's evidence readout. They are independent facts and both are exposed.
+    assert row["tier"] == row["claims"].get("fit_tier")
+    assert row["tier"] != row["tier_supported"]
+    assert row["tier_supported"] == "tier_3", "and the evidence's answer travels beside it"
+    assert row["tier_capped"] is True
+    assert row["evidence"]["tier_reasons"] == ["stack_delivery missing"]
+    assert Path(runs_dir / "evidence.json").is_file()

@@ -274,11 +274,22 @@ def build_board_payload(
         provenance = provenance_by_item.get(str(record.item_id), {})
         if not provenance.get("route"):
             provenance = {**provenance, "route": route_by_item.get(str(record.item_id))}
+        # Two things called a tier, and they answer different questions. The
+        # band is where the score falls; the supported tier is what the gathered
+        # evidence actually carries, capped by the run's own rule. The board
+        # filters by band — that is what the chips below are — so `tier` stays
+        # the band, and the capped tier travels beside it rather than being
+        # mistaken for it.
+        evidence_item = evidence_items.get(str(record.item_id)) or {}
+        if not isinstance(evidence_item, dict):
+            evidence_item = {}
         partners.append({
             "id": str(record.item_id),
             "name": str(record.item_id),
             "score": score,
             "tier": claims.get("fit_tier"),
+            "tier_supported": evidence_item.get("tier_supported") or "",
+            "tier_capped": bool(evidence_item.get("tier_capped")),
             "checklist": {item: bool(raw_checklist.get(item)) for item in checklist_points},
             "checklist_points": checklist_points,
             "earned_points": sum(points for item, points in checklist_points.items() if raw_checklist.get(item)),
@@ -296,7 +307,7 @@ def build_board_payload(
             },
             "provenance": provenance,
             "diversity": claims.get("source_diversity_count"),
-            "evidence": evidence_items.get(str(record.item_id), {}),
+            "evidence": evidence_item,
         })
 
     partners.sort(key=lambda p: (p["score"] is None, -(p["score"] or 0), p["id"]))

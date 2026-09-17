@@ -300,6 +300,13 @@
   function clear(node) { while (node.firstChild) node.removeChild(node.firstChild); }
   function pct(part, whole) { return whole ? Math.round((part / whole) * 100) : 0; }
   function scoreClass(tier) { return ({ tier_1:"ok", tier_2:"info", tier_3:"warn", unfit:"bad" })[tier] || ""; }
+  // A row whose evidence caps it says so where the tier is read, because the
+  // band and the supported tier are not the same claim.
+  function tierNote(p) {
+    if (!p.tier_supported || p.tier_supported === p.tier) return "";
+    return " · supported: " + p.tier_supported;
+  }
+
   // An unscored row has no tier: without the fallback the class would be
   // "tier_null" (or "tier_None"), which no rule styles.
   function tierTagClass(tier) { return "tag " + (tier ? "tier_" + tier : "soft"); }
@@ -764,7 +771,8 @@
           el("span", { class:"cell-name", text:partner.name || partner.id }),
           // An unscored row has no tier: without the fallback the class is
           // "tier_null", which no rule styles, so the tag renders unstyled.
-          el("span", { class:tierTagClass(partner.tier), text:TIER_LABEL[partner.tier] || "—" }),
+          el("span", { class:tierTagClass(partner.tier_supported || partner.tier),
+                       text:(TIER_LABEL[partner.tier_supported || partner.tier] || "—") + tierNote(partner) }),
           partner.source && partner.source.uri
             ? el("a", { href:partner.source.uri, target:"_blank", rel:"noopener noreferrer", text:"open source" })
             : el("span", { class:"empty-value", text:"input had no source_uri" })
