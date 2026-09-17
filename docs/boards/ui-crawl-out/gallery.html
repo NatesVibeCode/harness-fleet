@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ui-crawl — http://localhost:8999</title>
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  body { font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; margin: 0; background: #0b0d10; color: #e6e8eb; }
+  header { position: sticky; top: 0; background: #11151a; border-bottom: 1px solid #222; padding: 14px 20px; z-index: 5; }
+  header h1 { margin: 0 0 6px; font-size: 16px; }
+  header .sub { color: #8b949e; font-size: 12px; }
+  .totals { margin-top: 8px; display: flex; gap: 8px; flex-wrap: wrap; }
+  .pill { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+  .pill.defect { background: #3d1418; color: #ff9a9a; }
+  .pill.taste { background: #3a2e0e; color: #f2cf6b; }
+  .pill.muted { background: #1c2128; color: #8b949e; }
+  main { padding: 16px 20px; display: grid; gap: 16px; }
+  .page { display: grid; grid-template-columns: 320px 1fr; gap: 16px; background: #11151a; border: 1px solid #222; border-radius: 10px; overflow: hidden; }
+  .page-shot { background: #06080a; }
+  .page-shot img { width: 100%; display: block; }
+  .noimg { padding: 40px; text-align: center; color: #6b727c; }
+  .page-body { padding: 14px 16px; min-width: 0; }
+  .page-body h2 { margin: 0 0 8px; font-size: 14px; word-break: break-all; }
+  .status { font-size: 11px; padding: 1px 7px; border-radius: 5px; vertical-align: middle; }
+  .status.ok { background: #14301c; color: #7ee2a8; }
+  .status.bad { background: #3d1418; color: #ff9a9a; }
+  .status.unknown { background: #2a2f36; color: #9aa4af; }
+  .counts { display: flex; gap: 6px; margin-bottom: 10px; }
+  ul.findings { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+  .finding { border-left: 3px solid #444; padding: 8px 10px; border-radius: 6px; background: #0d1117; }
+  .finding.defect { border-left-color: #f85149; }
+  .finding.taste { border-left-color: #d29922; }
+  .finding-head { display: flex; gap: 8px; align-items: center; margin-bottom: 2px; }
+  .ftype { font-size: 11px; color: #8b949e; text-transform: uppercase; letter-spacing: .04em; }
+  .ftitle { font-weight: 600; }
+  .fmeta { font-size: 12px; color: #8b949e; margin-top: 3px; }
+  .fmeta code { background: #161b22; padding: 1px 5px; border-radius: 4px; }
+  .sev { font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 4px; text-transform: uppercase; }
+  .sev-high { background: #3d1418; color: #ff9a9a; }
+  .sev-medium { background: #3a2e0e; color: #f2cf6b; }
+  .sev-low { background: #1c2128; color: #9aa4af; }
+  .triage { font-size: 11px; color: #58a6ff; margin-left: auto; }
+  .console { background: #06080a; color: #ff9a9a; padding: 8px; border-radius: 5px; overflow: auto; font-size: 11px; max-height: 160px; }
+  .clean { color: #6b727c; }
+  details summary { cursor: pointer; color: #8b949e; font-size: 12px; margin: 4px 0; }
+  a { color: #58a6ff; }
+  @media (max-width: 720px) { .page { grid-template-columns: 1fr; } }
+</style></head>
+<body>
+<header>
+  <h1>ui-crawl report</h1>
+  <div class="sub">http://localhost:8999 · 6 pages · 2026-09-17T16:59:57.424Z</div>
+  <div class="totals">
+    <span class="pill defect">0 defects</span>
+    <span class="pill taste">3 taste questions</span>
+    <span class="pill muted">6 pages crawled</span>
+  </div>
+</header>
+<main><section class="page">
+    <div class="page-shot"><img loading="lazy" src="screenshots/partner_lane_html.png" alt="/partner-lane.html"></div>
+    <div class="page-body">
+      <h2>/partner-lane.html <span class="status ok">200</span></h2>
+      <div class="counts"><span class="pill defect">0 defect</span><span class="pill taste">0 taste</span><span class="pill muted">6 controls</span></div>
+      
+      <p class="clean">No findings.</p>
+    </div>
+  </section>
+<section class="page">
+    <div class="page-shot"><img loading="lazy" src="screenshots/account_lane_html.png" alt="/account-lane.html"></div>
+    <div class="page-body">
+      <h2>/account-lane.html <span class="status ok">200</span></h2>
+      <div class="counts"><span class="pill defect">0 defect</span><span class="pill taste">0 taste</span><span class="pill muted">6 controls</span></div>
+      
+      <p class="clean">No findings.</p>
+    </div>
+  </section>
+<section class="page">
+    <div class="page-shot"><img loading="lazy" src="screenshots/career_lane_html.png" alt="/career-lane.html"></div>
+    <div class="page-body">
+      <h2>/career-lane.html <span class="status ok">200</span></h2>
+      <div class="counts"><span class="pill defect">0 defect</span><span class="pill taste">0 taste</span><span class="pill muted">6 controls</span></div>
+      
+      <p class="clean">No findings.</p>
+    </div>
+  </section>
+<section class="page">
+    <div class="page-shot"><img loading="lazy" src="screenshots/career_crm_html.png" alt="/career-crm.html"></div>
+    <div class="page-body">
+      <h2>/career-crm.html <span class="status ok">200</span></h2>
+      <div class="counts"><span class="pill defect">0 defect</span><span class="pill taste">3 taste</span><span class="pill muted">16 controls</span></div>
+      
+      <ul class="findings"><li class="finding taste">
+    <div class="finding-head"><span class="sev sev-low">low</span><span class="ftype">stale-selector</span></div>
+    <div class="ftitle">Control could not be re-located: &quot;Skip to main content&quot;</div>
+    <div class="fmeta"><code>a:nth(0) &quot;Skip to main content&quot;</code> </div>
+    
+  </li><li class="finding taste">
+    <div class="finding-head"><span class="sev sev-low">low</span><span class="ftype">redundant-control</span></div>
+    <div class="ftitle">Two controls go to the same place: &quot;Matches&quot;</div>
+    <div class="fmeta"><code>a:nth(1) &quot;Matches&quot; , a:nth(5) &quot;Open matches&quot;</code> </div>
+    
+  </li><li class="finding taste">
+    <div class="finding-head"><span class="sev sev-low">low</span><span class="ftype">redundant-control</span></div>
+    <div class="ftitle">Two controls go to the same place: &quot;Email contact&quot;</div>
+    <div class="fmeta"><code>a:nth(12) &quot;Email contact&quot; , a:nth(13) &quot;sarah.chen@monzo.com&quot;</code> </div>
+    
+  </li></ul>
+    </div>
+  </section>
+<section class="page">
+    <div class="page-shot"><img loading="lazy" src="screenshots/studio_preview_html.png" alt="/studio-preview.html"></div>
+    <div class="page-body">
+      <h2>/studio-preview.html <span class="status ok">200</span></h2>
+      <div class="counts"><span class="pill defect">0 defect</span><span class="pill taste">0 taste</span><span class="pill muted">1 controls</span></div>
+      
+      <p class="clean">No findings.</p>
+    </div>
+  </section>
+<section class="page">
+    <div class="page-shot"><img loading="lazy" src="screenshots/harness_fleet_arch_html.png" alt="/harness-fleet-arch.html"></div>
+    <div class="page-body">
+      <h2>/harness-fleet-arch.html <span class="status ok">200</span></h2>
+      <div class="counts"><span class="pill defect">0 defect</span><span class="pill taste">0 taste</span><span class="pill muted">114 controls</span></div>
+      
+      <p class="clean">No findings.</p>
+    </div>
+  </section></main>
+</body></html>

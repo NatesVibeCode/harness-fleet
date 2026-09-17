@@ -1,0 +1,202 @@
+{
+  "baseUrl": "http://localhost:8999",
+  "startedAt": "2026-09-17T16:59:57.424Z",
+  "finishedAt": "2026-09-17T17:02:02.418Z",
+  "summary": {
+    "defects": 0,
+    "taste": 3,
+    "byType": {
+      "stale-selector": 1,
+      "redundant-control": 2
+    }
+  },
+  "findings": [
+    {
+      "route": "/career-crm.html",
+      "type": "stale-selector",
+      "bucket": "taste",
+      "severity": "low",
+      "title": "Control could not be re-located: \"Skip to main content\"",
+      "evidence": {
+        "accessibleName": "Skip to main content",
+        "selector": "a:nth(0) \"Skip to main content\"",
+        "signals": {
+          "navigated": false,
+          "urlChanged": false,
+          "domMutated": false,
+          "domMutationCount": 0,
+          "networkRequests": 0,
+          "newConsoleMessages": 0,
+          "consoleErrors": 0,
+          "dialogOpened": false,
+          "popupOpened": false,
+          "clickThrew": true
+        }
+      }
+    },
+    {
+      "route": "/career-crm.html",
+      "type": "redundant-control",
+      "bucket": "taste",
+      "severity": "low",
+      "title": "Two controls go to the same place: \"Matches\"",
+      "evidence": {
+        "accessibleName": "Matches",
+        "url": "http://localhost:8999/index.html",
+        "selector": "a:nth(1) \"Matches\" , a:nth(5) \"Open matches\""
+      }
+    },
+    {
+      "route": "/career-crm.html",
+      "type": "redundant-control",
+      "bucket": "taste",
+      "severity": "low",
+      "title": "Two controls go to the same place: \"Email contact\"",
+      "evidence": {
+        "accessibleName": "Email contact",
+        "url": "nullsarah.chen@monzo.com",
+        "selector": "a:nth(12) \"Email contact\" , a:nth(13) \"sarah.chen@monzo.com\""
+      }
+    }
+  ],
+  "pages": [
+    {
+      "route": "/partner-lane.html",
+      "template": "/partner-lane.html",
+      "status": 200,
+      "screenshot": "screenshots/partner_lane_html.png",
+      "zoomShots": [
+        {
+          "zoom": 1,
+          "screenshot": "screenshots/partner_lane_html@100.png"
+        },
+        {
+          "zoom": 1.5,
+          "screenshot": "screenshots/partner_lane_html@150.png"
+        },
+        {
+          "zoom": 2,
+          "screenshot": "screenshots/partner_lane_html@200.png"
+        }
+      ],
+      "consoleErrors": [],
+      "failedRequests": [],
+      "controlCount": 6
+    },
+    {
+      "route": "/account-lane.html",
+      "template": "/account-lane.html",
+      "status": 200,
+      "screenshot": "screenshots/account_lane_html.png",
+      "zoomShots": [
+        {
+          "zoom": 1,
+          "screenshot": "screenshots/account_lane_html@100.png"
+        },
+        {
+          "zoom": 1.5,
+          "screenshot": "screenshots/account_lane_html@150.png"
+        },
+        {
+          "zoom": 2,
+          "screenshot": "screenshots/account_lane_html@200.png"
+        }
+      ],
+      "consoleErrors": [],
+      "failedRequests": [],
+      "controlCount": 6
+    },
+    {
+      "route": "/career-lane.html",
+      "template": "/career-lane.html",
+      "status": 200,
+      "screenshot": "screenshots/career_lane_html.png",
+      "zoomShots": [
+        {
+          "zoom": 1,
+          "screenshot": "screenshots/career_lane_html@100.png"
+        },
+        {
+          "zoom": 1.5,
+          "screenshot": "screenshots/career_lane_html@150.png"
+        },
+        {
+          "zoom": 2,
+          "screenshot": "screenshots/career_lane_html@200.png"
+        }
+      ],
+      "consoleErrors": [],
+      "failedRequests": [],
+      "controlCount": 6
+    },
+    {
+      "route": "/career-crm.html",
+      "template": "/career-crm.html",
+      "status": 200,
+      "screenshot": "screenshots/career_crm_html.png",
+      "zoomShots": [
+        {
+          "zoom": 1,
+          "screenshot": "screenshots/career_crm_html@100.png"
+        },
+        {
+          "zoom": 1.5,
+          "screenshot": "screenshots/career_crm_html@150.png"
+        },
+        {
+          "zoom": 2,
+          "screenshot": "screenshots/career_crm_html@200.png"
+        }
+      ],
+      "consoleErrors": [],
+      "failedRequests": [],
+      "controlCount": 16
+    },
+    {
+      "route": "/studio-preview.html",
+      "template": "/studio-preview.html",
+      "status": 200,
+      "screenshot": "screenshots/studio_preview_html.png",
+      "zoomShots": [
+        {
+          "zoom": 1,
+          "screenshot": "screenshots/studio_preview_html@100.png"
+        },
+        {
+          "zoom": 1.5,
+          "screenshot": "screenshots/studio_preview_html@150.png"
+        },
+        {
+          "zoom": 2,
+          "screenshot": "screenshots/studio_preview_html@200.png"
+        }
+      ],
+      "consoleErrors": [],
+      "failedRequests": [],
+      "controlCount": 1
+    },
+    {
+      "route": "/harness-fleet-arch.html",
+      "template": "/harness-fleet-arch.html",
+      "status": 200,
+      "screenshot": "screenshots/harness_fleet_arch_html.png",
+      "zoomShots": [
+        {
+          "zoom": 1,
+          "screenshot": "screenshots/harness_fleet_arch_html@100.png"
+        },
+        {
+          "zoom": 1.5,
+          "screenshot": "screenshots/harness_fleet_arch_html@150.png"
+        },
+        {
+          "zoom": 2,
+          "screenshot": "screenshots/harness_fleet_arch_html@200.png"
+        }
+      ],
+      "consoleErrors": [],
+      "failedRequests": [],
+      "controlCount": 114
+    }
+  ]
+}
