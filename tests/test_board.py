@@ -414,3 +414,48 @@ def test_the_board_and_the_ledger_agree_about_a_scored_run(tmp_path):
         # And the readout carries the supported tier for the same firm.
         assert readout["items"][item]["tier_supported"] == node_rows[item]["tier"] or not node_rows[item]["tier"]
         assert board[item]["tier_supported"] == readout["items"][item]["tier_supported"]
+
+
+def test_a_reader_skips_a_record_the_rules_no_longer_accept(tmp_path):
+    """One stale record must not hide a hundred good ones.
+
+    A stored run whose score disagrees with its checklist — written before the
+    score was derived from the answer — made the board refuse to open at all,
+    which is the wrong trade in the wrong direction: strictness belongs to the
+    deliverable, and a reader should count what it left out.
+    """
+    from harness_fleet.export import verified_records_from_snapshot
+    from harness_fleet.models import TaskSpec
+
+    task = TaskSpec(
+        name="tiny",
+        instructions="answer the checklist",
+        checklist={"q1": 10, "q2": 20},
+        claims_schema={
+            "type": "object",
+            "properties": {"checklist": {"type": "object"}, "score": {"type": "number"}},
+            "required": ["checklist"],
+            "additionalProperties": False,
+        },
+    )
+    record = {
+        "item_id": "acme.example",
+        "content_type": "text/plain",
+        "source_digest": "a" * 64,
+        # The checklist says 10; the stored record claims 75.
+        "claims": {"checklist": {"q1": True, "q2": False}, "score": 75},
+        "quotes": [{"slice_id": "s", "start": 0, "end": 4, "text": "Acme", "supports": ["q1"]}],
+    }
+    def _snapshot():
+        return {
+            "task": task.model_dump(mode="json", by_alias=True),
+            "batches": {"b1": {"status": "verified", "result": [record]}},
+        }
+
+    with pytest.raises(ValueError, match="inconsistent with the checklist"):
+        verified_records_from_snapshot(_snapshot())
+
+    reading = _snapshot()
+    records, _task = verified_records_from_snapshot(reading, tolerate_rejected=True)
+    assert records == [], "the record it cannot vouch for is left out"
+    assert reading["records_rejected"] == 1, "and counted, so a reader can say so"

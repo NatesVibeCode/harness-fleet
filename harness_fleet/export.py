@@ -115,15 +115,24 @@ def _build_item_route_map(run_data: dict) -> dict[str, str]:
     return mapping
 
 
-def verified_records_from_snapshot(run_data: dict) -> tuple[list[ExtractedItem], TaskSpec]:
+def verified_records_from_snapshot(
+    run_data: dict, *, tolerate_rejected: bool = False
+) -> tuple[list[ExtractedItem], TaskSpec]:
     """Collect verified records from a run snapshot, revalidating claims.
 
     Shared by packet/CSV exporters and DAG filter nodes so every consumer
     sees the same record set: only verified batches, claims revalidated
     against the run's task.
+
+    ``tolerate_rejected`` is for *readers* of a run rather than producers of a
+    deliverable: a record that no longer validates — because the scoring rule
+    moved on after it was written — is left out and counted instead of taking
+    the whole page down with it. One legacy record made the results board refuse
+    to open at all, which hides a hundred good ones to be strict about one.
     """
     task = TaskSpec.model_validate(run_data["task"])
     verified_records: list[ExtractedItem] = []
+    rejected = 0
     for b in run_data.get("batches", {}).values():
         if b.get("status") == "verified" and b.get("result"):
             results = b["result"]
@@ -134,8 +143,19 @@ def verified_records_from_snapshot(run_data: dict) -> tuple[list[ExtractedItem],
             else:
                 raise ValueError("verified batch result has an invalid shape")
             for item in validated:
-                task.validate_extracted_item(item)
-            verified_records.extend(validated)
+                try:
+                    task.validate_extracted_item(item)
+                except ValueError:
+                    if not tolerate_rejected:
+                        raise
+                    rejected += 1
+                    continue
+                verified_records.append(item)
+    if tolerate_rejected:
+        # Recorded on the caller's mapping so a reader can report it. The count
+        # is the caller's to keep: strictness belongs to the deliverable, and a
+        # page that hides what it left out has told a reader half the truth.
+        run_data["records_rejected"] = rejected
     return verified_records, task
 
 

@@ -240,7 +240,10 @@ def build_board_payload(
     # firms it looked at last week.
     ledger_payload = ledger_view(store, limit=ledger_limit)
     snapshot = store.run_snapshot(run_id) if run_id else store.run_snapshot(latest_run_id(store))
-    records, task = verified_records_from_snapshot(snapshot)
+    # A reader tolerates a record the current rules no longer accept, and says
+    # how many: strictness is for the deliverable, not for the page.
+    records, task = verified_records_from_snapshot(snapshot, tolerate_rejected=True)
+    rejected_records = int(snapshot.get("records_rejected") or 0)
     evidence_run = _load_evidence(runs_dir, snapshot.get("run_id"))
     raw_items = evidence_run.get("items")
     evidence_items: dict[str, Any] = raw_items if isinstance(raw_items, dict) else {}
@@ -378,6 +381,7 @@ def build_board_payload(
         "facets": facets,
         "partners": partners,
         "ledger": ledger_payload,
+        "records_rejected": rejected_records,
     }
 
 
