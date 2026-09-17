@@ -177,9 +177,11 @@ Two consequences worth stating:
 - **The tier is capped by the evidence, not by the claim.** `enforce_tier` runs
   against the coverage of the pages actually gathered, so a model claiming
   `tier_1` on one case study records as the tier that evidence supports.
-- **A score is a series, not just a column.** `entity_score_history` is a view
-  over the events, so "61 last month, 87 now" is a query and
-  `harness-fleet ledger --trend` prints it. A score that moved means the world
+- **A score is a series, not just a column.** The trajectory has two writers —
+  the engine prices every campaign into `score_history`, the ledger records what
+  each node decided — and one reader that takes both, so "61 last month, 87 now"
+  is a query and `harness-fleet ledger --trend` prints it. `harness-fleet
+  history <entity>` reads the same rows. A score that moved means the world
   changed or the lane did, and those are different things to act on.
 
 ---

@@ -26,7 +26,9 @@ by hand — so this picture cannot drift from what a run does. Regenerate with
   running list. The
   nodes are the run: each one writes its population and the prose behind every
   verdict into the run's own database (`rung_rows`, `rung_text`), where the next
-  node queries it. CSV is an export you ask for, not the store.
+  node queries it. CSV is an export you ask for, not the store. Rows are kept
+  per attempt, so re-running a rung adds an answer instead of replacing one, and
+  a firm's score is a trajectory rather than a column.
 
 Each lane also carries its ladder as a table — rung, evidence grade, cost,
 gates, surfaces read, and what passing earns — which is the form to compare

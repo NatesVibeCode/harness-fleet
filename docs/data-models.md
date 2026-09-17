@@ -123,7 +123,14 @@ Two tables outlive the run:
   "when did they first appear" and "why did we drop them" stay answerable after
   the state row has moved on. An elimination stands until something actually
   re-qualifies the entity; a node that merely carried it forward cannot revive
-  it. `harness-fleet dag --lane partner --from-items captured.jsonl --emit-spec`
+  it, and a node that only went and looked records its visit without touching
+  the verdict.
+
+Score trajectories have two writers and one reader. The engine prices every
+campaign into `score_history`; the ledger records what each node decided. A
+trajectory is the union of the two — `harness-fleet history <entity>` and
+`harness-fleet ledger --trend` read the same rows, so they cannot disagree about
+a firm depending on which door its score came through. `harness-fleet dag --lane partner --from-items captured.jsonl --emit-spec`
 prints exactly this:
 
 ```
