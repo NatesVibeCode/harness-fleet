@@ -130,10 +130,15 @@ def test_the_loop_stops_the_moment_the_quota_is_met(tmp_path):
         # Two firms per round, so a quota of two is met in one.
         for offset in range(2):
             _scored(store, f"r{index}-{offset}.example", 80.0)
+        return {"items": 7, "note": "40 candidates before the gates"}
 
     result = run_to_quota(store, lane, Quota(want=2, min_score=70, max_rounds=9), run_one)
 
     assert len(ran) == 1, "met in round one, so round two never happens"
+    # What the round saw is part of the report: a round that finds plenty and
+    # delivers none is a different problem from one that finds nothing.
+    assert result["rounds"][0]["candidates"] == 7
+    assert result["rounds"][0]["note"] == "40 candidates before the gates"
     assert result["met"] is True and result["delivered"] == 2 and result["owed"] == 0
 
 

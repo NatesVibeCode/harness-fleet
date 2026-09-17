@@ -241,7 +241,13 @@ def run_to_quota(
             if on_round:
                 on_round(entry)
             break
-        run_one(queries, index)
+        # What the round saw, not just what it delivered: a round that found
+        # forty candidates and delivered none is a different problem from a
+        # round that found none, and only the round can say which it was.
+        seen = run_one(queries, index)
+        if isinstance(seen, dict):
+            entry.candidates = int(seen.get("items") or seen.get("candidates") or 0)
+            entry.note = str(seen.get("note") or "")
         after = delivered(store, quota.min_score)
         entry.delivered_now = len(after) - entry.delivered_total
         entry.delivered_total = len(after)

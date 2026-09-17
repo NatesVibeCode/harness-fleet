@@ -2181,8 +2181,9 @@ def _quota_run(
     )
 
     def show(entry: Any) -> None:
+        seen = f"{entry.candidates} candidate(s), " if entry.candidates else ""
         print(
-            f"  round {entry.number}: {entry.delivered_now} new at or above "
+            f"  round {entry.number}: {seen}{entry.delivered_now} new at or above "
             f"{quota.min_score:g}, {entry.delivered_total} delivered"
         )
 
@@ -2200,7 +2201,7 @@ def _quota_run(
     return result
 
 
-def cmd_research(args: argparse.Namespace) -> None:
+def cmd_research(args: argparse.Namespace) -> dict[str, Any]:
     """One command from a question to a ranked deliverable.
 
     discover -> bundle per entity -> score -> export, with every step's
@@ -2232,16 +2233,17 @@ def cmd_research(args: argparse.Namespace) -> None:
             getattr(args, "run_id", None) or f"quota-{time.time_ns()}-{uuid.uuid4().hex[:6]}"
         )
 
-        def one_round(queries: Sequence[str], index: int) -> None:
+        def one_round(queries: Sequence[str], index: int) -> Any:
             round_args = argparse.Namespace(**vars(args))
             round_args.query = list(queries)
             round_args.want = 0
+            round_args.json = True
             round_args.run_id = base_run_id if index == 1 else f"{base_run_id}-r{index}"
             print(f"\nQuota round {index}: {len(queries)} queries")
-            cmd_research(round_args)
+            emitted = cmd_research(round_args)
+            return emitted if isinstance(emitted, dict) else {}
 
-        _quota_run(args, store, lane, output, base_run_id, one_round)
-        return
+        return _quota_run(args, store, lane, output, base_run_id, one_round)
     if lane is not None:
         # The lane supplies defaults; an explicit flag still wins.
         args.query = list(args.query or []) or expand_lane_queries(lane) or list(lane.seeds)
@@ -2535,23 +2537,28 @@ def cmd_research(args: argparse.Namespace) -> None:
         evidence_path.write_text(json.dumps(readout, indent=2, ensure_ascii=False), encoding="utf-8")
     except OSError:
         pass
+    payload = {
+        "run_id": run_id,
+        "accounts": str(input_path),
+        "packet": str(packet_path),
+        "ranked": str(ranked_path),
+        "items": report.get("dossiers"),
+        "verified_records": verified,
+        "evidence": readout,
+        "evidence_path": str(evidence_path),
+        "report": report,
+    }
     _emit(
-        {
-            "run_id": run_id,
-            "accounts": str(input_path),
-            "packet": str(packet_path),
-            "ranked": str(ranked_path),
-            "items": report.get("dossiers"),
-            "verified_records": verified,
-            "evidence": readout,
-            "evidence_path": str(evidence_path),
-            "report": report,
-        },
+        payload,
         args.json,
         f"Run '{run_id}' {store.run_snapshot(run_id)['status']}.\n"
         f"Dossiers: {input_path}\nPacket: {packet_path}\nRanked deliverable: {ranked_path}\n"
         + _evidence_report_text(readout),
     )
+    # Handed back so a loop around this command can report what the round saw —
+    # a round that finds forty candidates and delivers none is a different
+    # problem from one that finds none, and only the round knows which.
+    return payload
 
 
 def cmd_sources(args: argparse.Namespace) -> None:
