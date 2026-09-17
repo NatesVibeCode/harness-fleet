@@ -1336,7 +1336,12 @@ def _score_rows(
             "candidate": keys.get(item_id, item_id),
             "rung": "score",
             "evidence": FETCHED,
-            "outcome": str(tiers.get(item_id) or claims.get("fit_tier") or "scored"),
+            # Not an outcome: the score stage records a number, a tier and the
+            # facts, and admission is the ladder's to decide. Writing the tier
+            # here put three vocabularies in one column — a ladder verdict, a
+            # tier name, and the word "scored" — and lost the verdict a firm
+            # had actually earned.
+            "outcome": "",
             "earned": "",
             "because": str(claims.get("reason") or claims.get("identified_gap") or "")[:400],
             "gates": [],

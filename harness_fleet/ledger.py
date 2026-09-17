@@ -168,12 +168,12 @@ class Ledger:
                     )
                     recorded += 1
                     continue
-                # What gets written onto the list is a verdict, never a mechanic.
-                # A node that says "read" is reporting a visit; letting that land
-                # in `outcome` would erase the gate that decided the firm's fate
-                # and leave a list of rows that say "read" and mean nothing.
-                judged = outcome not in _MECHANICS or bool(row.get("tier"))
-                keeps = judged and (
+                # What gets written onto the list is a verdict, never a mechanic
+                # and never a number. A node that says "read" is reporting a
+                # visit; the scoring stage is reporting a score. Letting either
+                # land in `outcome` would erase the gate that decided the firm's
+                # fate and leave a list of rows that say "read" and mean nothing.
+                keeps = bool(outcome) and outcome not in _MECHANICS and (
                     outcome == _ELIMINATED or found["outcome"] != _ELIMINATED
                 )
                 lanes = sorted({*(json.loads(found["lanes"] or "[]")), *([lane] if lane else [])})
@@ -245,6 +245,10 @@ class Ledger:
                 row["facts"] = json.loads(row.get("facts") or "{}")
             except ValueError:
                 pass
+            # `outcome` is the ladder's verdict and nothing else. What a reader
+            # wants beside it is where the firm stands overall, which is the
+            # verdict when there is one and the scoring stage when there is not.
+            row["standing"] = row["outcome"] or ("scored" if row.get("scored_at") else "")
             out.append(row)
         return out
 

@@ -10,6 +10,8 @@ same firms.
 
 import json
 
+import pytest
+
 from harness_fleet.ledger import Ledger
 from harness_fleet.rungs import RungTables, read_csv
 from harness_fleet.store import HarnessStore
@@ -526,3 +528,73 @@ def test_db_stats_counts_the_engine_trajectory_too(tmp_path, capsys):
     stats = json.loads(capsys.readouterr().out)
     assert stats["score_history"] == 1, "the engine's own table is held too"
     assert stats["entity_state"] == 0 and stats["bytes"] > 0
+
+
+def test_the_scoring_stage_records_a_number_not_an_outcome(tmp_path):
+    """One vocabulary per column: the ladder decides admission, the score doesn't."""
+    from harness_fleet.dag import DagSpec, run_dag
+    from harness_fleet.gates import LadderRung
+    from harness_fleet.lanes import shipped_lanes
+    from harness_fleet.models import ExtractedItem
+    from harness_fleet.rungs import lane_spec
+
+    captured = tmp_path / "captured.jsonl"
+    captured.write_text(
+        json.dumps({"item_id": "acme.co.uk", "text": "Acme is a systems integrator.",
+                    "content_type": "text/plain"}) + "\n",
+        encoding="utf-8",
+    )
+    store = _store(tmp_path)
+
+    def fake_records(snapshot):
+        return [
+            ExtractedItem(
+                item_id="acme.co.uk", source_uri="https://acme.co.uk",
+                source_digest="b" * 64, content_type="text/plain",
+                claims={"score": 91.0, "fit_tier": "tier_2", "reason": "delivers the work",
+                        "answers": {"service_model": "SI"}},
+                quotes=[{"slice_id": "s", "start": 0, "end": 4, "text": "Acme"}],
+            )
+        ], None
+
+    class _Engine:
+        def __init__(self, **kwargs):
+            pass
+
+        def run_campaign(self, **kwargs):
+            return {"total_verified_records": 1}
+
+    import harness_fleet.dag as dag_module
+
+    original_records = dag_module.verified_records_from_snapshot
+    monkeypatch = pytest.MonkeyPatch()
+    try:
+        monkeypatch.setattr(dag_module, "verified_records_from_snapshot", fake_records)
+        monkeypatch.setattr(dag_module, "Engine", _Engine)
+        monkeypatch.setattr(
+            "harness_fleet.store.HarnessStore.run_snapshot",
+            lambda self, run_id: {"run_id": run_id, "task": {}, "batches": {}},
+        )
+        lane = shipped_lanes()["partner"]
+        lane.funnel.ladder = [LadderRung(name="result", evidence="snippet", gates=["kind"])]
+        spec = DagSpec.model_validate(lane_spec(
+            lane, from_items=str(captured), workspace=tmp_path, score=True,
+            score_task="partner-research", score_run_id="run-1",
+        ))
+        state = run_dag(spec, store, workspace_root=tmp_path, dag_id="f1")
+    finally:
+        monkeypatch.undo()
+        assert dag_module.verified_records_from_snapshot is original_records
+
+    scored = state["nodes"]["s-score"]
+    assert scored["count"] == 1
+    # The score node's own table says a number and a tier, and claims no outcome.
+    row = RungTables(store).rows("f1", "s-score")[0]
+    # The tier is capped at what the gathered text supports, not at the claim.
+    assert row["outcome"] == "" and row["score"] == 91.0 and row["tier"] == "tier_3"
+
+    listed = Ledger(store).entities()[0]
+    # The verdict the ladder earned is still the verdict, and the score sits beside it.
+    assert listed["outcome"] in ("", "lead", "qualified"), listed["outcome"]
+    assert listed["standing"] == (listed["outcome"] or "scored")
+    assert listed["score"] == 91.0 and listed["tier"] == "tier_3"

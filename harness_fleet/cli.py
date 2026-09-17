@@ -1212,7 +1212,11 @@ def cmd_ledger(args: argparse.Namespace) -> None:
             if counts
             else ""
         )
-        + "".join(f"\n  {row['outcome']:<10} {row['entity']}" for row in rows),
+        + "".join(
+            f"\n  {row['standing'] or 'unjudged':<10} {row['entity']:<32} "
+            f"{row['score']:.1f}  {row['tier']}"
+            for row in rows
+        ),
     )
 
 
