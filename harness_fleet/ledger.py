@@ -411,6 +411,27 @@ class Ledger:
                 connection.execute(f"SELECT COUNT(*) AS n FROM {EVENTS_TABLE}").fetchone()["n"]
             )
 
+    def verdicts(self, dag_id: str | None = None) -> dict[str, dict[str, int]]:
+        """What each node decided, counted: ``{node: {outcome: n}}``.
+
+        The record already holds one row per visit, so a shortfall can be
+        explained without asking a run to summarise itself: which node threw
+        how many out, and how many it passed on.
+        """
+        sql = (
+            f"SELECT node_id, outcome, COUNT(*) AS n FROM {EVENTS_TABLE}"
+            + (" WHERE dag_id=?" if dag_id else "")
+            + " GROUP BY node_id, outcome"
+        )
+        params: tuple[Any, ...] = (dag_id,) if dag_id else ()
+        with self.store.connect() as connection:
+            found = connection.execute(sql, params).fetchall()
+        out: dict[str, dict[str, int]] = {}
+        for row in found:
+            node = str(row["node_id"] or "?")
+            out.setdefault(node, {})[str(row["outcome"] or "unknown")] = int(row["n"])
+        return out
+
     def counts(self) -> dict[str, int]:
         """The running list in one line: how many, and where they stand."""
         with self.store.connect() as connection:

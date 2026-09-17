@@ -349,3 +349,71 @@ def test_research_delivers_a_quota_through_the_command(tmp_path, monkeypatch, ca
     rows = read_csv(deliverable)
     assert [row["entity"] for row in rows] == ["firm1.example", "firm2.example"]
     assert list(rows[0])[:3] == ["entity", "score", "tier"]
+
+
+# --------------------------------------------------------------------------
+# Why it came up short
+
+
+def _visit(store, entity, node, outcome, dag, score=0.0):
+    Ledger(store).record(
+        [{"item_id": entity, "candidate": entity, "outcome": outcome, "gates": [],
+          "score": score}],
+        dag_id=dag, node_id=node, lane="partner",
+    )
+
+
+def test_a_shortfall_names_the_stage_that_cost_the_volume(tmp_path):
+    """Three stages can leave an operator short, and each has a different fix."""
+    from harness_fleet.quota import BAR, FUNNEL, SEARCH, diagnose
+
+    # The gates are the constraint: plenty surfaced, few stood.
+    store = _store(tmp_path / "funnel")
+    for index in range(40):
+        _visit(store, f"firm{index}.example", "g0-result",
+               "eliminated" if index > 5 else "lead", "d1")
+    found = diagnose(store, Quota(want=100, min_score=70),
+                     [Round(number=1, queries=["q"], candidates=40)], ["d1"])
+    assert found["stage"] == FUNNEL
+    assert "40 candidate(s) surfaced, 6 stood" in found["findings"][0]["detail"]
+    assert found["findings"][0]["eliminated_at"]["g0-result"] == 34
+
+    # The bar is the constraint: firms standing and scoring, none high enough.
+    store = _store(tmp_path / "bar")
+    _visit(store, "close.example", "g0-result", "lead", "d1")
+    _scored(store, "close.example", 64.0)
+    near = diagnose(store, Quota(want=100, min_score=70),
+                    [Round(number=1, queries=["q"], candidates=1)], ["d1"])
+    assert near["stage"] == BAR
+    assert "the best of them 64" in near["findings"][0]["detail"]
+    assert "lower --min-score to 64" in near["findings"][0]["lever"]
+
+    # Neither: the search itself is thin, and the fix is the lane's terms.
+    store = _store(tmp_path / "search")
+    _visit(store, "one.example", "g0-result", "lead", "d1")
+    thin = diagnose(store, Quota(want=100, min_score=70),
+                    [Round(number=1, queries=["q"], candidates=1)], ["d1"])
+    assert thin["stage"] == SEARCH
+    assert "add terms to query_terms" in thin["findings"][0]["lever"]
+
+
+def test_the_loop_reports_the_diagnosis_when_it_stops_short(tmp_path):
+    from harness_fleet.quota import run_to_quota
+
+    store = _store(tmp_path)
+    lane = shipped_lanes()["partner"]
+
+    def run_one(queries, index):
+        for offset in range(30):
+            _visit(store, f"r{index}-{offset}.example", "g0-result",
+                   "eliminated" if offset else "lead", f"r{index}-funnel")
+        return {"items": 30}
+
+    result = run_to_quota(
+        store, lane, Quota(want=500, min_score=70, max_rounds=1), run_one,
+        dag_for=lambda index: f"r{index}-funnel",
+    )
+    assert result["met"] is False
+    assert result["diagnosis"]["stage"] == "funnel"
+    assert result["diagnosis"]["surfaced"] == 30
+    assert result["diagnosis"]["standing"] == 1

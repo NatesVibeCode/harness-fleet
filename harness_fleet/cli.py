@@ -2187,17 +2187,26 @@ def _quota_run(
             f"{quota.min_score:g}, {entry.delivered_total} delivered"
         )
 
+    def dag_for(index: int) -> str:
+        # The graph each round built, so a shortfall can be traced to the node
+        # that did the eliminating rather than guessed at.
+        return f"{base_run_id if index == 1 else f'{base_run_id}-r{index}'}-funnel"
+
     result = run_to_quota(
         store, lane, quota, run_one,
         deliverable=output.with_name(output.stem + "_quota" + output.suffix),
         on_round=show,
+        dag_for=dag_for,
     )
     _emit(result, getattr(args, "json", False), result["summary"])
     if result["owed"]:
-        print(
-            f"  short by {result['owed']}; add terms to the lane's query_terms, or "
-            f"lower --min-score, to reach {quota.want}"
-        )
+        print(f"  short by {result['owed']}.")
+        for finding in (result.get("diagnosis") or {}).get("findings", []):
+            print(f"  {finding['stage']}: {finding['detail']}")
+            if finding.get("eliminated_at"):
+                worst = ", ".join(f"{n} {c}" for n, c in finding["eliminated_at"].items())
+                print(f"    eliminated at: {worst}")
+            print(f"    what to change: {finding['lever']}")
     return result
 
 

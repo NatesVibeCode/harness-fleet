@@ -215,6 +215,7 @@ def run_to_quota(
     *,
     deliverable: str | Path | None = None,
     on_round: Callable[[Round], None] | None = None,
+    dag_for: Callable[[int], str] | None = None,
 ) -> dict[str, Any]:
     """Keep widening until the quota is delivered, or the lane runs out of room.
 
@@ -259,7 +260,92 @@ def run_to_quota(
 
     result = verdict(store, quota, entries)
     result["added"] = len(delivered(store, quota.min_score)) - before
+    if not result["met"]:
+        # A shortfall says which stage cost it. Three stages can leave an
+        # operator short and each has a different fix, so a bare number would
+        # be the one thing they cannot act on.
+        result["diagnosis"] = diagnose(
+            store, quota, entries,
+            [dag_for(entry.number) for entry in entries] if dag_for else [],
+        )
     if deliverable:
         result["deliverable"] = str(deliverable)
         result["rows"] = write_deliverable(store, quota, deliverable)
     return result
+
+
+#: What a shortfall is made of. Naming the stage is the difference between a
+#: report an operator can act on and a number they can only feel bad about.
+SEARCH = "search"
+FUNNEL = "funnel"
+BAR = "bar"
+
+
+def diagnose(
+    store: Any,
+    quota: Quota,
+    rounds_run: Sequence[Round],
+    dag_ids: Sequence[str] = (),
+) -> dict[str, Any]:
+    """Why the quota came up short: which stage cost the most, and the lever.
+
+    Three things can leave an operator short and they have nothing in common.
+    The search can be too narrow — few candidates, and the fix is terms. The
+    gates can be doing their job — many candidates, few standing. Or the bar can
+    be above what the evidence supports — firms standing and scoring, none of
+    them high enough. Each has a different fix, and a report that does not say
+    which is a report that makes the operator guess.
+    """
+    from .ledger import Ledger
+
+    ledger = Ledger(store)
+    found = sum(int(entry.candidates) for entry in rounds_run)
+    standing = 0
+    eliminated: dict[str, int] = {}
+    for dag_id in dag_ids:
+        for node, outcomes in ledger.verdicts(dag_id).items():
+            standing += int(outcomes.get("lead", 0)) + int(outcomes.get("qualified", 0))
+            for outcome, number in outcomes.items():
+                if outcome == "eliminated":
+                    eliminated[node] = eliminated.get(node, 0) + int(number)
+    scored = [
+        row for row in ledger.entities(limit=1_000_000)
+        if row.get("scored_at") and float(row.get("score") or 0.0) > 0
+    ]
+    below = [row for row in scored if float(row.get("score") or 0.0) < float(quota.min_score)]
+    best_below = max((float(row["score"]) for row in below), default=0.0)
+
+    findings: list[dict[str, Any]] = []
+    if found and standing and found >= 4 * max(standing, 1):
+        worst = sorted(eliminated.items(), key=lambda pair: -pair[1])[:3]
+        findings.append({
+            "stage": FUNNEL,
+            "detail": f"{found} candidate(s) surfaced, {standing} stood after the gates",
+            "eliminated_at": {node: number for node, number in worst},
+            "lever": "the gates are doing the work: widen the evidence, or check the "
+                     "gate named above against the lane's own words",
+        })
+    if below and best_below >= float(quota.min_score) * 0.85:
+        findings.append({
+            "stage": BAR,
+            "detail": f"{len(below)} firm(s) scored below {quota.min_score:g}, "
+                      f"the best of them {best_below:g}",
+            "lever": f"lower --min-score to {best_below:g}, or gather the evidence the "
+                     "checklist pays for",
+        })
+    if not findings:
+        findings.append({
+            "stage": SEARCH,
+            "detail": f"{len(rounds_run)} round(s) searched "
+                      f"{sum(len(entry.queries) for entry in rounds_run)} queries and "
+                      f"surfaced {found} candidate(s)",
+            "lever": "the lane's queries are the constraint: add terms to query_terms, "
+                     "or raise max_queries so a round searches more of the space",
+        })
+    return {
+        "stage": findings[0]["stage"],
+        "findings": findings,
+        "surfaced": found,
+        "standing": standing,
+        "scored": len(scored),
+    }
