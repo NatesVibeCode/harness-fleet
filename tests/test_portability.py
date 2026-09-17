@@ -196,6 +196,67 @@ def test_client_config_default_matches_operating_system(tmp_path, monkeypatch, p
     assert _claude_config_candidates()[0] == tmp_path / subpath / "claude_desktop_config.json"
 
 
+def _codex_install_args(tmp_path, *extra: str):
+    return build_parser().parse_args(
+        ["mcp", "install", "--client", "codex", "--workspace-root", str(tmp_path),
+         "--db", "harness-fleet.db", *extra]
+    )
+
+
+def test_mcp_install_writes_codex_toml_section(tmp_path, monkeypatch):
+    """Codex speaks TOML: the installer appends a section, never JSON."""
+    config = tmp_path / "config.toml"
+    config.write_text("[mcp_servers.other]\ncommand = \"other\"\n", encoding="utf-8")
+    monkeypatch.setattr("harness_fleet.cli._existing_mcp_path_for_client", lambda *a: config)
+    (tmp_path / "harness-fleet.db").touch()
+    cmd_mcp_install(_codex_install_args(tmp_path, "--json"))
+    text = config.read_text(encoding="utf-8")
+    assert "[mcp_servers.other]" in text
+    assert f'[mcp_servers."{branding.CLI_NAME}"]' in text
+    assert "command = " in text
+
+
+def test_mcp_install_codex_is_append_only(tmp_path, monkeypatch):
+    config = tmp_path / "config.toml"
+    monkeypatch.setattr("harness_fleet.cli._existing_mcp_path_for_client", lambda *a: config)
+    (tmp_path / "harness-fleet.db").touch()
+    cmd_mcp_install(_codex_install_args(tmp_path, "--json"))
+    once = config.read_text(encoding="utf-8")
+    cmd_mcp_install(_codex_install_args(tmp_path, "--json"))
+    assert config.read_text(encoding="utf-8") == once
+    assert once.count(f'[mcp_servers."{branding.CLI_NAME}"]') == 1
+
+
+def test_mcp_install_codex_carries_env(tmp_path, monkeypatch):
+    config = tmp_path / "config.toml"
+    monkeypatch.setattr("harness_fleet.cli._existing_mcp_path_for_client", lambda *a: config)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test-not-real")
+    (tmp_path / "harness-fleet.db").touch()
+    cmd_mcp_install(_codex_install_args(tmp_path, "--env", "OPENROUTER_API_KEY", "--json"))
+    text = config.read_text(encoding="utf-8")
+    assert f'[mcp_servers."{branding.CLI_NAME}".env]' in text
+    assert 'OPENROUTER_API_KEY = "sk-test-not-real"' in text
+
+
+def test_mcp_install_muse_uses_json_mcpservers(tmp_path, monkeypatch):
+    config = tmp_path / "settings.json"
+    monkeypatch.setattr("harness_fleet.cli._existing_mcp_path_for_client", lambda *a: config)
+    (tmp_path / "harness-fleet.db").touch()
+    args = build_parser().parse_args(
+        ["mcp", "install", "--client", "muse", "--workspace-root", str(tmp_path),
+         "--db", "harness-fleet.db", "--json"]
+    )
+    cmd_mcp_install(args)
+    assert branding.CLI_NAME in json.loads(config.read_text(encoding="utf-8"))["mcpServers"]
+
+
+def test_mcp_install_rejects_unknown_client(tmp_path):
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(
+            ["mcp", "install", "--client", "nope", "--workspace-root", str(tmp_path)]
+        )
+
+
 @pytest.mark.parametrize("name", ["openrouter", "openai_compatible"])
 def test_different_worker_timeouts_do_not_close_an_active_http_client(monkeypatch, name):
     import importlib

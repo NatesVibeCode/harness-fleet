@@ -1643,6 +1643,62 @@ def _cursor_config_path() -> Path:
     return Path.home() / ".cursor" / "mcp.json"
 
 
+def _codex_config_path() -> Path:
+    return Path.home() / ".codex" / "config.toml"
+
+
+def _muse_config_path() -> Path:
+    config_root = Path(os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config")))
+    return config_root / "muse" / "settings.json"
+
+
+def _toml_basic_string(value: str) -> str:
+    # json.dumps emits double-quoted strings with compatible escapes for the
+    # plain values (paths, args, keys) this installer writes.
+    return json.dumps(value)
+
+
+def _install_codex_toml_entry(
+    *,
+    config_path: Path,
+    server_name: str,
+    command: str,
+    args_list: list[str],
+    resolved_env: dict[str, str],
+    dry_run: bool,
+) -> tuple[str, list[str]]:
+    """Append-only install into Codex's TOML config (no TOML round-trip dep).
+
+    Returns (status, notes). An existing section is never rewritten here —
+    TOML is append-only in this installer, so change it by hand.
+    """
+    header = f'[mcp_servers."{server_name}"]'
+    try:
+        existing_text = config_path.read_text(encoding="utf-8") if config_path.is_file() else ""
+    except OSError as exc:
+        raise ValueError(f"Cannot read existing config {config_path}: {exc}; file was not changed") from exc
+    if header in existing_text:
+        return "unchanged", [
+            f"codex entry exists in {config_path}; TOML is append-only here, edit it by hand to change it"
+        ]
+    lines = [header, f"command = {_toml_basic_string(command)}",
+             f"args = [{', '.join(_toml_basic_string(a) for a in args_list)}]"]
+    if resolved_env:
+        lines.append(f'[mcp_servers."{server_name}".env]')
+        lines.extend(f"{name} = {_toml_basic_string(value)}" for name, value in sorted(resolved_env.items()))
+    block = "\n".join(lines) + "\n"
+    if dry_run:
+        return "planned", []
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    with config_path.open("a", encoding="utf-8") as fh:
+        if existing_text and not existing_text.endswith("\n"):
+            fh.write("\n")
+        if existing_text:
+            fh.write("\n")
+        fh.write(block)
+    return ("created" if not existing_text else "updated"), []
+
+
 # Provider keys this codebase already reads from the environment (the
 # `<PROVIDER>_API_KEY` / `<PROVIDER>_BASE_URL` convention in
 # providers/openai_compatible.py plus the doctor's OpenRouter check). Desktop
@@ -1677,6 +1733,10 @@ def _existing_mcp_path_for_client(client: str, workspace_root: Path | None = Non
         return _claude_config_candidates()[0]
     if client == "cursor":
         return _cursor_config_path()
+    if client == "codex":
+        return _codex_config_path()
+    if client == "muse":
+        return _muse_config_path()
     return None
 
 
@@ -1721,17 +1781,17 @@ def cmd_mcp_install(args: argparse.Namespace) -> None:
     if requested == "auto":
         # Detect existing configs; if none, default to claude
         found = []
-        for cand in ["claude", "cursor"]:
+        for cand in ["claude", "cursor", "codex", "muse"]:
             p = _existing_mcp_path_for_client(cand, workspace_root)
             if p and p.is_file():
                 found.append(cand)
         target_clients = found if found else ["claude"]
-    elif requested in ("claude", "cursor"):
+    elif requested in ("claude", "cursor", "codex", "muse"):
         target_clients = [requested]
     elif requested == "all":
-        target_clients = ["claude", "cursor"]
+        target_clients = ["claude", "cursor", "codex", "muse"]
     else:
-        raise ValueError(f"unknown --client '{requested}'; use auto, claude, cursor, or all")
+        raise ValueError(f"unknown --client '{requested}'; use auto, claude, cursor, codex, muse, or all")
 
     results: list[dict[str, Any]] = []
     notes: list[str] = []
@@ -1740,6 +1800,28 @@ def cmd_mcp_install(args: argparse.Namespace) -> None:
         if config_path is None:
             continue
         dry_run = bool(getattr(args, "dry_run", False))
+        if client == "codex":
+            # Codex speaks TOML, not JSON: append-only, never rewritten.
+            status, toml_notes = _install_codex_toml_entry(
+                config_path=config_path,
+                server_name=branding.CLI_NAME,
+                command=server_entry["command"],
+                args_list=server_entry["args"],
+                resolved_env=resolved_env,
+                dry_run=dry_run,
+            )
+            notes.extend(toml_notes)
+            results.append({
+                "client": client,
+                "config_path": str(config_path),
+                "status": status,
+                "server": _redacted_server_entry(server_entry),
+                "env": sorted(resolved_env),
+                "env_missing": missing_env,
+                "env_dropped": [],
+                "exists": config_path.is_file(),
+            })
+            continue
         # Load existing config or create new
         existing: dict[str, Any] = {}
         if config_path.is_file():
@@ -2841,12 +2923,14 @@ def cmd_tune(args: argparse.Namespace) -> None:
     """Evaluate and tune lanes, rungs, gate filters, and sources."""
     from .tune import (
         audit_database,
+        compare_databases,
         diagnose_gates,
         diagnose_gates_batch,
         evaluate_surface,
         format_audit_report,
         format_batch_gate_report,
         format_benchmark_result,
+        format_compare_report,
         format_gate_report,
         format_sim_report,
         format_surface_report,
@@ -2933,7 +3017,17 @@ def cmd_tune(args: argparse.Namespace) -> None:
         _emit(aud, json_mode, format_audit_report(aud))
         return
 
-    raise ValueError(f"unknown tune action '{action}' (have: gate, sim, surface, benchmark, audit)")
+    if action == "compare":
+        diff = compare_databases(
+            str(getattr(args, "before", "") or ""),
+            str(getattr(args, "after", "") or ""),
+        )
+        _emit(diff, json_mode, format_compare_report(diff))
+        return
+
+    raise ValueError(
+        f"unknown tune action '{action}' (have: gate, sim, surface, benchmark, audit, compare)"
+    )
 
 
 def cmd_lane(args: argparse.Namespace) -> None:
@@ -3588,6 +3682,13 @@ def build_parser() -> argparse.ArgumentParser:
         t_audit.add_argument("--workspace-root", default=".", help="Workspace root for relative paths")
         _common(t_audit)
 
+        t_compare = sub.add_parser(
+            "compare", help="Two run databases, as a per-rung delta (change one thing, look)"
+        )
+        t_compare.add_argument("before", help="Run database from before the change")
+        t_compare.add_argument("after", help="Run database from after the change")
+        _common(t_compare)
+
     _populate_tune_subparsers(tune_sub)
     _populate_tune_subparsers(lane_tune_sub)
     _populate_tune_subparsers(lane_eval_sub)
@@ -3889,8 +3990,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     mcp = commands.add_parser("mcp", help="MCP client integration")
     mcp_sub = mcp.add_subparsers(dest="mcp_command", required=True)
-    mcp_install = mcp_sub.add_parser("install", help="Install MCP server entry into Claude/Cursor config (one-command setup)")
-    mcp_install.add_argument("--client", choices=["auto", "claude", "cursor", "all"], default="auto", help="Target client config to write (default: auto-detect, falls back to claude)")
+    mcp_install = mcp_sub.add_parser("install", help="Install MCP server entry into client config (one-command setup)")
+    mcp_install.add_argument("--client", choices=["auto", "claude", "cursor", "codex", "muse", "all"], default="auto", help="Target client config to write (default: auto-detect, falls back to claude)")
     mcp_install.add_argument("--workspace-root", default=".", help="Workspace root for the MCP server (default: .)")
     mcp_install.add_argument("--db", help=f"SQLite path below workspace root (default: <workspace>/{branding.DEFAULT_DB})")
     mcp_install.add_argument("--env", action="append", metavar="NAME", help="Copy this shell's environment variable into the client config (can repeat or comma-separate, e.g. --env OPENROUTER_API_KEY). Desktop apps do not inherit the shell environment. Unset names are skipped with a warning; only names are ever printed")

@@ -560,7 +560,7 @@ Free routes are used by default. A paid route approved in an earlier session mus
 | `export` | Export a validated packet (`--format json\|csv\|jsonl`, `--sort-by`, `--desc`, `--top`, `--rank`, `--filter`) |
 | `db backup` | SQLite backup to file (safe while running) |
 | `schema` | Print admitted JSON Schemas or database contracts |
-| `mcp install` | One-command Claude/Cursor setup (auto-wires `claude_desktop_config.json` / `mcp.json`; `--env NAME` copies a shell variable, e.g. `OPENROUTER_API_KEY`, into the client config) |
+| `mcp install` | One-command client setup for Claude/Cursor/Codex/Muse (auto-wires `claude_desktop_config.json` / `mcp.json` / `config.toml` / `settings.json`; `--env NAME` copies a shell variable, e.g. `OPENROUTER_API_KEY`, into the client config; Codex TOML is append-only) |
 | `serve` | Run the Model Context Protocol (MCP) server over stdio |
 | `board` | Serve the read-only results board for a run: every attribute, the checklist behind each score, verbatim quotes, and provenance (`--run-id`, `--port`, `--open`, `--json`) |
 | `settings` | Print, or `--clear`, the harness/model selection the studio saved (`run --from-studio` uses it) |
@@ -603,7 +603,9 @@ harness-fleet setup --workspace-root "$PWD" --dry-run --json
 
 **One-command install (recommended for GTM folks):**
 ```bash
-harness-fleet mcp install --workspace-root "$PWD"  # auto-detects Claude/Cursor, writes mcpServers entry
+harness-fleet mcp install --workspace-root "$PWD"  # auto-detects Claude/Cursor/Codex/Muse, writes the server entry
+# Note: Muse documents streamable-HTTP entries; a stdio entry is written the
+# same way and confirmed live before relying on it.
 # Also hand the desktop app a provider key (repeatable or comma-separated)
 harness-fleet mcp install --env OPENROUTER_API_KEY
 # Preview first
