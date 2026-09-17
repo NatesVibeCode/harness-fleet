@@ -41,6 +41,10 @@ One engine — typed claims, SQLite checkpoints, character-exact quote verificat
 
 `harness-fleet research` runs the whole pipeline in one command — discover, bundle evidence per entity, score, export — and `harness-fleet lane report <run_id> --lane <name>` then measures what that run actually produced: yield per search source, how many records clear the lane's evidence bar, which claims a quote carries and which were refused, a re-fetched truth sample, and cost. Lanes ship in the package; drop `<workspace>/lanes/<name>.json` to override one or add your own. See [Lanes](#lanes) below.
 
+`research` has one dial over discovery: `--backend` (repeatable, default `ddgs` + `hn`) picks the search surfaces. Everything else shapes the pipeline around the search — `--sessions` widens scoring concurrency, `--delay` paces fetches, `--ignore-robots` opts out of robots.txt, `--min-source-coverage` sets the capture floor that otherwise warns below 70%.
+
+Extraction is not blind to client-rendered pages. An HTML response whose text is thinner than 80 words is re-fetched once through a headless browser and the longer text wins, so a thin record means the page is genuinely thin rather than unrendered; that record is flagged `rendered: js-auto` with `render_reason: low_yield`. One browser is reused across the URLs a worker renders. A source that yields nothing records its own skip reason, which `lane report` prints on that source's row.
+
 Every skill is installed into your workspace by `harness-fleet setup` — see [Assistant skills](#assistant-skills-what-installs-where).
 
 ## Contents
@@ -112,6 +116,8 @@ Illustrative values only; real exports also include source URLs, digests, and qu
 
 ```bash
 harness-fleet research --lane account --max-results 12 --top 25   # dossiers -> accounts_ranked.csv
+harness-fleet research --lane account --backend ddgs --backend hn  # search surfaces (default: ddgs + hn)
+harness-fleet research --lane account --no-enrich                  # search only: skip the walk
 harness-fleet lane report <run_id> --lane account                 # what that run actually produced
 ```
 

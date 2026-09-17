@@ -44,6 +44,14 @@ walked, only for the kinds they are missing, and what a surface contributes to
 one dossier is bounded — with the surplus counted and reported, never dropped
 quietly.
 
+A page that builds its content client-side used to arrive as a pre-hydration
+shell. An HTML response whose text is thinner than 80 words is now re-fetched
+once through a headless browser and the longer text wins, so a thin result means
+the page really is thin rather than unrendered. That record is flagged
+`rendered: js-auto` with `render_reason: low_yield`; the explicit `render_js`
+path still flags `rendered: js` alone. One browser is reused across every URL a
+worker renders, so turning this on does not cost a browser launch per page.
+
 Surfaces that answer are declared once in `harness_fleet/data/source_surfaces.json`;
 so are the ones that turned out not to (clutch.co and g2.com answer 403 for
 every domain, Bluesky's public search 403s, YouTube transcripts are gated) —
@@ -54,8 +62,16 @@ harness-fleet lane list                    # the lanes this install can run
 harness-fleet research --lane partner --stories 80   # hundreds of candidates from vendor story indexes
 harness-fleet research --lane account --no-enrich    # search only: skip the walk
 harness-fleet research --lane career          # the whole pipeline for one lane
+harness-fleet research --lane account --backend ddgs --backend hn   # the search surfaces (default: ddgs + hn)
+harness-fleet research --lane account --delay 2 --min-source-coverage 0.7   # fetch pace, capture floor
 harness-fleet lane report <run_id> --lane career   # what it actually produced
 ```
+
+Discovery has no dial beyond its surface list: `--backend` (repeatable, default
+`ddgs` + `hn`) is the only switch that changes where hits come from. The rest of
+`research` shapes the pipeline, not the search — `--sessions` widens scoring
+concurrency, `--delay` paces fetches, `--ignore-robots` opts out of robots.txt,
+`--min-source-coverage` sets the capture floor that otherwise warns below 70%.
 
 Over MCP: `harness_fleet_lanes` lists what this install can run, and every
 pipeline tool takes `lane`, so the assistant picks the product for the task.
@@ -90,7 +106,7 @@ lane, on purpose.
 8. For MCP, set one absolute `--workspace-root`. Keep its SQLite database and every file path below that root.
 9. Read exported packets through `read_packet`; it checks the embedded TaskSpec digest and revalidates every record's claims. Do not bypass `harness_fleet_v2` validation.
 10. Model selection uses Bayesian-smoothed historical scoring. Every intermediate attempt failure, schema error, ungrounded quote, rate limit, and latency is recorded immutably in `inference_attempts`.
-11. Mechanical discovery enforces a 70% source-capture floor by default. Its report includes per-backend hit/capture counts, and fetched records retain the backend, query, and originating URL.
+11. Mechanical discovery enforces a 70% source-capture floor by default. Its report includes per-backend hit/capture counts, and fetched records retain the backend, query, and originating URL. A source that produced nothing carries its own skip reason on its `lane report` row, so a zero is never left unexplained — the notes line only ever held the first five.
 
 ## Workflow
 
