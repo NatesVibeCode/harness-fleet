@@ -667,6 +667,7 @@ def lane_spec(
     score: bool = False,
     score_task: str = "",
     score_run_id: str = "",
+    score_policy: Any = None,
     sessions: int = 4,
     max_attempts: int = 300,
     top: int | None = None,
@@ -795,10 +796,20 @@ def lane_spec(
             "id": "s-score",
             "lane": lane.name,
             **({"from_gate": previous_gate} if previous_gate else {}),
-            "from_nodes": [node["id"] for node in nodes if node["kind"] == "retrieve"],
+            # Every node above it, not just the walks. The first gate holds what
+            # the run already knew — a discovery run's records — and a graph over
+            # an existing run whose walks come back empty has nothing else to
+            # judge on: reading only the walks scored nobody and said so as if
+            # the ladder had found nobody.
+            "from_nodes": [
+                node["id"] for node in nodes if node["kind"] in ("gate", "resolve", "retrieve")
+            ],
             **({"from_items": from_items} if from_items is not None else {}),
             **({"task": score_task} if score_task else {}),
             **({"run_id": score_run_id} if score_run_id else {}),
+            # Which routes the scoring stage may spend, when the caller knows
+            # (a command with route flags) rather than leaving it to selection.
+            **({"policy": score_policy} if score_policy is not None else {}),
             "sessions": sessions,
             "max_attempts": max_attempts,
             **({"top": top} if top else {}),

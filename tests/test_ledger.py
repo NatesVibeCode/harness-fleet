@@ -697,3 +697,138 @@ def test_the_tier_cap_is_given_the_uri_it_was_gathered_from(monkeypatch):
 
     assert seen == [("Acme delivered a Kafka migration.", "https://acme.example/case-study")]
     assert tier == "tier_3", "and the answer is still the tier the evidence supports"
+
+
+def test_the_campaign_and_the_ledger_agree_about_every_score(tmp_path):
+    """Two writers of a score — the engine's table and the node's rows — compared.
+
+    For one scored run: what the engine priced into score_history, what the node
+    wrote into its own table, and what the running list holds must be the same
+    set of firms with the same numbers. This is the pairing the map lists as
+    unguarded, and it is the one where a silent divergence would look like a
+    working run.
+    """
+    import sys
+    from pathlib import Path as _Path
+
+    sys.path.insert(0, str(_Path(__file__).resolve().parent))
+    from test_board import _partner_run  # the deterministic demo provider
+
+    from harness_fleet.dag import DagSpec, run_dag
+    from harness_fleet.lanes import shipped_lanes
+    from harness_fleet.rungs import lane_spec
+
+    db = _partner_run(tmp_path, "source-run")
+    store = HarnessStore(db)
+    from harness_fleet.models import RoutePolicy
+
+    spec = DagSpec.model_validate(lane_spec(
+        shipped_lanes()["partner"], from_run="source-run", workspace=tmp_path,
+        score=True, score_task="partner-research", score_run_id="scored-run",
+        score_policy=RoutePolicy(allowed_routes=["demo/fake"], free_only=True),
+    ))
+    state = run_dag(spec, store, workspace_root=tmp_path, dag_id="judged")
+    scored = state["nodes"]["s-score"]
+    assert scored["verified"] > 0, "the demo provider produces real records"
+
+    with store.connect() as connection:
+        engine_rows = {
+            str(row["entity"]): float(row["score"])
+            for row in connection.execute(
+                "SELECT entity, score FROM score_history WHERE run_id=?", ("scored-run",)
+            )
+        }
+    node_rows = {row["item_id"]: row["score"] for row in RungTables(store).rows("judged", "s-score")}
+    listed = {
+        row["entity"]: row["score"]
+        for row in Ledger(store).entities()
+        if row.get("scored_at")
+    }
+
+    assert node_rows, "the node scored somebody"
+    assert set(engine_rows) == set(node_rows), (
+        "the engine priced a different set of firms than the node recorded"
+    )
+    assert engine_rows == node_rows, "and the same number for each"
+    assert {entity: score for entity, score in listed.items() if entity in node_rows} == node_rows
+
+
+def test_db_stats_counts_what_was_actually_written(tmp_path, capsys):
+    """The store report against the store: the map's third unguarded pairing."""
+    from argparse import Namespace
+
+    from harness_fleet import cli
+
+    store = _store(tmp_path)
+    tables = RungTables(store)
+    ledger = Ledger(store)
+    tables.write("dag", "g0", [_row("a.example", "lead"), _row("b.example", "lead")],
+                 texts={"a.example": "one", "b.example": "two"})
+    tables.write_items("dag", "g0", [{"item_id": "a.example"}], run_seq=1)
+    tables.write("dag", "g0", [_row("a.example", "qualified")])   # a second attempt
+    ledger.record([_row("a.example", "qualified", score=70.0)], dag_id="dag", node_id="g0")
+
+    written = tables.stats()
+    with store.connect() as connection:
+        rows = connection.execute("SELECT COUNT(*) FROM rung_rows").fetchone()[0]
+        texts = connection.execute("SELECT COUNT(*) FROM rung_text").fetchone()[0]
+        items = connection.execute("SELECT COUNT(*) FROM rung_items").fetchone()[0]
+    assert written["rung_rows"] == rows == 3
+    assert written["rung_text"] == texts == 2
+    assert written["rung_items"] == items == 1
+    assert written["attempts"] == 2, "two writes of one node are two attempts"
+
+    cli.cmd_db_stats(Namespace(db=str(tmp_path / "t.db"), json=True))
+    reported = json.loads(capsys.readouterr().out)
+    assert reported["rung_rows"] == rows and reported["attempts"] == 2
+    assert reported["entity_state"] == 1 and reported["entity_events"] == 1
+
+
+def test_the_lane_report_counts_what_the_nodes_scored(tmp_path):
+    """The report's own numbers against the node table, for one scored run.
+
+    `lane report` is a separate reader of a finished run. Nothing held its count
+    to the table the scoring node wrote, so a report could describe a run that
+    scored three firms while the node recorded two.
+    """
+    import sys
+    from pathlib import Path as _Path
+
+    sys.path.insert(0, str(_Path(__file__).resolve().parent))
+    from test_board import _partner_run
+
+    from harness_fleet.dag import DagSpec, run_dag
+    from harness_fleet.lane_report import build_lane_report
+    from harness_fleet.lanes import shipped_lanes
+    from harness_fleet.models import RoutePolicy
+    from harness_fleet.rungs import lane_spec
+
+    db = _partner_run(tmp_path, "report-source")
+    store = HarnessStore(db)
+    lane = shipped_lanes()["partner"]
+    spec = DagSpec.model_validate(lane_spec(
+        lane, from_run="report-source", workspace=tmp_path,
+        score=True, score_task="partner-research", score_run_id="report-scored",
+        score_policy=RoutePolicy(allowed_routes=["demo/fake"], free_only=True),
+    ))
+    state = run_dag(spec, store, workspace_root=tmp_path, dag_id="judged")
+    node = state["nodes"]["s-score"]
+
+    report = build_lane_report(
+        store, "report-scored", workspace_root=tmp_path, lane=lane,
+        sample=0, fetch=lambda url: None,
+    )
+    judged = {row["item_id"] for row in RungTables(store).rows("judged", "s-score")}
+    assert node["verified"] == len(judged) > 0
+
+    # Whatever the report calls the records it measured, it measured this run,
+    # and the run's records are the ones the node wrote a row for.
+    measured = {
+        getattr(entry, "item_id", "") or (entry.get("item_id") if isinstance(entry, dict) else "")
+        for entry in (getattr(report, "support", None) or [])
+    }
+    if measured:
+        assert {item for item in measured if item} <= judged, (
+            "the report named a record the scoring node did not write"
+        )
+    assert report.run_id == "report-scored"

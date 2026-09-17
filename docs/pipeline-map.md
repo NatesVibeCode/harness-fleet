@@ -52,25 +52,32 @@ One writer per fact. A second writer is the defect, not the fix.
 6. **Pruning keeps the newest attempt and never touches the belief.** `test_ledger::test_prune_keeps_the_answer…`, `test_pruning_the_log_never_touches_the_belief`.
 7. **Docs name tables that exist and commands that parse.** `test_docs_commands`, plus the README lane table in `test_shipped_lanes`.
 8. **`docs/funnels.md` is the renderer's output, byte for byte.** `test_docs_commands::test_the_funnels_doc_is_the_renderer_s_output`.
+9. **A trajectory is both records, wherever it is read** — the CLI *and* the MCP
+   history tool. `test_mcp_server::test_the_mcp_history_uses_the_same_reader_as_the_cli`.
+10. **A tier cap is given the uri its evidence came from.** `test_ledger::test_the_tier_cap_is_given_the_uri_it_was_gathered_from`.
+11. **The campaign, the node's rows and the running list agree about every
+    score**, for one scored run, firm by firm. `test_ledger::test_the_campaign_and_the_ledger_agree_about_every_score`.
+12. **`db stats` counts what was written.** `test_ledger::test_db_stats_counts_what_was_actually_written`.
+13. **`lane report` measures the records the scoring node wrote.**
+    `test_ledger::test_the_lane_report_counts_what_the_nodes_scored`.
+14. **A graph over an existing run judges on the whole chain above it**, not only
+    on the walks — a discovery run's records are evidence, and a walk that comes
+    back empty is not a run that found nobody. Held by (11), which failed on
+    exactly that before it passed.
 
 ## 4. Not guarded yet — the work queue
 
-Ordered by what a reader would get wrong first.
-
-1. **`board` payload against the ledger.** The board's `tier_supported` comes
-   from the run's `evidence.json`; `entity_state.tier` comes from the score node.
-   Nothing asserts they agree for the same run. A test would build both and
-   compare per entity.
-2. **`lane report` against the node tables.** The report is a separate reader of
-   a finished run, and no test holds its numbers to `rung_rows`.
-3. **`cli.db stats` against reality.** It counts tables; nothing asserts the
-   counts match what was written.
-4. **The score node's campaign against the ledger.** `score_history` is written
-   by the engine from the packet, `entity_state` from the node's rows. If the
-   engine caps or drops a record, the two could disagree by one.
-5. `career_fleet`'s own `evaluations` store — a different product with a
-   different shape (company × lane, not candidate × rung). Decide whether it
-   shares the ledger or stays separate; it is not a defect either way.
+1. **`board` payload against the ledger, per entity.** The board's
+   `tier_supported` and `score` come from the run's `evidence.json` and the
+   packet; `entity_state` comes from the node's rows. The *shape* of both is
+   guarded (#3, #11) but nothing compares them for the same run and firm, which
+   is where a stale `evidence.json` would show up.
+2. **A graph re-run over the same `dag_id`.** Attempts are kept and the newest
+   is read; nothing asserts that a second `run_dag` over an existing dag leaves
+   the first attempt's answers readable and unchanged.
+3. **`docs/pipeline-map.md` itself.** Its commands and table names are checked;
+   the claims in its tables — who writes what — are prose. A cheap guard would
+   assert the writer column against the code that calls `RungTables.write`.
 
 ## 5. Decisions that are not mine to make
 

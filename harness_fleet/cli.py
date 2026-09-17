@@ -1104,6 +1104,10 @@ def _lane_dag_spec(args: argparse.Namespace, lane_name: str):
         score_task=str(getattr(args, "task", "") or lane.preset),
         sessions=int(getattr(args, "sessions", 4) or 4),
         max_attempts=int(getattr(args, "max_attempts", 300) or 300),
+        # The same route flags a research run takes, because the scoring stage
+        # spends the same routes: without them the lane mode could only hope
+        # selection found a free one.
+        score_policy=_extract_policy(args),
     )
     return DagSpec.model_validate(spec)
 
@@ -3433,6 +3437,7 @@ def build_parser() -> argparse.ArgumentParser:
     dag.add_argument("--task", help="Task or preset the scoring stage uses")
     dag.add_argument("--sessions", type=int, default=4, help="Concurrent model calls")
     dag.add_argument("--max-attempts", type=int, default=300, help="Attempt ceiling")
+    _policy_options(dag)
     dag.add_argument("--profile", help="Ideal partner profile the gates come from")
     dag.add_argument("--emit-spec", action="store_true",
                      help="Print the compiled lane spec instead of running it")
