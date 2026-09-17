@@ -40,6 +40,9 @@ FLEET_BINARIES = ("harness-fleet", "account-fleet", "career-fleet", "free-fleet"
 FENCE_RE = re.compile(r"```([a-zA-Z]*)\n(.*?)```", re.S)
 DOC_GLOBS = (
     "README.md",
+    # The product docs carry commands too, and they had none of this: a stale
+    # command in docs/ parsed nowhere and nobody noticed.
+    "docs/**/*.md",
     "FREE-ACCESS.md",
     "CONTRIBUTING.md",
     "SECURITY.md",
@@ -207,4 +210,63 @@ def test_the_funnels_doc_is_the_renderer_s_output(tmp_path):
     )
     assert fresh.read_text(encoding="utf-8") == committed, (
         "docs/funnels.md is stale: run tools/render_funnels.py and commit the result"
+    )
+
+
+#: Backticked names in the docs that read as storage: the ones this work
+#: introduced, and the ones that have already gone stale twice —
+#: docs/data-models.md and docs/scoring.md both described a view that had been
+#: deleted while the tool moved on.
+TABLE_TOKEN_RE = re.compile(r"`((?:rung_|entity_|score_)[a-z_]+)`")
+
+#: Modules whose names a doc may legitimately be using: `entity_evidence` is a
+#: function, not a table, and a guard that cannot tell the difference would have
+#: to be narrowed until it stopped catching the thing it exists for.
+_SYMBOL_MODULES = (
+    "board", "bundler", "contracts", "dag", "discover", "engine", "enrich",
+    "evidence", "export", "gates", "input_data", "ledger", "models", "profile",
+    "rungs", "sources", "store", "task",
+)
+
+
+def test_every_documented_store_table_exists(tmp_path):
+    """The docs say where the data lives; the store says whether that is true.
+
+    A reader who goes looking for a table the docs named and finds nothing has
+    been told the wrong thing silently — the same failure as a README row that
+    disagrees with a lane file, and just as invisible.
+    """
+    import importlib
+
+    from harness_fleet.ledger import Ledger
+    from harness_fleet.rungs import RungTables
+    from harness_fleet.store import HarnessStore
+
+    store = HarnessStore(tmp_path / "t.db")
+    RungTables(store)
+    Ledger(store)
+    with store.connect() as connection:
+        tables = {
+            str(row[0])
+            for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+
+    named: set[str] = set()
+    for pattern in DOC_GLOBS:
+        for path in sorted(REPO.glob(pattern)):
+            if path.is_file():
+                named |= set(TABLE_TOKEN_RE.findall(path.read_text(encoding="utf-8")))
+
+    known: set[str] = set()
+    for module_name in _SYMBOL_MODULES:
+        module = importlib.import_module(f"harness_fleet.{module_name}")
+        known |= {name for name in dir(module) if not name.startswith("__")}
+
+    assert named, "the scan found no table names at all, which proves nothing"
+    # Neither a table nor anything the code defines: a reader following that
+    # name finds nothing, wherever they look.
+    missing = sorted(name for name in named if name not in tables and name not in known)
+    assert not missing, (
+        f"the docs name {missing}, which is neither a table in the store nor "
+        "anything the code defines"
     )

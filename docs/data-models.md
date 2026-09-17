@@ -135,7 +135,9 @@ Score trajectories have two writers and one reader. The engine prices every
 campaign into `score_history`; the ledger records what each node decided. A
 trajectory is the union of the two — `harness-fleet history <entity>` and
 `harness-fleet ledger --trend` read the same rows, so they cannot disagree about
-a firm depending on which door its score came through. `harness-fleet dag --lane partner --from-items captured.jsonl --emit-spec`
+a firm depending on which door its score came through. Both tables are guarded:
+a test asserts that every table this document names exists in the store, so
+prose here cannot describe storage that is not there. `harness-fleet dag --lane partner --from-items captured.jsonl --emit-spec`
 prints exactly this:
 
 ```

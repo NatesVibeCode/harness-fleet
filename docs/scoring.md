@@ -240,11 +240,11 @@ nothing says so out loud.
 The tables are rows in the run's database, and the running list across runs is
 what an operator reads afterwards:
 
-```
-harness-fleet ledger                       the running list, by score
-harness-fleet ledger --trend               firms with two numbers and the movement
-harness-fleet ledger --entity acme.co.uk   one firm's visits, in order
-harness-fleet ledger --csv running.csv     a file, when a file is wanted
+```bash
+harness-fleet ledger                       # the running list, by score
+harness-fleet ledger --trend               # firms with two numbers, and the movement
+harness-fleet ledger --entity acme.co.uk   # one firm's visits, in order
+harness-fleet ledger --csv running.csv     # a file, when a file is wanted
 ```
 
 ---
