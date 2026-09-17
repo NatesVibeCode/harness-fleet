@@ -30,6 +30,22 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+#: What a delivered row says, in the order a reader wants it: who, how good,
+#: what tier the evidence supports, where it stands, and when it was seen.
+DELIVERABLE_COLUMNS: tuple[str, ...] = (
+    "entity",
+    "score",
+    "tier",
+    "outcome",
+    "standing",
+    "facts",
+    "lanes",
+    "first_seen",
+    "last_seen",
+    "sightings",
+    "run_id",
+)
+
 
 @dataclass
 class Quota:
@@ -186,7 +202,9 @@ def write_deliverable(store: Any, quota: Quota, path: str | Path) -> int:
     )
     if quota.want:
         rows = rows[: int(quota.want)]
-    return write_csv(path, rows)
+    # The spine of a rung table is the wrong shape for a delivery: it led with
+    # fourteen empty columns and buried the firm and its score at the end.
+    return write_csv(path, rows, columns=DELIVERABLE_COLUMNS)
 
 
 def run_to_quota(

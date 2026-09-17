@@ -322,7 +322,7 @@ def test_research_delivers_a_quota_through_the_command(tmp_path, monkeypatch, ca
         "items": {}, "kind_totals": {}, "tier_capped": {}, "contradictions": {}, "text_missing": [],
     })
 
-    args = _research_args(tmp_path, want=2, min_score=0.0, rounds=3)
+    args = _research_args(tmp_path, want=2, min_score=0.0, rounds=3, output="delivered.csv")
     cli.cmd_research(args)
 
     printed = capsys.readouterr().out
@@ -333,3 +333,14 @@ def test_research_delivers_a_quota_through_the_command(tmp_path, monkeypatch, ca
     assert payload["delivered"] == 2
     assert len(rounds_seen) == 2, "one firm a round, two firms wanted"
     assert rounds_seen[0] != rounds_seen[1], "and the second round widened"
+
+    # The deliverable is in the workspace, says who and how good up front, and
+    # holds exactly the firms the quota was met with.
+    from harness_fleet.rungs import read_csv
+
+    deliverable = tmp_path / "delivered_quota.csv"
+    assert deliverable.is_file(), "a quota run files its delivery in the workspace"
+    assert payload["deliverable"] == str(deliverable)
+    rows = read_csv(deliverable)
+    assert [row["entity"] for row in rows] == ["firm1.example", "firm2.example"]
+    assert list(rows[0])[:3] == ["entity", "score", "tier"]

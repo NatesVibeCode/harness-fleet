@@ -396,7 +396,12 @@ def _stored(value: Any) -> Any:
     return json.dumps(value, sort_keys=True, ensure_ascii=False)
 
 
-def write_csv(path: str | Path, rows: Sequence[dict[str, Any]]) -> int:
+def write_csv(
+    path: str | Path,
+    rows: Sequence[dict[str, Any]],
+    *,
+    columns: Sequence[str] | None = None,
+) -> int:
     """Write rows as a CSV table and return how many were written.
 
     Columns are the spine in order, then any extra key the rows carry, in first
@@ -407,11 +412,12 @@ def write_csv(path: str | Path, rows: Sequence[dict[str, Any]]) -> int:
     """
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
-    columns = list(TABLE_COLUMNS)
+    ordered = list(columns) if columns else list(TABLE_COLUMNS)
     for row in rows:
         for key in row:
-            if key not in columns:
-                columns.append(key)
+            if key not in ordered:
+                ordered.append(key)
+    columns = ordered
     with target.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=columns, extrasaction="ignore")
         writer.writeheader()

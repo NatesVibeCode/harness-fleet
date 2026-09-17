@@ -2214,6 +2214,11 @@ def cmd_research(args: argparse.Namespace) -> None:
     store = _store(args)
     workspace = Path(getattr(args, "workspace_root", ".")).expanduser().resolve()
     output = Path(getattr(args, "output", None) or "accounts.csv").expanduser()
+    if not output.is_absolute():
+        # Relative to the workspace, not to wherever the command happened to run:
+        # a run that files its deliverable in the operator's shell's cwd is a run
+        # whose output nobody can find twice.
+        output = workspace / output
     lane = _load_lane_for_run(args, workspace)
 
     # A quota turns one run into as many as the delivery needs. The loop is a
