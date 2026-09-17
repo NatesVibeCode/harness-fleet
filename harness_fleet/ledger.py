@@ -314,16 +314,14 @@ class Ledger:
                       ON was.entity = now.entity AND was.rank = 2
                     WHERE now.rank = 1
                 )
-                SELECT * FROM pair WHERE ABS(score - previous) >= 0 ORDER BY score DESC LIMIT ?
+                SELECT * FROM pair WHERE ABS(score - previous) >= ? ORDER BY score DESC LIMIT ?
                 """,
-                (int(limit),),
+                (float(minimum_delta), int(limit)),
             ).fetchall()
         out = []
         for record in found:
             row = dict(record)
             row["delta"] = round(float(row["score"]) - float(row["previous"]), 2)
-            if abs(row["delta"]) < float(minimum_delta):
-                continue
             out.append(row)
         return out
 

@@ -651,3 +651,30 @@ def _items_file(tmp_path, text: str = INTEGRATOR):
         path,
     )
     return str(path)
+
+
+def test_the_cli_can_include_the_scoring_stage(tmp_path, capsys):
+    """The lane mode is the same chain a research run builds, scoring included."""
+    from argparse import Namespace
+
+    from harness_fleet import cli
+    from harness_fleet.discover import write_items_jsonl
+    from harness_fleet.models import InputItem
+
+    items = tmp_path / "captured.jsonl"
+    write_items_jsonl([InputItem(item_id="acme.co.uk", text=INTEGRATOR)], items)
+    args = dict(
+        spec=None, lane="partner", from_run=None, from_items=str(items),
+        emit_spec=True, dag_id=None, dry_run=False, no_resume=False, profile=None,
+        no_funnel=False, no_enrich=False, task=None, sessions=2, max_attempts=50,
+        workspace_root=str(tmp_path), db=str(tmp_path / "t.db"), json=True,
+    )
+    cli.cmd_dag(Namespace(**args, score=False))
+    plain = [node["id"] for node in json.loads(capsys.readouterr().out)["nodes"]]
+    assert "s-score" not in plain, "asking for the ladder gets the ladder"
+
+    cli.cmd_dag(Namespace(**args, score=True))
+    scored = json.loads(capsys.readouterr().out)["nodes"]
+    assert scored[-1]["id"] == "s-score"
+    assert scored[-1]["task"] == "partner-research", "the lane's own preset"
+    assert scored[-1]["sessions"] == 2

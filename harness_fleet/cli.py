@@ -1086,6 +1086,13 @@ def _lane_dag_spec(args: argparse.Namespace, lane_name: str):
         profile_path=getattr(args, "profile", None),
         gates=not getattr(args, "no_funnel", False),
         walk=not getattr(args, "no_enrich", False),
+        # Off by default, because scoring spends model calls and a person
+        # inspecting a ladder usually wants to see the ladder. On, it is the same
+        # chain a research run builds, scoring included.
+        score=bool(getattr(args, "score", False)),
+        score_task=str(getattr(args, "task", "") or lane.preset),
+        sessions=int(getattr(args, "sessions", 4) or 4),
+        max_attempts=int(getattr(args, "max_attempts", 300) or 300),
     )
     return DagSpec.model_validate(spec)
 
@@ -3346,6 +3353,11 @@ def build_parser() -> argparse.ArgumentParser:
                      help="Run the lane's walks without its gates")
     dag.add_argument("--no-enrich", action="store_true",
                      help="Run the lane's gates without its walks")
+    dag.add_argument("--score", action="store_true",
+                     help="Include the scoring stage (spends model calls)")
+    dag.add_argument("--task", help="Task or preset the scoring stage uses")
+    dag.add_argument("--sessions", type=int, default=4, help="Concurrent model calls")
+    dag.add_argument("--max-attempts", type=int, default=300, help="Attempt ceiling")
     dag.add_argument("--profile", help="Ideal partner profile the gates come from")
     dag.add_argument("--emit-spec", action="store_true",
                      help="Print the compiled lane spec instead of running it")
