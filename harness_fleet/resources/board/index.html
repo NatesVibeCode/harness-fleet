@@ -365,7 +365,8 @@
     { id:"pipeline", label:"Pipeline" },
     { id:"scorecard", label:"Scorecard" },
     { id:"evidence", label:"Evidence" },
-    { id:"run", label:"Run detail" }
+    { id:"run", label:"Run detail" },
+    { id:"list", label:"Running list" }
   ];
 
   function renderNav() {
@@ -377,7 +378,8 @@
       pipeline: Object.keys(p.stats.tier_counts).length + " stages",
       scorecard: (p.checklist || []).length + " q",
       evidence: String(p.stats.quote_count),
-      run: p.stats.batches_verified + "/" + p.stats.batches_total
+      run: p.stats.batches_verified + "/" + p.stats.batches_total,
+      list: String(((p.ledger || {}).counts || {}).entities || 0)
     };
     VIEWS.forEach(function (v) {
       nav.appendChild(el("button", {
@@ -1064,7 +1066,57 @@
     else if (STATE.view === "pipeline") renderPipeline();
     else if (STATE.view === "scorecard") renderScorecard();
     else if (STATE.view === "evidence") renderEvidence();
+    else if (STATE.view === "list") renderRunningList();
     else renderRun();
+  }
+
+  /* Every firm the fleet has looked at, across every run: the ladder's verdict,
+     the score the last scoring node gave it, and what is still open. The run
+     detail above answers "what happened"; this answers "who do we know". */
+  function renderRunningList() {
+    var main = document.getElementById("main"), ledger = STATE.payload.ledger || {};
+    var rows = ledger.entities || [], counts = ledger.counts || {};
+    var movers = ledger.movers || [];
+    var section = el("section", { class:"section" }, [
+      el("div", { class:"section-head" }, [
+        el("h2", { class:"section-title", text:"Running list" }),
+        el("span", { class:"section-sub", text:(counts.entities || 0) + " firm(s) remembered across runs · newest score first" })
+      ])
+    ]);
+    if (movers.length) {
+      section.appendChild(el("div", { class:"toolbar" }, [
+        el("span", { class:"section-sub", text:"Moved: " + movers.map(function (m) {
+          return m.entity + " " + (m.delta > 0 ? "+" : "") + m.delta.toFixed(1);
+        }).join(" · ") })
+      ]));
+    }
+    if (!rows.length) {
+      section.appendChild(el("div", { class:"state", text:"Nothing on the list yet — no node has recorded an entity." }));
+      main.appendChild(section);
+      return;
+    }
+    var head = el("tr", null, [
+      el("th", { text:"Firm" }), el("th", { text:"Outcome" }), el("th", { text:"Score" }),
+      el("th", { text:"Tier" }), el("th", { text:"Last seen" }), el("th", { text:"Still open" }),
+      el("th", { text:"Visits" })
+    ]);
+    var body = el("tbody");
+    rows.forEach(function (row) {
+      var open = (row.gates_open || []).join(", ") || "—";
+      body.appendChild(el("tr", null, [
+        el("td", { text: row.entity }),
+        el("td", { text: row.outcome || "unjudged" }),
+        el("td", { class:"score-num", text: row.score ? Number(row.score).toFixed(1) : "—" }),
+        el("td", { text: row.tier || "—" }),
+        el("td", { text: String(row.last_seen || "").slice(0, 10) }),
+        el("td", { text: open }),
+        el("td", { text: String(row.sightings || 0) })
+      ]));
+    });
+    section.appendChild(el("div", { class:"table-wrap" }, [
+      el("table", null, [el("thead", null, [head]), body])
+    ]));
+    main.appendChild(section);
   }
 
   function renderRunPicker() {

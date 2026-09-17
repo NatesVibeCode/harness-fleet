@@ -282,3 +282,53 @@ def test_a_quote_that_does_not_address_its_claim_pays_nothing(tmp_path):
     )
     assert set(payload["checklist"][0]) == {"item_id", "label", "points", "description", "passed"}
     assert PARTNER_CHECKLIST, "the checklist contract is unchanged"
+
+
+def test_the_board_carries_the_running_list(tmp_path):
+    """The run detail answers "what happened"; the list answers "who do we know"."""
+    from harness_fleet.board import build_board_payload, ledger_view
+    from harness_fleet.ledger import Ledger
+    from harness_fleet.store import HarnessStore
+
+    db = _partner_run(tmp_path, "board-ledger")
+    store = HarnessStore(db)
+    Ledger(store).record(
+        [{"item_id": "acme.co.uk", "candidate": "acme.co.uk", "outcome": "qualified",
+          "because": "", "gates": [], "score": 82.0, "tier": "tier_2",
+          "facts": {"service_model": "SI"}, "run_id": "run-1"}],
+        dag_id="run-1", node_id="s-score", lane="partner",
+    )
+    payload = build_board_payload(db)
+    ledger = payload["ledger"]
+    assert ledger["counts"]["entities"] == 1
+    assert ledger["entities"][0]["entity"] == "acme.co.uk"
+    assert ledger["entities"][0]["score"] == 82.0
+    assert ledger["entities"][0]["facts"]["service_model"] == "SI"
+    # And on its own, for a page that wants the list without a run's payload.
+    assert ledger_view(store)["counts"]["entities"] == 1
+
+
+def test_the_ledger_route_answers_on_its_own(tmp_path):
+    """A page can poll the running list without rebuilding a run's payload."""
+    from harness_fleet.ledger import Ledger
+
+    db = _partner_run(tmp_path, "board-route")
+    Ledger(HarnessStore(db)).record(
+        [{"item_id": "acme.co.uk", "candidate": "acme.co.uk", "outcome": "qualified",
+          "gates": [], "score": 70.0}],
+        dag_id="board-route", node_id="s-score",
+    )
+    BoardHandler.db_path = db
+    BoardHandler.run_id = None
+    server = ThreadingHTTPServer(("127.0.0.1", 0), BoardHandler)
+    port = server.server_address[1]
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        with urlopen(f"http://127.0.0.1:{port}/api/ledger", timeout=20) as response:
+            body = json.loads(response.read())
+        assert body["counts"]["entities"] == 1
+        assert body["entities"][0]["entity"] == "acme.co.uk"
+        assert body["movers"] == [], "one number is not a movement"
+    finally:
+        server.shutdown()
+        server.server_close()

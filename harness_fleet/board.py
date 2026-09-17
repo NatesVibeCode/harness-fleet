@@ -211,10 +211,23 @@ def _load_evidence(runs_dir: Path | str | None, run_id: str | None) -> dict[str,
     return loaded if isinstance(loaded, dict) else {}
 
 
+def ledger_view(store: HarnessStore, *, limit: int = 200, trend: int = 15) -> dict[str, Any]:
+    """The running list, as the page reads it: firms, counts, and who moved."""
+    from .ledger import Ledger
+
+    ledger = Ledger(store)
+    return {
+        "entities": ledger.entities(limit=limit),
+        "counts": ledger.counts(),
+        "movers": ledger.movers(limit=trend),
+    }
+
+
 def build_board_payload(
     db_path: Path | str,
     run_id: str | None = None,
     runs_dir: Path | str | None = None,
+    ledger_limit: int = 200,
 ) -> dict[str, Any]:
     """Assemble everything the page needs for one run.
 
@@ -222,6 +235,10 @@ def build_board_payload(
     database holds no runs at all, so the CLI can explain either case plainly.
     """
     store = HarnessStore(db_path)
+    # The running list is about every run, not this one, so it is read before
+    # the run is picked: a board that only knew the current run would lose the
+    # firms it looked at last week.
+    ledger_payload = ledger_view(store, limit=ledger_limit)
     snapshot = store.run_snapshot(run_id) if run_id else store.run_snapshot(latest_run_id(store))
     records, task = verified_records_from_snapshot(snapshot)
     evidence_run = _load_evidence(runs_dir, snapshot.get("run_id"))
@@ -349,6 +366,7 @@ def build_board_payload(
         "claim_fields": [spec for spec in generic_spec if spec["key"] not in ("answers", "checklist")],
         "facets": facets,
         "partners": partners,
+        "ledger": ledger_payload,
     }
 
 
@@ -446,6 +464,14 @@ class BoardHandler(BaseHTTPRequestHandler):
                 _send_json(self, 500, {"error": str(exc)})
                 return
             _send_json(self, 200, payload)
+            return
+        if path == "/api/ledger":
+            # The running list on its own, for a page that wants to poll it
+            # without rebuilding a run's whole payload.
+            try:
+                _send_json(self, 200, ledger_view(HarnessStore(self.db_path)))
+            except Exception as exc:
+                _send_json(self, 500, {"error": str(exc)})
             return
         if path == "/api/runs":
             runs = list_runs(HarnessStore(self.db_path))
