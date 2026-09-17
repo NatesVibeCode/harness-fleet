@@ -111,3 +111,128 @@ def test_stopping_short_says_what_to_change(tmp_path):
     nothing = verdict(_store(tmp_path / "empty"), Quota(want=10, min_score=70), [])
     assert nothing["delivered"] == 0 and nothing["met"] is False
     assert json.dumps(nothing)  # and the whole thing is reportable
+
+
+# --------------------------------------------------------------------------
+# The loop itself
+
+
+def test_the_loop_stops_the_moment_the_quota_is_met(tmp_path):
+    """The round ceiling bounds spending; it is not a target to reach."""
+    from harness_fleet.quota import run_to_quota
+
+    store = _store(tmp_path)
+    lane = shipped_lanes()["partner"]
+    ran: list[list[str]] = []
+
+    def run_one(queries, index):
+        ran.append(list(queries))
+        # Two firms per round, so a quota of two is met in one.
+        for offset in range(2):
+            _scored(store, f"r{index}-{offset}.example", 80.0)
+
+    result = run_to_quota(store, lane, Quota(want=2, min_score=70, max_rounds=9), run_one)
+
+    assert len(ran) == 1, "met in round one, so round two never happens"
+    assert result["met"] is True and result["delivered"] == 2 and result["owed"] == 0
+
+
+def test_the_loop_widens_and_never_repeats_a_query(tmp_path):
+    from harness_fleet.quota import run_to_quota
+
+    store = _store(tmp_path)
+    lane = shipped_lanes()["partner"]
+    ran: list[list[str]] = []
+
+    def run_one(queries, index):
+        ran.append(list(queries))
+        _scored(store, f"round{index}.example", 75.0)   # one new firm per round
+
+    plan = rounds(lane, Quota(want=3, min_score=70))
+    result = run_to_quota(store, lane, Quota(want=3, min_score=70), run_one)
+
+    # The lane's space is finite, so the loop runs it out rather than inventing
+    # queries — and the report says whether that was enough.
+    assert len(ran) == len(plan), "one round per slice of the lane's query space"
+    searched = [query for entry in ran for query in entry]
+    assert len(searched) == len(set(searched)), "widening, never repeating"
+    assert result["added"] == len(plan), "one new firm per round"
+    assert result["met"] is (result["delivered"] >= 3)
+
+
+def test_a_quota_run_never_delivers_a_firm_twice(tmp_path):
+    """The fleet's own record is the ledger, so last week's firms count."""
+    from harness_fleet.quota import run_to_quota
+
+    store = _store(tmp_path)
+    _scored(store, "already.example", 88.0)          # delivered before this run
+    lane = shipped_lanes()["partner"]
+    ran: list[int] = []
+
+    def run_one(queries, index):
+        ran.append(index)
+        _scored(store, f"new{index}.example", 72.0)
+
+    result = run_to_quota(store, lane, Quota(want=2, min_score=70), run_one)
+
+    assert result["delivered"] == 2, "the firm from before counts toward the quota"
+    assert len(ran) == 1, "so only one more was needed"
+    assert outstanding(store, Quota(want=2, min_score=70)) == 0
+
+
+def test_running_out_of_lane_says_so_and_writes_what_it_has(tmp_path):
+    from harness_fleet.quota import run_to_quota
+
+    store = _store(tmp_path)
+    lane = shipped_lanes()["partner"]
+
+    def run_one(queries, index):
+        _scored(store, f"only{index}.example", 90.0)
+
+    deliverable = tmp_path / "delivered.csv"
+    result = run_to_quota(
+        store, lane, Quota(want=10_000, min_score=70, max_rounds=2), run_one,
+        deliverable=deliverable,
+    )
+
+    assert result["met"] is False
+    assert result["rounds"] and len(result["rounds"]) == 2, "the ceiling was the bound"
+    assert result["delivered"] == 2 and result["owed"] == 9_998
+    assert "delivered 2 of 10000 at or above 70" in result["summary"]
+    # And the file holds the firms that were delivered, not the ones that were not.
+    from harness_fleet.rungs import read_csv
+
+    rows = read_csv(deliverable)
+    assert [row["entity"] for row in rows] == ["only1.example", "only2.example"]
+    assert all(float(row["score"]) >= 70 for row in rows)
+
+
+def test_the_quota_command_wires_the_loop_up(tmp_path, capsys):
+    """`research --want N --min-score S` runs rounds and reports what it got."""
+    from argparse import Namespace
+
+    from harness_fleet import cli
+
+    store = HarnessStore(tmp_path / "t.db")
+    calls: list[Namespace] = []
+
+    def run_one(queries, index):
+        calls.append(Namespace(queries=list(queries), index=index))
+        Ledger(store).record(
+            [{"item_id": f"firm{index}.example", "candidate": f"firm{index}.example",
+              "outcome": "", "gates": [], "score": 80.0}],
+            dag_id=f"quota-{index}", node_id="s-score", lane="partner",
+        )
+
+    args = Namespace(want=2, min_score=70.0, rounds=0, json=True, output="delivered.csv")
+    result = cli._quota_run(
+        args, store, shipped_lanes()["partner"], tmp_path / "delivered.csv", "q1", run_one,
+    )
+
+    # Progress lines go to stdout as the loop runs; the payload is the last one.
+    printed = capsys.readouterr().out
+    payload = json.loads(printed[printed.index("{"):])   # past the progress lines
+    assert payload["met"] is True and payload["delivered"] == 2
+    assert len(calls) == 2, "one firm a round means two rounds for two firms"
+    assert calls[0].queries != calls[1].queries, "and the second round widened"
+    assert result["rows"] == 2

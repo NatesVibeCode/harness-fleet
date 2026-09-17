@@ -25,8 +25,9 @@ own that enough is enough.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 
@@ -169,3 +170,72 @@ def verdict(store: Any, quota: Quota, rounds_run: Sequence[Round]) -> dict[str, 
         "rounds": [entry.as_dict() for entry in rounds_run],
         "summary": summary,
     }
+
+
+def write_deliverable(store: Any, quota: Quota, path: str | Path) -> int:
+    """The quota's answer: every delivered firm, at or above the bar, one table.
+
+    Not one run's packet. The operator asked for a number of firms, so the file
+    they open holds that number — whichever rounds produced them.
+    """
+    from .rungs import write_csv
+
+    rows = sorted(
+        delivered(store, quota.min_score),
+        key=lambda row: (-float(row.get("score") or 0.0), str(row.get("entity") or "")),
+    )
+    if quota.want:
+        rows = rows[: int(quota.want)]
+    return write_csv(path, rows)
+
+
+def run_to_quota(
+    store: Any,
+    lane: Any,
+    quota: Quota,
+    run_one: Callable[[Sequence[str], int], Any],
+    *,
+    deliverable: str | Path | None = None,
+    on_round: Callable[[Round], None] | None = None,
+) -> dict[str, Any]:
+    """Keep widening until the quota is delivered, or the lane runs out of room.
+
+    ``run_one`` is one complete research run over a slice of queries — the same
+    command the operator would have typed, so each round is a real run with its
+    own artifacts, its own place in the running list, and its own resume. This
+    loop only decides *what to search next* and *whether to stop*.
+
+    It stops the moment the quota is met, not at the round ceiling: the ceiling
+    is a bound on spending, not a target to reach.
+    """
+    entries: list[Round] = []
+    slices = rounds(lane, quota)
+    if not slices:
+        return verdict(store, quota, entries)
+
+    before = len(delivered(store, quota.min_score))
+    for index, queries in enumerate(slices, start=1):
+        entry = Round(number=index, queries=list(queries))
+        entry.delivered_total = len(delivered(store, quota.min_score))
+        if quota.wanted() and outstanding(store, quota) == 0:
+            entry.note = "quota already delivered"
+            entries.append(entry)
+            if on_round:
+                on_round(entry)
+            break
+        run_one(queries, index)
+        after = delivered(store, quota.min_score)
+        entry.delivered_now = len(after) - entry.delivered_total
+        entry.delivered_total = len(after)
+        entries.append(entry)
+        if on_round:
+            on_round(entry)
+        if quota.wanted() and outstanding(store, quota) == 0:
+            break
+
+    result = verdict(store, quota, entries)
+    result["added"] = len(delivered(store, quota.min_score)) - before
+    if deliverable:
+        result["deliverable"] = str(deliverable)
+        result["rows"] = write_deliverable(store, quota, deliverable)
+    return result

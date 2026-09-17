@@ -2159,6 +2159,47 @@ def funnel_stage_note(state: dict[str, Any]) -> str:
     return ("Funnel: " + " | ".join(parts)) if parts else ""
 
 
+def _quota_run(
+    args: argparse.Namespace,
+    store: Any,
+    lane: Any,
+    output: Path,
+    base_run_id: str,
+    run_one: Any,
+) -> dict[str, Any]:
+    """Deliver to the operator's quota, widening the lane's queries until it does.
+
+    ``run_one`` is one complete research run: this decides what to search next
+    and whether to stop, and nothing else.
+    """
+    from .quota import Quota, run_to_quota
+
+    quota = Quota(
+        want=int(getattr(args, "want", 0) or 0),
+        min_score=float(getattr(args, "min_score", 0.0) or 0.0),
+        max_rounds=int(args.rounds) if getattr(args, "rounds", None) else None,
+    )
+
+    def show(entry: Any) -> None:
+        print(
+            f"  round {entry.number}: {entry.delivered_now} new at or above "
+            f"{quota.min_score:g}, {entry.delivered_total} delivered"
+        )
+
+    result = run_to_quota(
+        store, lane, quota, run_one,
+        deliverable=output.with_name(output.stem + "_quota" + output.suffix),
+        on_round=show,
+    )
+    _emit(result, getattr(args, "json", False), result["summary"])
+    if result["owed"]:
+        print(
+            f"  short by {result['owed']}; add terms to the lane's query_terms, or "
+            f"lower --min-score, to reach {quota.want}"
+        )
+    return result
+
+
 def cmd_research(args: argparse.Namespace) -> None:
     """One command from a question to a ranked deliverable.
 
@@ -2174,6 +2215,28 @@ def cmd_research(args: argparse.Namespace) -> None:
     workspace = Path(getattr(args, "workspace_root", ".")).expanduser().resolve()
     output = Path(getattr(args, "output", None) or "accounts.csv").expanduser()
     lane = _load_lane_for_run(args, workspace)
+
+    # A quota turns one run into as many as the delivery needs. The loop is a
+    # driver around this same command, so each round is a real run: its own
+    # artifacts, its own place in the running list, its own resume.
+    if float(getattr(args, "want", 0) or 0) > 0:
+        if lane is None:
+            raise ValueError("--want needs a lane: the loop widens the lane's own queries")
+
+        base_run_id = (
+            getattr(args, "run_id", None) or f"quota-{time.time_ns()}-{uuid.uuid4().hex[:6]}"
+        )
+
+        def one_round(queries: Sequence[str], index: int) -> None:
+            round_args = argparse.Namespace(**vars(args))
+            round_args.query = list(queries)
+            round_args.want = 0
+            round_args.run_id = base_run_id if index == 1 else f"{base_run_id}-r{index}"
+            print(f"\nQuota round {index}: {len(queries)} queries")
+            cmd_research(round_args)
+
+        _quota_run(args, store, lane, output, base_run_id, one_round)
+        return
     if lane is not None:
         # The lane supplies defaults; an explicit flag still wins.
         args.query = list(args.query or []) or expand_lane_queries(lane) or list(lane.seeds)
@@ -3256,6 +3319,12 @@ def build_parser() -> argparse.ArgumentParser:
         "research", help="One command from a question to a ranked deliverable (discover, bundle, score, export)"
     )
     research.add_argument("--query", action="append", help="Search query (repeatable; a lane may supply these)")
+    research.add_argument("--want", type=int, default=0,
+                          help="Deliver this many records at or above --min-score, widening until it does")
+    research.add_argument("--min-score", type=float, default=0.0,
+                          help="The score a delivered record has to reach")
+    research.add_argument("--rounds", type=int, default=0,
+                          help="Round ceiling for a quota run (default: until the lane's queries run out)")
     research.add_argument("--lane", help="Lane to run: lanes/<name>.json in the workspace (supplies queries, sources, filters, preset)")
     research.add_argument("--backend", action="append", help="Search backend (repeatable; default ddgs + hn)")
     research.add_argument("--preset", help="Task preset to score with (default: account-research)")
