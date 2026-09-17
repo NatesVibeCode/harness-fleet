@@ -1070,16 +1070,22 @@ def _lane_dag_spec(args: argparse.Namespace, lane_name: str):
         available = ", ".join(sorted(load_available_lanes(root))) or "none installed"
         raise DagError(f"lane '{lane_name}' is not available (have: {available})")
     from_run = getattr(args, "from_run", None)
-    if not from_run:
+    from_items = getattr(args, "from_items", None)
+    if not from_run and not from_items:
         raise DagError(
-            f"--lane {lane_name} gates the records of a run: give --from-run <run_id>"
+            f"--lane {lane_name} gates a population: give --from-run <run_id> for a "
+            "scored run, or --from-items <file> for the candidates a run gathered "
+            "(a research run writes runs/<run_id>/captured.jsonl)"
         )
     spec = lane_spec(
         lane,
         from_run=from_run,
+        from_items=from_items,
         name=f"lane-{lane_name}",
         workspace=root,
         profile_path=getattr(args, "profile", None),
+        gates=not getattr(args, "no_funnel", False),
+        walk=not getattr(args, "no_enrich", False),
     )
     return DagSpec.model_validate(spec)
 
@@ -3231,6 +3237,11 @@ def build_parser() -> argparse.ArgumentParser:
     dag.add_argument("--spec", help="DAG spec JSON file")
     dag.add_argument("--lane", help="Run this lane's ladder as a DAG (needs --from-run)")
     dag.add_argument("--from-run", help="Existing run id the lane's first rung gates")
+    dag.add_argument("--from-items", help="Captured items file the first rung gates")
+    dag.add_argument("--no-funnel", action="store_true",
+                     help="Run the lane's walks without its gates")
+    dag.add_argument("--no-enrich", action="store_true",
+                     help="Run the lane's gates without its walks")
     dag.add_argument("--profile", help="Ideal partner profile the gates come from")
     dag.add_argument("--emit-spec", action="store_true",
                      help="Print the compiled lane spec instead of running it")

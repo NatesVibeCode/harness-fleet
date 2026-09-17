@@ -455,6 +455,29 @@ def test_the_cli_compiles_a_lane_ladder_into_a_spec(tmp_path, capsys):
     ]
 
 
+def test_the_cli_starts_a_lane_from_the_items_a_run_gathered(tmp_path, capsys):
+    """The research path: a funnel over captured.jsonl, no run required."""
+    from argparse import Namespace
+
+    from harness_fleet import cli
+    from harness_fleet.discover import write_items_jsonl
+    from harness_fleet.models import InputItem
+
+    items = tmp_path / "captured.jsonl"
+    write_items_jsonl([InputItem(item_id="acme.co.uk", text=INTEGRATOR)], items)
+    cli.cmd_dag(Namespace(
+        spec=None, lane="partner", from_run=None, from_items=str(items),
+        emit_spec=True, dag_id=None, dry_run=False, no_resume=False, profile=None,
+        no_funnel=False, no_enrich=False,
+        workspace_root=str(tmp_path), db=str(tmp_path / "t.db"), json=True,
+    ))
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["nodes"][0]["from_items"] == str(items)
+    assert [node["id"] for node in payload["nodes"]][:3] == [
+        "g0-result", "x0-result", "c0-result",
+    ]
+
+
 def test_the_cli_refuses_a_lane_with_no_run_to_gate(tmp_path):
     from argparse import Namespace
 
@@ -463,8 +486,9 @@ def test_the_cli_refuses_a_lane_with_no_run_to_gate(tmp_path):
 
     with pytest.raises(DagError, match="--from-run"):
         cli.cmd_dag(Namespace(
-            spec=None, lane="partner", from_run=None, emit_spec=False,
+            spec=None, lane="partner", from_run=None, from_items=None, emit_spec=False,
             dag_id=None, dry_run=False, no_resume=False, profile=None,
+            no_funnel=False, no_enrich=False,
             workspace_root=str(tmp_path), db=str(tmp_path / "t.db"), json=True,
         ))
 
