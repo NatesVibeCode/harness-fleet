@@ -315,6 +315,35 @@ def lane_for_run(store: HarnessStore, run_id: str, runs_dir: str | Path | None =
     return str(_lane_from_report(Path(runs_dir or "."), run_id) or "")
 
 
+def lane_presentation(lane: str, runs_dir: str | Path | None = None) -> dict[str, Any]:
+    """What this lane calls its rows, for a board that knows no products.
+
+    The lane declares this, so the page renders a lane it has never heard of and
+    adding one needs no view code. A workspace lane wins over the shipped one, the
+    same way it does for a run.
+
+    A board must never fail to open because a lane file is unreadable, so a lane
+    that cannot be resolved, or one that declares nothing, simply gets no block
+    and the page falls back to its own generic nouns.
+    """
+    slug = str(lane or "").strip()
+    if not slug:
+        return {}
+    from .lanes import load_available_lanes, shipped_lanes
+
+    # Workspace first (which already includes the shipped lanes), then shipped
+    # alone: a broken file in one workspace must not hide a good lane.
+    root = Path(runs_dir).parent if runs_dir else Path(".")
+    for loader in (lambda: load_available_lanes(root), shipped_lanes):
+        try:
+            found = loader().get(slug)
+        except Exception:  # an unreadable lane is a lane this page does not dress
+            continue
+        if found is not None:
+            return found.presentation.model_dump(mode="json")
+    return {}
+
+
 def ledger_view(store: HarnessStore, *, limit: int = 200, trend: int = 15) -> dict[str, Any]:
     """The running list, as the page reads it: firms, counts, and who moved."""
     from .ledger import Ledger
@@ -491,6 +520,9 @@ def build_board_payload(
             "input_path": snapshot.get("input_path"),
             "task": getattr(task, "name", None),
             "lane": lane,
+            # The lane's own nouns, section heading and colours. The board reads
+            # these instead of branching on the lane's name.
+            "presentation": lane_presentation(lane, runs_dir),
             "task_revision": snapshot.get("task_revision_id"),
             "instructions": getattr(task, "instructions", None),
         },

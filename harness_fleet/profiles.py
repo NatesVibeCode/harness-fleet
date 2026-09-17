@@ -70,9 +70,8 @@ class _Registry:
     def _load_builtins(self) -> None:
         """Import the contracts this distribution ships, once, lazily.
 
-        A module that cannot import is skipped rather than fatal: career is a
-        separate distribution, and a harness-only install still onboards the
-        objects it has.
+        A module that cannot import is skipped rather than fatal, so an install
+        carrying only some of the lane contracts still onboards the objects it has.
         """
         if self._loaded:
             return
@@ -80,7 +79,7 @@ class _Registry:
         for module_name, class_name in (
             ("harness_fleet.profile", "IdealCompanyProfile"),
             ("harness_fleet.partner", "IdealPartnerProfile"),
-            ("career_fleet.profile", "IdealEmployerProfile"),
+            ("harness_fleet.profile", "IdealEmployerProfile"),
         ):
             try:
                 module = __import__(module_name, fromlist=[class_name])

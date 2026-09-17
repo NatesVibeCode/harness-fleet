@@ -60,12 +60,14 @@ rank,item_id,score,fit_tier,identified_practice,reasoning,primary_quote_text,quo
 
 ## Sourcing: build the candidate list first
 
-`partners find` runs the packaged sourcing plan (`harness_fleet/data/partner_sources.json`) cold, and
-`partners enrich` fills in one partner you already know about. Both write the same CSV contract.
+`partners find` is retired, and with it the packaged partner plan: cold discovery is
+the partner **lane** now, whose queries fan out across every configured backend while
+the shared surface plan decides which of a partner's pages to walk. `partners enrich`
+fills in one partner you already know about. Both write the same CSV contract.
 
 ```bash
 # Cold discovery: search every configured backend, keep only attributed hits.
-harness-fleet partners find --tech Kafka --vertical fintech --max 8 --output partners.csv
+harness-fleet research --lane partner --output partners.csv
 
 # Enrich one partner into a single multi-source dossier row.
 harness-fleet partners enrich trace3.com --max-pages 8 --output partner-trace3.csv

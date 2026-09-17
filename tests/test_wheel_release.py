@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 REPOSITORY = Path(__file__).resolve().parents[1]
-CAREER_SKILL = "career_fleet/resources/skill/career-fleet/SKILL.md"
+CAREER_SKILL = "harness_fleet/resources/career_skill/SKILL.md"
 
 
 @pytest.fixture(scope="module")
@@ -126,7 +126,7 @@ def test_missing_advertised_skill_fails_the_release_gate(check_wheel, tmp_path):
     snapshot = tmp_path / "snapshot"
     snapshot.mkdir()
     _write_skill_skeleton(snapshot, set(check_wheel.REQUIRED_RESOURCES) - {CAREER_SKILL}, check_wheel)
-    with pytest.raises(ValueError, match="career_fleet/resources/skill/career-fleet/SKILL.md"):
+    with pytest.raises(ValueError, match="harness_fleet/resources/career_skill/SKILL.md"):
         check_wheel.resource_manifest(snapshot)
 
 
@@ -145,6 +145,11 @@ def test_gate_fails_closed_before_building(check_wheel, tmp_path, monkeypatch, c
     repository = _mini_repository(tmp_path)
     _write_skill_skeleton(repository, set(check_wheel.REQUIRED_RESOURCES), check_wheel)
     _git(repository, "add", "harness_fleet")
+    # Every advertised resource now lives inside the distribution's own package,
+    # so the case this gate exists for has to be built deliberately: the file is
+    # on disk but not in the clean snapshot, which is an intended new candidate
+    # that only `--include` can carry into the build.
+    _git(repository, "rm", "--cached", "--quiet", CAREER_SKILL)
     monkeypatch.setattr(check_wheel, "__file__", str(repository / "scripts/check_wheel.py"))
     monkeypatch.setattr(sys, "argv", ["check_wheel.py", "--distribution", "harness-fleet"])
     with pytest.raises(SystemExit) as exc:

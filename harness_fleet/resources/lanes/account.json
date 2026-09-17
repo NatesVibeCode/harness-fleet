@@ -2,6 +2,19 @@
   "name": "account",
   "description": "Target accounts for a technical ICP: a competitor's customers — the firms that buy in this space, and what they run",
   "onboarding_profile": "ideal_company",
+  "presentation": {
+    "one": "Account",
+    "many": "Accounts",
+    "detail": "Gap",
+    "primary": "Account",
+    "section_title": "Identified technical gap",
+    "action_label": "Site ↗",
+    "action_label_full": "Visit Website ↗",
+    "accent": "#1d4ed8",
+    "accent_soft": "#eff6ff",
+    "accent_line": "#bfdbfe",
+    "mark": "AC"
+  },
   "queries": [
     "\"case study\" \"{tech}\" (implementation OR migration) -site:medium.com",
     "\"customer story\" \"{tech}\" (\"we migrated\" OR \"our data platform\")",

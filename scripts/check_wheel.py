@@ -15,7 +15,7 @@ SKILLS = {
     "harness-fleet": "harness_fleet/resources/harness_skill",
     "account-fleet": "harness_fleet/resources/account_skill",
     "partner-fleet": "harness_fleet/resources/partner_skill",
-    "career-fleet": "career_fleet/resources/skill/career-fleet",
+    "career-fleet": "harness_fleet/resources/career_skill",
 }
 RESOURCE_DIRS = (*SKILLS.values(), "harness_fleet/migrations", "harness_fleet/data",
                  "harness_fleet/resources/lanes", "harness_fleet/resources/examples/account_research",
@@ -127,7 +127,7 @@ import importlib
 import json
 import sys
 from pathlib import Path
-for package in ("harness_fleet", "career_fleet"):
+for package in ("harness_fleet",):
     module = importlib.import_module(package)
     assert Path(module.__file__).is_relative_to(Path(sys.prefix)), module.__file__
 import harness_fleet

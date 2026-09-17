@@ -235,7 +235,7 @@ same engine the CLI drives.
 
 | Item | Where | Decision |
 | --- | --- | --- |
-| career's own product CLI as the installed entry point | `career_fleet/cli.py` + `pyproject.toml` | retire in favour of the shared surface; its lanes become commands on it |
+| career's own product CLI as the installed entry point | `career_fleet/cli.py` + `pyproject.toml` | **done, and further than planned** — the CLI was retired and then the package was deleted outright. The four company-screening lanes were re-wired as nothing: no CLI, entry point or MCP tool called them, and only their own tests kept them importable. The one live contract, `IdealEmployerProfile`, moved to `harness_fleet/profile.py`. |
 | career's forked engine modules | was `harness_fleet/*` | already deleted, replaced by the shared files |
 | `career-lanes` entry-point alias | `branding.py` | keep (cheap resolution), revisit if unused |
 | `free-fleet`/`bulk-lanes` migration notes and `*.db` names | READMEs, `FREE-ACCESS.md` | docs stay (historical), code has no support for them |

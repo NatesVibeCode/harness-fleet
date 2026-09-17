@@ -17,7 +17,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from pydantic import field_validator
+from pydantic import Field, field_validator
 
 from .gates import KIND_QUESTIONS, SNIPPET, LadderRung, validate_ladder
 from .models import ClosedModel
@@ -81,6 +81,37 @@ class LaneFunnel(ClosedModel):
         return list(self.ladder)
 
 
+class LanePresentation(ClosedModel):
+    """What a lane calls its rows, and how a board should dress them.
+
+    A lane is "the whole of a product's specificity ... and how it presents the
+    result", so this is the one place that knows a partner run says "Partner" and
+    a career run says "Role". The shared board reads these strings and carries no
+    branch per product, which is what keeps a new lane a data change rather than
+    an edit to the viewer.
+    """
+
+    #: The singular and plural a lane's rows are named by, the label on the column
+    #: that describes one row, and the entity a row is *about* when that differs
+    #: from the row itself (a career run's rows are roles; the employer is the
+    #: entity a reader looks them up by).
+    one: str = "Record"
+    many: str = "Records"
+    detail: str = "Detail"
+    primary: str = "Record"
+    #: The heading over the row's verdict, in the lane's own words.
+    section_title: str = "Strategic verdict"
+    #: The link out: short on a card, spelled out in the drawer.
+    action_label: str = "Site ↗"
+    action_label_full: str = "Visit Website ↗"
+    #: The lane's accent, as three CSS colour values. Empty keeps the board's.
+    accent: str = ""
+    accent_soft: str = ""
+    accent_line: str = ""
+    #: The two-letter mark in the header.
+    mark: str = ""
+
+
 class Lane(ClosedModel):
     """One product's configuration over the shared engine."""
 
@@ -139,7 +170,11 @@ class Lane(ClosedModel):
     #: The elimination half: what this lane accepts, and what a candidate has to
     #: satisfy to earn the next page visit. Defaults to the engine's ladder.
     funnel: LaneFunnel = LaneFunnel()
-    #: Presentation.
+    #: What this lane calls its rows and which colours it wears. Declared here
+    #: rather than branched on inside the board, so the board never learns which
+    #: products exist and a new lane needs no view code.
+    presentation: LanePresentation = Field(default_factory=LanePresentation)
+    #: How many rows this lane keeps.
     top: int = 25
     min_score: float | None = None
     revision: int = 1

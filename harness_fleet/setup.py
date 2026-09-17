@@ -125,13 +125,11 @@ def setup_workspace(
         raise ValueError("setup database must stay below the workspace root")
 
     # Every first-party skill this checkout bundles rides along with setup, so a
-    # fresh workspace gets the playbook for each preset it can run. Discovery is
-    # by layout rather than a hardcoded list because the distributions differ:
-    # the shared engine skills sit in harness_fleet/resources/<name>_skill, while
-    # a variant's own primary skill lives in its package's resources/skill/<name>
-    # (career-fleet). Anything absent is skipped, so the same code serves every
-    # distribution — account-fleet installed neither the partner skill nor its
-    # own until this was made generic.
+    # fresh workspace gets the playbook for each lane it can run. Discovery is by
+    # layout rather than a hardcoded list, because a distribution may bundle more
+    # than the shared engine skill: the lane skills sit in
+    # harness_fleet/resources/<name>_skill and are installed as <name>-fleet.
+    # Anything absent is skipped, so the same code serves every distribution.
     package_root = Path(__file__).resolve().parent
     engine_skill = bundled_skill_path().resolve()
     bundled_skills: list[tuple[Path, str]] = []

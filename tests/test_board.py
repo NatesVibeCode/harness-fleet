@@ -146,6 +146,40 @@ def test_board_page_ships_with_the_package():
         assert verb not in html
 
 
+def test_the_payload_carries_the_lane_presentation(tmp_path):
+    """The board knows no products, so each lane has to bring its own nouns."""
+    from harness_fleet.board import lane_presentation
+    from harness_fleet.ledger import Ledger
+
+    assert lane_presentation("partner")["many"] == "Partners"
+    assert lane_presentation("career")["primary"] == "Employer"
+    assert lane_presentation("not-a-lane") == {}, "an unknown lane dresses generically"
+    assert lane_presentation("") == {}
+
+    db = _partner_run(tmp_path, "presented")
+    Ledger(HarnessStore(db)).record(
+        [{"item_id": "cloud_solutions.io", "candidate": "cloud_solutions.io", "outcome": "read",
+          "gates": [], "score": 90.0, "run_id": "presented"}],
+        dag_id="presented", node_id="s-score", lane="career",
+    )
+    payload = build_board_payload(db, "presented")
+    assert payload["run"]["lane"] == "career"
+    assert payload["run"]["presentation"]["one"] == "Role"
+    assert payload["run"]["presentation"]["section_title"] == "Role fit & focus"
+
+
+def test_the_board_does_not_know_any_lane_by_name():
+    """A viewer that names products is a viewer somebody edits for every new one.
+
+    The lane declares its nouns, heading, colours and mark; the page reads them.
+    This is the assertion that keeps it that way, because the branch is an easy
+    thing to add back the next time one lane needs something.
+    """
+    html = BOARD_HTML_PATH.read_text(encoding="utf-8")
+    for forbidden in ("NOUNS", "run.lane ===", 'data-lane="partner"', 'lane === "career"'):
+        assert forbidden not in html, f"the board branches on a lane again: {forbidden}"
+
+
 def test_http_endpoints_and_host_guard(tmp_path):
     db = _partner_run(tmp_path)
     BoardHandler.db_path = db
