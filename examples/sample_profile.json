@@ -17,19 +17,7 @@
     "Legacy Mainframe",
     "Salesforce Apex Only"
   ],
-  "dealbreakers": {
-    "max_headcount": 80,
-    "require_verified_headcount": false,
-    "policy": "any",
-    "disallowed_locations": [
-      "San Francisco in-office mandate",
-      "New York in-office mandate"
-    ],
-    "reject_thin_wrappers": true,
-    "reject_pure_quota": true,
-    "min_timezone_overlap_hours": 4.0,
-    "candidate_timezone": null
-  },
+  "size_max": 80,
   "hiring_catalysts": [
     "Scaling beyond founder-led sales",
     "Architectural migration off legacy systems",

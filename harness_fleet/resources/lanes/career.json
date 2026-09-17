@@ -2,6 +2,19 @@
   "name": "career",
   "description": "Enterprise sales and sales-ops roles, scored on what the posting can prove",
   "onboarding_profile": "ideal_employer",
+  "presentation": {
+    "one": "Role",
+    "many": "Roles",
+    "detail": "Role",
+    "primary": "Employer",
+    "section_title": "Role fit & focus",
+    "action_label": "Apply ↗",
+    "action_label_full": "Apply / View Requisition ↗",
+    "accent": "#7c3aed",
+    "accent_soft": "#f5f3ff",
+    "accent_line": "#ddd6fe",
+    "mark": "CA"
+  },
   "queries": [
     "\"{role}\" remote (\"apply now\" OR \"job description\" OR \"join our team\")",
     "\"{role}\" \"responsibilities\" \"qualifications\" remote",

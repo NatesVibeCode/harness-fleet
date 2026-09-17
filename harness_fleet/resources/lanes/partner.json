@@ -2,6 +2,19 @@
   "name": "partner",
   "description": "Net-new systems integrators and consultancies, found directly and qualified layer by layer",
   "onboarding_profile": "ideal_partner",
+  "presentation": {
+    "one": "Partner",
+    "many": "Partners",
+    "detail": "Practice",
+    "primary": "Partner",
+    "section_title": "Revenue hypothesis",
+    "action_label": "Site ↗",
+    "action_label_full": "Visit Website ↗",
+    "accent": "#059669",
+    "accent_soft": "#ecfdf5",
+    "accent_line": "#a7f3d0",
+    "mark": "PA"
+  },
   "queries": [
     "\"{tech}\" consultancy \"our clients\" (implementation OR migration)",
     "\"{tech}\" systems integrator consulting services",

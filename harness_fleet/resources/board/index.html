@@ -19,16 +19,9 @@
     --shadow-lg:0 12px 32px rgba(16,24,40,.12);
     --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
   }
-  /* ---------- lane themes ---------- */
-  body[data-lane="partner"] {
-    --accent:#059669; --accent-soft:#ecfdf5; --accent-line:#a7f3d0;
-  }
-  body[data-lane="account"] {
-    --accent:#1d4ed8; --accent-soft:#eff6ff; --accent-line:#bfdbfe;
-  }
-  body[data-lane="career"] {
-    --accent:#7c3aed; --accent-soft:#f5f3ff; --accent-line:#ddd6fe;
-  }
+  /* Lane colours are not stylesheet rules. A lane declares its accent and the
+     page applies it from the payload, so a lane this page has never heard of
+     still gets its own look; the defaults above are what an undeclared one keeps. */
   * { box-sizing:border-box; }
   html,body { margin:0; padding:0; }
   body {
@@ -355,26 +348,38 @@
 
   var TIER_COLOR = { tier_1:"var(--ok)", tier_2:"var(--info)", tier_3:"var(--warn)", unfit:"var(--bad)" };
 
-  /* What this run's rows are called, taken from the run's own task name rather
-     than hardcoded to one product: a partner run shows partners, an account run
-     accounts, a career run roles. The board is a viewer for every task. */
-  var NOUNS = {
-    partner:["Partner","Partners","Practice","Partner"],
-    account:["Account","Accounts","Gap","Account"],
-    // A career run's rows are keyed by the employer and each record is a role.
-    career:["Role","Roles","Role","Employer"],
-  };
-  /* The lane first, because it is the fact: a lane and a preset are
-     independent (career's preset is `triage`), so reading the noun off the
-     task's name worked for partners by luck and called a career run's roles
-     "Records". The prefix stays as a fallback for a run with no lane recorded. */
+  /* The lane's presentation, as the payload carries it. This page knows no
+     product names: a partner run says "Partner" and a career run says "Role"
+     because their own lane files say so. A lane that declares nothing — or one
+     this page has never seen — renders with the generic nouns below. */
+  function presentation() { return ((STATE.payload || {}).run || {}).presentation || {}; }
+
   function recordNoun() {
-    var run = (STATE.payload || {}).run || {};
-    var lane = String(run.lane || "").toLowerCase();
-    if (NOUNS[lane]) return { one:NOUNS[lane][0], many:NOUNS[lane][1], detail:NOUNS[lane][2], primary:NOUNS[lane][3] || NOUNS[lane][0] };
-    var task = String(run.task || "").toLowerCase();
-    for (var key in NOUNS) { if (task.indexOf(key) === 0) return { one:NOUNS[key][0], many:NOUNS[key][1], detail:NOUNS[key][2], primary:NOUNS[key][3] || NOUNS[key][0] }; }
-    return { one:"Record", many:"Records", detail:"Detail", primary:"Record" };
+    var look = presentation();
+    return {
+      one: look.one || "Record",
+      many: look.many || "Records",
+      detail: look.detail || "Detail",
+      primary: look.primary || look.one || "Record"
+    };
+  }
+
+  function titleCase(str) {
+    return (str || "").split(/[-_\s]+/).filter(Boolean).map(function (w) {
+      return w.charAt(0).toUpperCase() + w.slice(1);
+    }).join(" ");
+  }
+
+  /* A lane's accent and mark, applied from the payload rather than from a rule
+     per lane name. An undeclared lane keeps what the stylesheet already set. */
+  function applyPresentation() {
+    var look = presentation();
+    var root = document.documentElement;
+    if (look.accent) root.style.setProperty("--accent", look.accent);
+    if (look.accent_soft) root.style.setProperty("--accent-soft", look.accent_soft);
+    if (look.accent_line) root.style.setProperty("--accent-line", look.accent_line);
+    var mark = document.querySelector(".brand-mark");
+    if (mark && look.mark) mark.textContent = look.mark;
   }
   var TIER_LABEL = { tier_1:"Tier 1", tier_2:"Tier 2", tier_3:"Tier 3", unfit:"Unfit" };
 
@@ -745,7 +750,9 @@
           if (!actionUrl && partner.id && partner.id.indexOf(".") !== -1 && partner.id.indexOf("/") === -1) {
             actionUrl = "https://" + partner.id;
           }
-          var actionLabel = (p.run.lane === "career" || (partner.answers || {}).requisition_url) ? "Apply ↗" : "Site ↗";
+          var actionLabel = (partner.answers || {}).requisition_url
+            ? "Apply ↗"
+            : (presentation().action_label || "Site ↗");
 
           var cardTags = [];
           cardTags.push(el("span", { class:"tag soft mini", text:(partner.quotes || []).length + " quotes" }));
@@ -1077,7 +1084,9 @@
     if (!actionUrl && partner.id && partner.id.indexOf(".") !== -1 && partner.id.indexOf("/") === -1) {
       actionUrl = "https://" + partner.id;
     }
-    var actionLabel = (p.run.lane === "career" || (partner.answers || {}).requisition_url) ? "Apply / View Requisition ↗" : "Visit Website ↗";
+    var actionLabel = (partner.answers || {}).requisition_url
+      ? "Apply / View Requisition ↗"
+      : (presentation().action_label_full || "Visit Website ↗");
 
     host.appendChild(el("div", { class:"drawer-head" }, [
       el("div", { style:"flex:1;min-width:0" }, [
@@ -1101,10 +1110,7 @@
       || (partner.claims || {}).identified_gap;
 
     if (hypothesisText) {
-      var sectionTitle = p.run.lane === "partner" ? "Revenue hypothesis"
-        : p.run.lane === "account" ? "Identified technical gap"
-        : p.run.lane === "career" ? "Role fit & focus"
-        : "Strategic verdict";
+      var sectionTitle = presentation().section_title || "Strategic verdict";
       body.appendChild(el("div", { class:"section" }, [
         el("div", { class:"section-head" }, [
           el("h4", { class:"section-title", style:"font-size:14px", text:sectionTitle }),
@@ -1379,17 +1385,8 @@
       STATE.payload = res.body;
       STATE.selected = null;
       var p = STATE.payload;
-      var lane = (p.run.lane || "").toLowerCase();
-      document.body.setAttribute("data-lane", lane || "partner");
-      var mark = document.querySelector(".brand-mark");
-      if (mark) {
-        mark.textContent = lane === "career" ? "CA" : lane === "account" ? "AC" : "PA";
-      }
-      function titleCase(str) {
-        return (str || "").split(/[-_\s]+/).filter(Boolean).map(function (w) {
-          return w.charAt(0).toUpperCase() + w.slice(1);
-        }).join(" ");
-      }
+      document.body.setAttribute("data-lane", (p.run.lane || "").toLowerCase());
+      applyPresentation();
       var boardTitle = (p.run.lane ? titleCase(p.run.lane) + " Lane" : (p.run.task ? titleCase(p.run.task) : "Results")) + " Board";
       document.title = boardTitle + " · " + p.run.run_id;
       var brandTitle = document.getElementById("brandTitle");
@@ -1418,17 +1415,8 @@
     STATE.payload = window.__INITIAL_BOARD_DATA__;
     STATE.runs = [{ run_id: STATE.payload.run.run_id, status: STATE.payload.run.status, total_items: (STATE.payload.stats || {}).records || 0 }];
     var p = STATE.payload;
-    var lane = (p.run.lane || "").toLowerCase();
-    document.body.setAttribute("data-lane", lane || "partner");
-    var mark = document.querySelector(".brand-mark");
-    if (mark) {
-      mark.textContent = lane === "career" ? "CA" : lane === "account" ? "AC" : "PA";
-    }
-    function titleCase(str) {
-      return (str || "").split(/[-_\s]+/).filter(Boolean).map(function (w) {
-        return w.charAt(0).toUpperCase() + w.slice(1);
-      }).join(" ");
-    }
+    document.body.setAttribute("data-lane", (p.run.lane || "").toLowerCase());
+    applyPresentation();
     var boardTitle = (p.run.lane ? titleCase(p.run.lane) + " Lane" : (p.run.task ? titleCase(p.run.task) : "Results")) + " Board";
     document.title = boardTitle + " · " + p.run.run_id;
     var brandTitle = document.getElementById("brandTitle");

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, ClassVar, Literal
+from typing import Any, ClassVar
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
@@ -153,58 +153,6 @@ class IdealCompanyProfile(BaseModel):
         )
 
 
-class Dealbreakers(BaseModel):
-    """Hard limits an employer profile states, every one of them optional.
-
-    A dealbreaker is a claim about the *employer*, not about the role, and an
-    unset field leaves its test off rather than inventing a bound.
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    max_headcount: int | None = Field(
-        default=None,
-        ge=1,
-        description="Optional maximum company headcount. Leave unset to avoid assuming a size preference.",
-    )
-    require_verified_headcount: bool = Field(
-        default=False,
-        description=(
-            "When true, an unknown or non-numeric headcount disqualifies a company; "
-            "leave false when sources such as ATS boards do not publish headcount."
-        ),
-    )
-    policy: Literal["remote_only", "remote_or_hybrid", "any"] = Field(
-        default="any",
-        description=(
-            "Optional workplace policy. 'any' is the neutral default; choose "
-            "remote_only or remote_or_hybrid only when the user requests it."
-        ),
-    )
-    disallowed_locations: list[str] = Field(
-        default_factory=list,
-        description="Mandatory in-office locations that trigger disqualification.",
-    )
-    reject_thin_wrappers: bool = Field(
-        default=False,
-        description="Reject shallow AI wrappers with no proprietary state, wedge, or moat.",
-    )
-    reject_pure_quota: bool = Field(
-        default=False,
-        description="Reject pure cold outbound bag-carrying or narrow execution silos.",
-    )
-    min_timezone_overlap_hours: float = Field(
-        default=4.0,
-        ge=0.0,
-        le=8.0,
-        description="Minimum domestic/regional timezone overlap required for effective sync.",
-    )
-    candidate_timezone: str | None = Field(
-        default=None,
-        description="Optional IANA timezone for the candidate, used with timezone metadata from a posting.",
-    )
-
-
 class IdealEmployerProfile(BaseModel):
     """The durable IEP contract for career research.
 
@@ -240,10 +188,6 @@ class IdealEmployerProfile(BaseModel):
         default_factory=list,
         description="Technologies indicating legacy bloat or misaligned engineering culture.",
     )
-    dealbreakers: Dealbreakers = Field(
-        default_factory=Dealbreakers,
-        description="Hard dealbreakers that disqualify companies immediately.",
-    )
     hiring_catalysts: list[str] = Field(
         default_factory=list,
         description="Catalyst events that create urgent leadership budget and mandate.",
@@ -261,7 +205,8 @@ class IdealEmployerProfile(BaseModel):
     )
     #: Firmographics the gates run on. A lane ships no thresholds, so this is
     #: where the operator states theirs; an unset field leaves its gate off
-    #: rather than inventing a bound.
+    #: rather than inventing a bound. These are also the only "dealbreakers" the
+    #: engine can actually run, which is why the rest are not fields here.
     size_min: int = Field(default=0, ge=0, description="Employer headcount floor; 0 leaves it unbounded.")
     size_max: int = Field(default=0, ge=0, description="Employer headcount ceiling; 0 leaves it unbounded.")
     target_territories: list[str] = Field(
@@ -296,13 +241,18 @@ class IdealEmployerProfile(BaseModel):
 
         An employer is never asked the partner question — "is this a delivery
         firm?" — because a product company employs people too, so this lane asks
-        nothing of the kind. The ceiling falls back to the dealbreaker this
-        profile already states, so an author who filled that in gets the gate.
+        nothing of the kind. Size, territory and vertical are the whole of it.
+
+        What a candidate wants *beyond* firmographics — no in-office mandate, no
+        pure quota-carrying, nothing thinner than a wrapper — is a preference.
+        Preferences are values in this document (``negative_stack``,
+        ``wedge_capabilities``, ``hiring_catalysts``); they are not fields the
+        engine ships to every install, which is what a `dealbreakers` block was.
         """
         return {
             "allows": "any",
             "size_min": self.size_min,
-            "size_max": self.size_max or self.dealbreakers.max_headcount or 0,
+            "size_max": self.size_max,
             "locations": tuple(self.target_territories),
             "verticals": tuple(self.target_industries),
         }

@@ -1,14 +1,20 @@
 #!/usr/bin/env python3
-"""Check the shared harness-fleet contract across local sibling repositories.
+"""Check that the shared harness-fleet contract holds in this checkout.
 
 This is intentionally check-only. It never copies or overwrites source files.
-career-fleet may extend its first migration, shared models, and operations
-documentation with profile metadata, so those career-specific overlays are
-normalized or intentionally excluded from byte-for-byte comparison.
-Package-specific aliases, bundled skills, and task presets are also
-variant-specific and are intentionally outside the shared-file allowlist. The
-profile persistence path is shared, so its schema, store, engine, CLI, MCP,
-and setup files are checked explicitly.
+
+The products were once sibling repositories and this compared them byte for
+byte. They have been consolidated, so the default is one checkout — and a
+byte-for-byte comparison of a repository against itself proves nothing. What
+replaced it are the two things that can still drift inside a single tree: every
+path the shared surface names must exist, and the copies of each bundled skill
+must still agree. Pass ``--repo`` more than once to get the cross-checkout
+comparison back for an explicit set of checkouts.
+
+The allowlist is still what makes the contract legible: it names the board, the
+CLI, the connector set and the task vocabulary that every lane shares, so the
+profile persistence path — schema, store, engine, CLI, MCP and setup — is
+checked explicitly rather than assumed.
 """
 from __future__ import annotations
 
@@ -151,6 +157,95 @@ def _check_exact_files(repos: list[Path]) -> bool:
             elif _normalized_digest(candidate, relative) != expected_digest:
                 print(f"DRIFT  {relative}: {baseline} != {repo}")
                 ok = False
+    return ok
+
+
+#: One bundled skill lives in up to three places: the repo copy an agent reads,
+#: the copy this checkout's own agents use, and the package copy setup installs
+#: from. A fix applied to one and not the others is a workspace walking a
+#: procedure the installed package does not have.
+BUNDLED_SKILLS: dict[str, tuple[str, ...]] = {
+    "harness-fleet": (
+        "skills/harness-fleet",
+        ".agents/skills/harness-fleet",
+        "harness_fleet/resources/harness_skill",
+    ),
+    "account-fleet": (
+        "skills/account-fleet",
+        ".agents/skills/account-fleet",
+        "harness_fleet/resources/account_skill",
+    ),
+    "partner-fleet": (
+        "skills/partner-fleet",
+        ".agents/skills/partner-fleet",
+        "harness_fleet/resources/partner_skill",
+    ),
+    "career-fleet": (
+        "skills/career-fleet",
+        ".agents/skills/career-fleet",
+        "harness_fleet/resources/career_skill",
+    ),
+}
+
+
+def _check_shared_surface(repo: Path) -> bool:
+    """Every path the shared contract names has to be here.
+
+    The allowlist made porting a fix to every product mechanical. It still has a
+    job now that the products are one: a rename or a deletion that drops one of
+    these paths is a change to the contract, and saying so is the difference
+    between a list that is maintained and a list that has quietly rotted.
+    """
+    missing = [relative for relative in EXACT_FILES if not (repo / relative).is_file()]
+    for relative in missing:
+        print(f"MISSING {relative}: named by the shared contract but not present")
+    if missing:
+        return False
+    print(f"PASS   shared surface present: {len(EXACT_FILES)} file(s)")
+    return True
+
+
+def _check_bundled_skills(repo: Path) -> bool:
+    """The copies of one skill must say the same thing.
+
+    A skill ships from the package copy, is read by an agent from the repo copies,
+    and is what setup installs into a fresh workspace. Three copies with nothing
+    comparing them is how they come to disagree.
+    """
+    ok = True
+    checked = 0
+    for name, copies in BUNDLED_SKILLS.items():
+        present = [
+            (relative, repo / relative)
+            for relative in copies
+            if (repo / relative).is_dir()
+        ]
+        if len(present) < 2:
+            print(f"SKIP   {name}: fewer than two copies present")
+            continue
+        checked += 1
+        baseline_relative, baseline = present[0]
+        baseline_files = sorted(
+            path.relative_to(baseline).as_posix()
+            for path in baseline.rglob("*")
+            if path.is_file()
+        )
+        for relative, directory in present[1:]:
+            files = sorted(
+                path.relative_to(directory).as_posix()
+                for path in directory.rglob("*")
+                if path.is_file()
+            )
+            if files != baseline_files:
+                print(f"DRIFT  {name}: {relative} holds a different set of files than {baseline_relative}")
+                ok = False
+                continue
+            for inner in files:
+                if (baseline / inner).read_bytes() != (directory / inner).read_bytes():
+                    print(f"DRIFT  {name}: {relative}/{inner} differs from {baseline_relative}")
+                    ok = False
+    if ok:
+        print(f"PASS   bundled skill copies agree: {checked} skill(s)")
     return ok
 
 
@@ -317,6 +412,11 @@ def main() -> int:
             ok = _run_handoff_contract(repo, path) and ok
     if len(repos) > 1:
         ok = _check_exact_files(repos) and ok
+    else:
+        # One checkout compared with itself is a tautology, so single-repo mode
+        # checks what can still drift inside one tree.
+        ok = _check_shared_surface(repos[0]) and ok
+        ok = _check_bundled_skills(repos[0]) and ok
     if not args.no_tests:
         for repo in repos:
             ok = _run_contract(repo) and ok
