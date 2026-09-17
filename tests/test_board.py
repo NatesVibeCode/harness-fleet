@@ -366,3 +366,51 @@ def test_the_board_separates_the_band_from_the_tier_evidence_supports(tmp_path):
     assert row["tier_capped"] is True
     assert row["evidence"]["tier_reasons"] == ["stack_delivery missing"]
     assert Path(runs_dir / "evidence.json").is_file()
+
+
+def test_the_board_and_the_ledger_agree_about_a_scored_run(tmp_path):
+    """The map's last unguarded pairing: two readers of one scored run.
+
+    The board reads the run's evidence readout and its packet; the running list
+    reads the scoring node's rows. If those disagree, one of them is describing
+    a run that did not happen.
+    """
+    from harness_fleet.dag import DagSpec, run_dag
+    from harness_fleet.lanes import shipped_lanes
+    from harness_fleet.ledger import Ledger
+    from harness_fleet.models import RoutePolicy
+    from harness_fleet.rungs import RungTables, lane_spec
+
+    db = _partner_run(tmp_path, "agree-source")
+    store = HarnessStore(db)
+    lane = shipped_lanes()["partner"]
+    spec = DagSpec.model_validate(lane_spec(
+        lane, from_run="agree-source", workspace=tmp_path,
+        score=True, score_task="partner-research", score_run_id="agree-scored",
+        score_policy=RoutePolicy(allowed_routes=["demo/fake"], free_only=True),
+    ))
+    state = run_dag(spec, store, workspace_root=tmp_path, dag_id="judged")
+    assert state["nodes"]["s-score"]["verified"] > 0
+
+    # The scoring node wrote the readout every reader of a run looks for.
+    readout_path = tmp_path / "runs" / "agree-scored" / "evidence.json"
+    assert readout_path.is_file(), "a scored run has an evidence readout"
+    readout = json.loads(readout_path.read_text(encoding="utf-8"))
+    node_rows = {row["item_id"]: row for row in RungTables(store).rows("judged", "s-score")}
+    listed = {row["entity"]: row for row in Ledger(store).entities() if row.get("scored_at")}
+
+    payload = build_board_payload(db, "agree-scored", runs_dir=tmp_path / "runs")
+    board = {row["id"]: row for row in payload["partners"]}
+
+    # Every firm the node wrote a row for, whatever it scored: the invariant is
+    # that the three readers agree, not that the number is large.
+    assert node_rows, "the node wrote rows"
+    for item in node_rows:
+        assert board[item]["score"] == node_rows[item]["score"], (
+            f"{item}: the board and the node disagree about the score"
+        )
+        assert listed[item]["score"] == node_rows[item]["score"]
+        assert listed[item]["tier"] == node_rows[item]["tier"]
+        # And the readout carries the supported tier for the same firm.
+        assert readout["items"][item]["tier_supported"] == node_rows[item]["tier"] or not node_rows[item]["tier"]
+        assert board[item]["tier_supported"] == readout["items"][item]["tier_supported"]

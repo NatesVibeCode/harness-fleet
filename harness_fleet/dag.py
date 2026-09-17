@@ -1310,6 +1310,52 @@ def _execute_resolve_node(
     }
 
 
+def _write_evidence_readout(
+    root: Path,
+    run_id: str,
+    records: Sequence[Any],
+    dossiers: Sequence[Any],
+    tiers: dict[str, str],
+) -> None:
+    """Kinds, tier caps and lone claims for the run, derived from its own text."""
+    from .evidence import entity_evidence, summarize
+
+    by_id = {str(dossier.item_id): dossier for dossier in dossiers}
+    per_item: dict[str, Any] = {}
+    for record in records:
+        item_id = str(record.item_id)
+        dossier = by_id.get(item_id)
+        claims = record.claims if isinstance(record.claims, dict) else {}
+        claimed = claims.get("fit_tier")
+        per_item[item_id] = entity_evidence(
+            str(getattr(dossier, "text", "") or ""),
+            tier=tiers.get(item_id) or (claimed if isinstance(claimed, str) else None),
+            source_uri=str(getattr(dossier, "source_uri", "") or ""),
+        )
+    payload = {
+        "run_id": run_id,
+        "items": per_item,
+        "kind_totals": summarize(read["kinds"] for read in per_item.values()),
+        "tier_capped": {
+            item_id: read["tier_reasons"]
+            for item_id, read in per_item.items()
+            if read["tier_capped"]
+        },
+        "contradictions": {
+            item_id: read["contradictions"]
+            for item_id, read in per_item.items()
+            if read["contradictions"]
+        },
+    }
+    path = Path(root) / "runs" / run_id / "evidence.json"
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    except OSError:
+        # A read-only workspace must not lose the run; the readout is derived.
+        pass
+
+
 def _capped_tier(ceiling: str, text: str, uri: str = "") -> str:
     """The tier the gathered evidence supports, for one entity.
 
@@ -1489,6 +1535,11 @@ def _execute_score_node(
             ceiling, text_by_id.get(item_id, ""), uri_by_id.get(item_id, "")
         )
     rows = _score_rows(records, keys, tiers)
+    # The run's own evidence readout, written where every reader of a run looks
+    # for it (runs/<run_id>/evidence.json). It used to be written only by the
+    # research command, so a run scored through the graph — the same scoring
+    # stage, the same rule — had no readout for the board or the drawer to read.
+    _write_evidence_readout(root, run_id, records, dossiers, tiers)
     attempt = tables.write(dag_id, node.id, rows, kind="score", lane=node.lane)
     Ledger(store).record(
         [{**row, "run_id": run_id} for row in rows],

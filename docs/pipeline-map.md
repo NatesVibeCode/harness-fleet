@@ -67,11 +67,12 @@ One writer per fact. A second writer is the defect, not the fix.
 
 ## 4. Not guarded yet — the work queue
 
-1. **`board` payload against the ledger, per entity.** The board's
-   `tier_supported` and `score` come from the run's `evidence.json` and the
-   packet; `entity_state` comes from the node's rows. The *shape* of both is
-   guarded (#3, #11) but nothing compares them for the same run and firm, which
-   is where a stale `evidence.json` would show up.
+1. ~~`board` payload against the ledger, per entity.~~ Guarded:
+   `test_board::test_the_board_and_the_ledger_agree_about_a_scored_run`. Working
+   it found the missing half of the pairing: the run's `evidence.json` was
+   written only by the research command, so a run scored through the graph had
+   no readout for the board or the drawer to read. The scoring node writes it
+   now — derived from the same dossiers it judged, on every scored run.
 2. ~~A graph re-run over the same `dag_id`.~~ Guarded:
    `test_ledger::test_a_second_run_over_the_same_graph_keeps_the_first_answer`
    — and it settled a distinction worth writing down: **resume is the default**
