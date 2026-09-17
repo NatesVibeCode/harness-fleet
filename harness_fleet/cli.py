@@ -2550,14 +2550,22 @@ def cmd_research(args: argparse.Namespace) -> dict[str, Any]:
     # produced, or to say why nothing was produced.
     scored = report.get("score") or {}
     verified = int(scored.get("verified") or 0)
-    packet_path = workspace / "runs" / run_id / "clean_packet.json"
+    # Where the scoring node actually wrote it. The command used to look in
+    # runs/<run_id>/, which the node does not use, so a failure to score printed
+    # "every attempt failed" with no reasons at all — the receipts were on disk,
+    # one directory over, and nothing read them.
+    packet_path = (
+        Path(str(scored["packet"]))
+        if scored.get("packet")
+        else workspace / "runs" / run_id / "clean_packet.json"
+    )
     if verified == 0:
         reasons: list[str] = []
         try:
             packet = json.loads(packet_path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             packet = {}
-        for receipt in (packet.get("receipts") or [])[:3]:
+        for receipt in (packet.get("receipts") or packet.get("model_runs") or [])[:3]:
             if isinstance(receipt, dict):
                 error = str(receipt.get("error") or "").strip()
                 route = str(receipt.get("requested_route") or "?")
