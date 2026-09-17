@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "harness-fleet"
-version = "0.4.2"
+version = "5.0"
 description = "Coordinate any CLI-harness worker fleet with closed fields and exact quote verification."
 readme = "README.md"
 license = "MIT"
