@@ -432,6 +432,42 @@ class Ledger:
             out.setdefault(node, {})[str(row["outcome"] or "unknown")] = int(row["n"])
         return out
 
+    def eliminations(self, dag_id: str) -> dict[str, int]:
+        """Which node threw each entity out, counting every entity once.
+
+        Per-node outcome counts do not partition a population: a firm that
+        survives the first gate and dies at the second is a "lead" at one node
+        and an "eliminated" at the next, so adding those up double-counts it and
+        the arithmetic stops adding to the number of firms that were searched.
+        This is the partition — each entity attributed to the *first* node that
+        eliminated it — so ``stood + eliminated == surfaced`` holds.
+        """
+        with self.store.connect() as connection:
+            found = connection.execute(
+                f"""
+                SELECT node_id, COUNT(*) AS n FROM {EVENTS_TABLE} e
+                WHERE dag_id=? AND outcome='eliminated' AND event_id = (
+                    SELECT MIN(event_id) FROM {EVENTS_TABLE}
+                    WHERE dag_id=e.dag_id AND entity=e.entity AND outcome='eliminated'
+                )
+                GROUP BY node_id
+                """,
+                (dag_id,),
+            ).fetchall()
+        return {str(row["node_id"]): int(row["n"]) for row in found}
+
+    def entities_seen(self, dag_ids: Sequence[str]) -> set[str]:
+        """Every entity the given graphs looked at, once each."""
+        if not dag_ids:
+            return set()
+        marks = ", ".join("?" for _ in dag_ids)
+        with self.store.connect() as connection:
+            found = connection.execute(
+                f"SELECT DISTINCT entity FROM {EVENTS_TABLE} WHERE dag_id IN ({marks})",
+                tuple(dag_ids),
+            ).fetchall()
+        return {str(row["entity"]) for row in found}
+
     def counts(self) -> dict[str, int]:
         """The running list in one line: how many, and where they stand."""
         with self.store.connect() as connection:

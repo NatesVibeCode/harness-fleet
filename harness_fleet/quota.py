@@ -295,19 +295,28 @@ def diagnose(
     be above what the evidence supports — firms standing and scoring, none of
     them high enough. Each has a different fix, and a report that does not say
     which is a report that makes the operator guess.
+
+    The numbers have to partition or they are not a diagnosis: **surfaced =
+    stood + eliminated**, counted per entity. Per-node outcome counts do not
+    partition anything — a firm that survives one gate and dies at the next
+    appears as a lead once and as an elimination once — so each entity is
+    attributed to the first node that eliminated it, and everything else stood.
     """
     from .ledger import Ledger
 
     ledger = Ledger(store)
-    found = sum(int(entry.candidates) for entry in rounds_run)
-    standing = 0
+    seen = ledger.entities_seen(list(dag_ids))
+    surfaced = len(seen) if seen else sum(int(entry.candidates) for entry in rounds_run)
     eliminated: dict[str, int] = {}
     for dag_id in dag_ids:
-        for node, outcomes in ledger.verdicts(dag_id).items():
-            standing += int(outcomes.get("lead", 0)) + int(outcomes.get("qualified", 0))
-            for outcome, number in outcomes.items():
-                if outcome == "eliminated":
-                    eliminated[node] = eliminated.get(node, 0) + int(number)
+        for node, number in ledger.eliminations(dag_id).items():
+            eliminated[node] = eliminated.get(node, 0) + int(number)
+    eliminated_total = sum(eliminated.values())
+    # Derived, never counted twice: what stood is what was searched minus what
+    # was thrown out, which is the only way the three numbers agree by
+    # construction rather than by luck.
+    standing = max(0, surfaced - eliminated_total) if dag_ids else 0
+
     scored = [
         row for row in ledger.entities(limit=1_000_000)
         if row.get("scored_at") and float(row.get("score") or 0.0) > 0
@@ -316,11 +325,11 @@ def diagnose(
     best_below = max((float(row["score"]) for row in below), default=0.0)
 
     findings: list[dict[str, Any]] = []
-    if found and standing and found >= 4 * max(standing, 1):
+    if surfaced and standing and surfaced >= 4 * max(standing, 1):
         worst = sorted(eliminated.items(), key=lambda pair: -pair[1])[:3]
         findings.append({
             "stage": FUNNEL,
-            "detail": f"{found} candidate(s) surfaced, {standing} stood after the gates",
+            "detail": f"{surfaced} candidate(s) surfaced, {standing} stood after the gates",
             "eliminated_at": {node: number for node, number in worst},
             "lever": "the gates are doing the work: widen the evidence, or check the "
                      "gate named above against the lane's own words",
@@ -338,14 +347,15 @@ def diagnose(
             "stage": SEARCH,
             "detail": f"{len(rounds_run)} round(s) searched "
                       f"{sum(len(entry.queries) for entry in rounds_run)} queries and "
-                      f"surfaced {found} candidate(s)",
+                      f"surfaced {surfaced} candidate(s)",
             "lever": "the lane's queries are the constraint: add terms to query_terms, "
                      "or raise max_queries so a round searches more of the space",
         })
     return {
         "stage": findings[0]["stage"],
         "findings": findings,
-        "surfaced": found,
+        "surfaced": surfaced,
         "standing": standing,
+        "eliminated": eliminated_total,
         "scored": len(scored),
     }

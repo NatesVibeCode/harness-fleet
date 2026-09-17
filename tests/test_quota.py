@@ -377,6 +377,10 @@ def test_a_shortfall_names_the_stage_that_cost_the_volume(tmp_path):
     assert found["stage"] == FUNNEL
     assert "40 candidate(s) surfaced, 6 stood" in found["findings"][0]["detail"]
     assert found["findings"][0]["eliminated_at"]["g0-result"] == 34
+    # The numbers partition: what surfaced is what stood plus what was thrown
+    # out, counted per firm — a firm that dies at the second gate is not also
+    # counted as standing at the first.
+    assert found["surfaced"] == found["standing"] + found["eliminated"] == 40
 
     # The bar is the constraint: firms standing and scoring, none high enough.
     store = _store(tmp_path / "bar")
@@ -417,3 +421,8 @@ def test_the_loop_reports_the_diagnosis_when_it_stops_short(tmp_path):
     assert result["diagnosis"]["stage"] == "funnel"
     assert result["diagnosis"]["surfaced"] == 30
     assert result["diagnosis"]["standing"] == 1
+    assert result["diagnosis"]["eliminated"] == 29
+    assert (
+        result["diagnosis"]["surfaced"]
+        == result["diagnosis"]["standing"] + result["diagnosis"]["eliminated"]
+    ), "and the three numbers still add up"
