@@ -2398,6 +2398,11 @@ def cmd_research(args: argparse.Namespace) -> None:
             score=True,
             score_task=preset,
             score_run_id=run_id,
+            # The operator's route flags govern the scoring stage too. Without
+            # them the stage re-selects on its own, so a run told which routes
+            # to spend could fail to find one while its own flags named a
+            # working route.
+            score_policy=_extract_policy(args),
             sessions=int(getattr(args, "sessions", 4) or 4),
             max_attempts=int(getattr(args, "max_attempts", 300) or 300),
             top=top,

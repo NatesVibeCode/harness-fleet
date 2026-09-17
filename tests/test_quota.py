@@ -231,8 +231,105 @@ def test_the_quota_command_wires_the_loop_up(tmp_path, capsys):
 
     # Progress lines go to stdout as the loop runs; the payload is the last one.
     printed = capsys.readouterr().out
-    payload = json.loads(printed[printed.index("{"):])   # past the progress lines
+    # Each round emits its own payload, and the quota's is the last one.
+    start = printed.rindex("\n{\n") + 1 if "\n{\n" in printed else printed.index("{\n")
+    payload = json.loads(printed[start:])   # past the progress lines
     assert payload["met"] is True and payload["delivered"] == 2
     assert len(calls) == 2, "one firm a round means two rounds for two firms"
     assert calls[0].queries != calls[1].queries, "and the second round widened"
     assert result["rows"] == 2
+
+
+# --------------------------------------------------------------------------
+# Through the real command, not around it
+
+
+def _lane_workspace(tmp_path, **overrides):
+    (tmp_path / "lanes").mkdir(exist_ok=True)
+    (tmp_path / "lanes" / "partner.json").write_text(json.dumps({
+        "name": "partner",
+        "description": "systems integrators",
+        "queries": ["\"{tech}\" systems integrator"],
+        "query_terms": {"tech": ["Kafka", "dbt", "Airflow", "Terraform", "Flink", "Spark"]},
+        "max_queries": 2,
+        "backends": ["ddgs"],
+        "preset": "partner-research",
+        "top": 5,
+        **overrides,
+    }), encoding="utf-8")
+    return tmp_path
+
+
+def _research_args(tmp_path, **overrides):
+    from argparse import Namespace
+
+    base = dict(
+        lane="partner", query=None, backend=None, preset=None, top=None, output=None,
+        workspace_root=str(tmp_path), db=str(tmp_path / "s.db"), json=True, run_id=None,
+        max_results=3, timeout=5, delay=0, ignore_robots=True, min_chars=None,
+        min_source_coverage=None, sessions=1, max_attempts=5, route=["demo/fake"],
+        no_funnel=False, no_enrich=True, profile=None, enrich_pages=1, enrich_entities=0,
+        want=0, min_score=0.0, rounds=0,
+    )
+    base.update(overrides)
+    return Namespace(**base)
+
+
+def test_research_delivers_a_quota_through_the_command(tmp_path, monkeypatch, capsys):
+    """Rounds of the real command: discovery, the graph, the score, the count.
+
+    The loop is only as good as the run it repeats, so this drives
+    `cmd_research` itself: a stubbed search that finds one new firm per round,
+    the deterministic demo route for scoring, and a quota of two.
+    """
+    from harness_fleet import cli
+    from harness_fleet.catalog import PriceState, RouteCatalog
+    from harness_fleet.models import InputItem
+    from harness_fleet.store import HarnessStore
+
+    _lane_workspace(tmp_path)
+    # The demo route is registered before the command runs: without a verified
+    # free route, the engine refreshes prices over the network, which is minutes
+    # of waiting per round and nothing to do with the loop.
+    store = HarnessStore(tmp_path / "s.db")
+    RouteCatalog(db_path=store.path).add_route(
+        route_id="demo/fake", provider="demo",
+        cost_per_1k_input=0.0, cost_per_1k_output=0.0, enabled=True,
+        price_state=PriceState.PRICE_OBSERVED_ZERO.value, verification_source="test",
+    )
+    rounds_seen: list[list[str]] = []
+
+    def fake_discovery(**kwargs):
+        rounds_seen.append(list(kwargs.get("queries") or []))
+        index = len(rounds_seen)
+        return (
+            [InputItem(item_id=f"firm{index}.example", text=f"Firm {index} is a systems integrator.",
+                       source_uri=f"https://firm{index}.example")],
+            {"hits": 1, "skipped": [], "source_quality": {"captured": 1, "attempted": 1,
+                                                          "coverage": 1.0, "meets_threshold": True}},
+        )
+
+    monkeypatch.setattr(cli, "run_discovery", fake_discovery)
+    monkeypatch.setattr(cli, "iter_input_items", lambda *a, **k: iter([
+        InputItem(item_id="firm1.example", text="Firm 1 is a systems integrator.",
+                  source_uri="https://firm1.example"),
+    ]))
+    monkeypatch.setattr(cli, "_check_routes_for_run", lambda *a, **k: None)
+    # The resolve node asks a search engine for the address; there is no network
+    # in a test, and a real timeout per round is what makes this slow.
+    monkeypatch.setattr("harness_fleet.discover.web_search", lambda *a, **k: [])
+    monkeypatch.setattr(cli, "_evidence_readout", lambda *a, **k: {
+        "items": {}, "kind_totals": {}, "tier_capped": {}, "contradictions": {}, "text_missing": [],
+    })
+
+    args = _research_args(tmp_path, want=2, min_score=0.0, rounds=3)
+    cli.cmd_research(args)
+
+    printed = capsys.readouterr().out
+    # Each round emits its own payload, and the quota's is the last one.
+    start = printed.rindex("\n{\n") + 1 if "\n{\n" in printed else printed.index("{\n")
+    payload = json.loads(printed[start:])
+    assert payload["met"] is True
+    assert payload["delivered"] == 2
+    assert len(rounds_seen) == 2, "one firm a round, two firms wanted"
+    assert rounds_seen[0] != rounds_seen[1], "and the second round widened"
