@@ -254,3 +254,45 @@ def test_a_score_node_records_the_number_and_the_facts(tmp_path, monkeypatch):
 class _FakeTask:
     def __init__(self, name: str) -> None:
         self.name = name
+
+
+def test_a_firm_scored_twice_shows_its_movement(tmp_path):
+    """"How good is this firm" is a column; "is it getting better" is a series."""
+    ledger = Ledger(_store(tmp_path))
+    ledger.record([_row("acme.co.uk", "qualified", score=61.0, facts={"service_model": "SI"})],
+                  dag_id="run-1", node_id="s-score", at="2026-01-01T00:00:00+00:00")
+    ledger.record([_row("acme.co.uk", "qualified", score=87.5, facts={"service_model": "SI"})],
+                  dag_id="run-2", node_id="s-score", at="2026-02-01T00:00:00+00:00")
+    ledger.record([_row("other.example", "qualified", score=40.0)],
+                  dag_id="run-2", node_id="s-score", at="2026-02-01T00:00:00+00:00")
+
+    history = ledger.scores("acme.co.uk")
+    assert [row["score"] for row in history] == [61.0, 87.5]
+    assert [row["run_id"] for row in history] == ["run-1", "run-2"]
+
+    movers = ledger.movers()
+    assert len(movers) == 1, "only a firm with two numbers has moved"
+    assert movers[0]["entity"] == "acme.co.uk"
+    assert movers[0]["previous"] == 61.0 and movers[0]["score"] == 87.5
+    assert movers[0]["delta"] == 26.5
+    # The current belief is still the newest number.
+    assert ledger.entities()[0]["score"] == 87.5
+
+
+def test_the_trend_command_reads_the_movement(tmp_path, capsys):
+    from argparse import Namespace
+
+    from harness_fleet import cli
+
+    store = _store(tmp_path)
+    ledger = Ledger(store)
+    ledger.record([_row("acme.co.uk", "qualified", score=61.0)],
+                  dag_id="run-1", node_id="s-score", at="2026-01-01T00:00:00+00:00")
+    ledger.record([_row("acme.co.uk", "qualified", score=87.5)],
+                  dag_id="run-2", node_id="s-score", at="2026-02-01T00:00:00+00:00")
+    cli.cmd_ledger(Namespace(
+        db=str(tmp_path / "t.db"), json=True, limit=10, outcome=None, lane=None,
+        standing=False, entity=None, csv=None, trend=True,
+    ))
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["movers"][0]["delta"] == 26.5

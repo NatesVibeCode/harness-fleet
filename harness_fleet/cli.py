@@ -1155,6 +1155,19 @@ def cmd_ledger(args: argparse.Namespace) -> None:
             ),
         )
         return
+    if getattr(args, "trend", False):
+        movers = ledger.movers(limit=int(getattr(args, "limit", 25) or 25))
+        _emit(
+            {"movers": movers},
+            args.json,
+            f"{len(movers)} scored firm(s) with two numbers"
+            + "".join(
+                f"\n  {row['delta']:+.1f}  {row['score']:.1f} (was {row['previous']:.1f})  "
+                f"{row['entity']}"
+                for row in movers
+            ),
+        )
+        return
     rows = ledger.entities(
         limit=int(getattr(args, "limit", 25) or 25),
         outcome=str(getattr(args, "outcome", "") or ""),
@@ -3335,6 +3348,8 @@ def build_parser() -> argparse.ArgumentParser:
     ledger.add_argument("--lane", help="Only entities a lane has looked at")
     ledger.add_argument("--standing", action="store_true", help="Only entities not eliminated")
     ledger.add_argument("--entity", help="One entity's whole history instead of the list")
+    ledger.add_argument("--trend", action="store_true",
+                        help="Firms scored twice, with the movement between")
     ledger.add_argument("--csv", help="Also write the list to this file")
     _common(ledger)
     _common(dag)

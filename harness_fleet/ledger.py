@@ -70,9 +70,13 @@ CREATE TABLE IF NOT EXISTS {EVENTS_TABLE} (
     pages TEXT NOT NULL DEFAULT '[]',
     score REAL NOT NULL DEFAULT 0,
     tier TEXT NOT NULL DEFAULT '',
-    facts TEXT NOT NULL DEFAULT '{{}}'
+    facts TEXT NOT NULL DEFAULT '{{}}',
+    run_id TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS {EVENTS_TABLE}_entity ON {EVENTS_TABLE} (entity, at);
+CREATE VIEW IF NOT EXISTS entity_score_history AS
+    SELECT entity, at, score, tier, run_id, node_id
+    FROM {EVENTS_TABLE} WHERE score > 0 ORDER BY entity, at;
 """
 
 #: A verdict that means "still standing, nothing has killed it". The running list
@@ -127,14 +131,17 @@ class Ledger:
                 pages = [str(page) for page in (row.get("pages") or [])]
                 connection.execute(
                     f"INSERT INTO {EVENTS_TABLE} (entity, at, dag_id, node_id, run_seq, lane, "
-                    "rung, outcome, because, gates_open, pages, score, tier, facts) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    "rung, outcome, because, gates_open, pages, score, tier, facts, run_id) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (
                         entity, stamp, dag_id, node_id, int(run_seq), lane,
                         str(row.get("rung") or ""), outcome, because,
                         json.dumps(open_gates), json.dumps(pages),
                         float(row.get("score") or 0.0), str(row.get("tier") or ""),
                         json.dumps(row.get("facts") or {}),
+                        # Every event names a run: the campaign that scored it
+                        # when there was one, the graph that visited it otherwise.
+                        str(row.get("run_id") or dag_id),
                     ),
                 )
                 found = connection.execute(
@@ -258,6 +265,60 @@ class Ledger:
                 row["facts"] = json.loads(row.get("facts") or "{}")
             except ValueError:
                 pass
+            out.append(row)
+        return out
+
+    def scores(self, entity: str, limit: int = 100) -> list[dict[str, Any]]:
+        """Every number this entity has been given, oldest first.
+
+        State holds the latest score, which answers "how good is this firm". It
+        cannot answer "is this firm getting better", and that is a different
+        question with a different use: a score that moved means something in the
+        world changed, or the lane did.
+        """
+        with self.store.connect() as connection:
+            found = connection.execute(
+                "SELECT at, score, tier, run_id, node_id FROM entity_score_history "
+                "WHERE entity=? ORDER BY at LIMIT ?",
+                (entity, int(limit)),
+            ).fetchall()
+        return [dict(row) for row in found]
+
+    def movers(self, limit: int = 25, minimum_delta: float = 0.0) -> list[dict[str, Any]]:
+        """Who moved, and by how much: the last two numbers each entity got.
+
+        Read off the events rather than a column, because a column can only hold
+        one number and the point of this is the difference between two.
+        """
+        with self.store.connect() as connection:
+            found = connection.execute(
+                """
+                WITH ranked AS (
+                    SELECT entity, at, score, tier, run_id,
+                           ROW_NUMBER() OVER (PARTITION BY entity ORDER BY at DESC) AS rank
+                    FROM entity_score_history
+                ),
+                pair AS (
+                    SELECT now.entity AS entity,
+                           now.score AS score,
+                           was.score AS previous,
+                           now.tier AS tier,
+                           now.at AS at,
+                           now.run_id AS run_id
+                    FROM ranked now JOIN ranked was
+                      ON was.entity = now.entity AND was.rank = 2
+                    WHERE now.rank = 1
+                )
+                SELECT * FROM pair WHERE ABS(score - previous) >= 0 ORDER BY score DESC LIMIT ?
+                """,
+                (int(limit),),
+            ).fetchall()
+        out = []
+        for record in found:
+            row = dict(record)
+            row["delta"] = round(float(row["score"]) - float(row["previous"]), 2)
+            if abs(row["delta"]) < float(minimum_delta):
+                continue
             out.append(row)
         return out
 
