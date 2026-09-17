@@ -14,9 +14,9 @@
     "hn"
   ],
   "preset": "partner-research",
-  "tier": "tier_1",
+  "tier": "tier_2",
   "top": 25,
-  "revision": 9,
+  "revision": 11,
   "stories": 0,
   "resolve_stories": 0,
   "query_terms": {
@@ -81,7 +81,7 @@
           "blog",
           "news"
         ],
-        "earns": "settles the vertical gate, which only the case studies can answer — read on the firm's own site, never a vendor's story index"
+        "earns": "settles the vertical gate on the firm's own case studies, and takes delivery proof from the outcomes they publish — a vendor's story index is where the industry lives, not a place to go looking for integrators"
       }
     ]
   }

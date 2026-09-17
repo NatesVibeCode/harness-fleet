@@ -185,3 +185,26 @@ def test_no_documented_command_uses_another_products_binary(relative, line, argv
         f"{relative}:{line} tells the user to run {argv[0]}, "
         f"but this distribution installs {OWN_BINARY}"
     )
+
+
+def test_the_funnels_doc_is_the_renderer_s_output(tmp_path):
+    """The doc claims it cannot drift from a run. This is what makes that true.
+
+    Regenerating has to be one command and the committed file has to be the
+    result of it, or the picture a person reads and the ladder a run climbs
+    disagree the first time somebody edits a lane.
+    """
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    repo = Path(__file__).resolve().parents[1]
+    committed = (repo / "docs" / "funnels.md").read_text(encoding="utf-8")
+    fresh = tmp_path / "funnels.md"
+    subprocess.run(
+        [sys.executable, str(repo / "tools" / "render_funnels.py"), str(fresh)],
+        cwd=repo, check=True, capture_output=True,
+    )
+    assert fresh.read_text(encoding="utf-8") == committed, (
+        "docs/funnels.md is stale: run tools/render_funnels.py and commit the result"
+    )

@@ -385,12 +385,11 @@ class DagSpec(ClosedModel):
                 pairs: list[tuple[str, tuple[type, ...]]] = []
                 if node.from_items:
                     # Captured items are a file the run wrote before the first
-                    # rung: no node produces them, so nothing to depend on.
-                    items_path = Path(node.from_items)
-                    if not items_path.is_file():
-                        raise DagError(
-                            f"node '{node.id}' reads '{node.from_items}', which is not a file"
-                        )
+                    # rung: no node produces them, so there is no edge here. The
+                    # file itself is checked when the node runs — reading the
+                    # filesystem to answer a question about the *graph* would
+                    # make ordering fail for a spec whose input has since moved.
+                    pass
                 if node.from_run:
                     # A gate reads either a run node in this graph or an
                     # existing run by id, the way a review node does: a ladder

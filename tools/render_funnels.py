@@ -1,7 +1,9 @@
-"""Render each lane's funnel from the shipped configuration.
+"""Render each lane's funnel — and the DAG it compiles to — from the shipped data.
 
-Reads the real lane files, the surface plan and the contracts, so the picture
-cannot drift from what a run does.
+Reads the real lane files, the surface plan and the contracts, and compiles the
+ladder with the same `lane_spec` a run uses, so the picture cannot drift from
+what a run does. Writes `docs/funnels.md` in full: the header used to be pasted
+in by hand, which is exactly the drift this file exists to prevent.
 """
 from __future__ import annotations
 
@@ -40,6 +42,86 @@ def detail(name: str) -> str:
     if name in ("ats", "code"):
         return "channel: " + ", ".join(CHANNELS.get(name) or [])
     return "-"
+
+
+def render_dag(lane) -> str:
+    """The graph the ladder compiles to: one node per rung, and the walk between.
+
+    This is the half a ladder table cannot show — which node writes which table,
+    what each one spends, and that a candidate killed at one rung is absent from
+    every table above it.
+    """
+    import tempfile
+
+    from harness_fleet.dag import DagSpec
+    from harness_fleet.rungs import lane_spec
+
+    with tempfile.TemporaryDirectory() as tmp:
+        items = Path(tmp) / "captured.jsonl"
+        items.write_text("", encoding="utf-8")
+        spec = DagSpec.model_validate(lane_spec(lane, from_items=str(items)))
+        order = spec.topo_order()
+    out: list[str] = []
+    add = out.append
+    by_id = {node.id: node for node in spec.nodes}
+    for node_id in order:
+        node = by_id[node_id]
+        kind = getattr(node, "kind", "")
+        if kind == "gate":
+            cost = "0 fetches" if node.evidence != "fetched" else "reads pages"
+            writes = "table.csv + text/ (the text it gated on)"
+            if node.from_retrieve:
+                cost = "0 fetches (reads what the walk brought back)"
+        elif kind == "resolve":
+            cost = str(len(node.fields)) + " search(es) per open candidate"
+            writes = "table.csv + text/ (what the search said) + queries"
+        else:
+            rung = getattr(node, "rung", "")
+            surfaces = (getattr(node, "rung_of", None) or {}).get("surfaces") or []
+            cost = "pages: " + (", ".join(surfaces) or "none")
+            writes = "table.csv + text/ + items.jsonl"
+        reads = next(
+            (
+                getattr(node, attr, None)
+                for attr in ("from_items", "from_run", "from_gate", "from_retrieve")
+                if getattr(node, attr, None)
+            ),
+            "",
+        )
+        source = str(reads).split("/")[-1]
+        add("  " + node_id.ljust(14) + kind.ljust(9) + cost)
+        add(f"  {'':14}reads {source:<16} | writes {writes}")
+    add("")
+    add("  | node | kind | rung | asks / fields | surfaces | writes |")
+    add("  |---|---|---|---|---|---|")
+    for node_id in order:
+        node = by_id[node_id]
+        kind = getattr(node, "kind", "")
+        rung = getattr(node, "rung", "") or "-"
+        rung_of = getattr(node, "rung_of", None) or {}
+        if kind == "gate":
+            asks = ", ".join(rung_of.get("gates") or [])
+        elif kind == "resolve":
+            asks = "searches: " + ", ".join(node.fields) + " -> `" + node.query + "`"
+        else:
+            asks = "reads pages"
+        surfaces = ", ".join("`" + surf + "`" for surf in (rung_of.get("surfaces") or [])) or "-"
+        writes = {
+            "gate": "`table.csv`, `text/`",
+            "resolve": "`table.csv`, `text/`, queries",
+            "retrieve": "`table.csv`, `text/`, `items.jsonl`",
+        }.get(kind, "-")
+        add("  | `" + node_id + "` | " + kind + " | " + rung + " | " + asks
+            + " | " + surfaces + " | " + writes + " |")
+    add("")
+    resolve_rungs = [r for r in lane.funnel.ladder if r.resolve]
+    if resolve_rungs:
+        for rung in resolve_rungs:
+            add("  a search settles " + ", ".join(rung.resolve) + " at "
+                + rung.name + ", so no page is fetched for them")
+    else:
+        add("  no rung declares a search-settled gate: every firmographic costs a page")
+    return "\n".join(out)
 
 
 def render(lane) -> str:
@@ -91,7 +173,7 @@ def render(lane) -> str:
         add("  gates     : " + ", ".join(rung.gates))
         if rung.surfaces:
             for surface in rung.surfaces:
-                add("    read    : " + surface.ljust(14) + detail(surface))
+                add("    read    : " + surface.ljust(16) + detail(surface))
         else:
             add("    read    : nothing - judges what the search already returned")
         add("  earns     : " + (rung.earns or "-"))
@@ -100,6 +182,10 @@ def render(lane) -> str:
             add("                      v  only what passed " + rung.name + " continues")
     # The same ladder as a table, because a table is what a person compares
     # across lanes: what each rung costs, what it asks, and what passing buys.
+    add("")
+    add("  THE DAG THIS LADDER COMPILES TO")
+    add("")
+    add(render_dag(lane))
     add("")
     add("  RUNGS AS A TABLE")
     add("")
@@ -165,6 +251,77 @@ for name in ("account", "career", "partner"):
     print(block)
     print()
 
-target = Path(__file__).resolve().parents[1] / "docs" / "funnels.body.md"
-target.write_text("\n\n".join(blocks) + "\n", encoding="utf-8")
+HEADER = """# The funnels, as they ship
+
+Generated from the lane files, the surface plan and the contracts — not written
+by hand — so this picture cannot drift from what a run does. Regenerate with
+`tools/render_funnels.py`.
+
+## How to read one
+
+- **population gate** — the kind question the lane asks of a candidate. `services`
+  asks "is this a delivery firm"; `any` asks nothing.
+- **bar** — what a scored row has to be able to prove.
+- **rung** — one step of the ladder. `evidence=snippet` costs no page fetch;
+  `evidence=fetched` reads pages. Each rung judges what the ones below returned,
+  and only what passes continues, so a candidate that fails early never spends a
+  fetch.
+- **gates** — the questions a rung puts to the candidate.
+- **read** — the surfaces a rung fetches, expanded to what that name actually
+  means.
+- **earns** — what passing buys: the next rung, or nothing further.
+- **OK / GAP** — whether the bar's evidence kinds can be gathered by the ladder
+  as written. A GAP is a row that can never clear its own bar.
+- **DAG** — the nodes the ladder compiles to, and the table each one writes. A
+  `gate` puts a rung's questions; a `resolve` answers the firmographics one flat
+  search can settle; a `retrieve` spends the page visits a rung declared. The
+  nodes are the run: `table.csv` per node is the population at that step.
+
+Each lane also carries its ladder as a table — rung, evidence grade, cost,
+gates, surfaces read, and what passing earns — which is the form to compare
+lanes in."""
+
+
+#: The reading, kept beside the renderer rather than in a hand-edited file: the
+#: numbers above are computed, and what they mean belongs next to them.
+FOOTER = """
+## What this says today
+
+**No lane has a GAP.** Every evidence kind a bar names is carried by a surface
+some rung reads, and the three that were not are fixed in the lane data rather
+than in the engine:
+
+- **partner** carries the bar its own sources can prove: the floor is `tier_2`
+  (`delivery_proof` + `stack_delivery`), read off the firm's case studies and
+  services pages. It was `tier_1`, which also asks for
+  `independent_validation` — carried only by vendor story indexes and community
+  mentions, which is the ecosystem this lane looks past rather than samples.
+- **career** names `ats` on the posting rung, which is what makes
+  `delivery_hiring` reachable.
+- **account and career firmographics** — the ICP and the employer profile carry
+  typed `size_min`, `size_max`, `target_territories` and `target_industries`, so
+  an operator has somewhere to state theirs.
+
+**What is still missing**, in the order I would take it:
+
+1. **The account row carries no fields.** `account-research` defines no
+   `answers`, so a scored account has a score and a gap and no verticals, no
+   stack, no named clients. The ICP names them (`required_stack`,
+   `trigger_pain_phrases`, `target_roles`, `anchor_logos`) and they have nowhere
+   to land.
+2. **GSI / RSI / SI is not a field.** The partner profile has `partner_kind`, and
+   the class is derivable from headcount and territory, but nothing writes it
+   onto the row.
+3. **Known firms are not excluded.** Nothing stops a run from proposing a firm
+   the operator already works with; that wants a list or a rule, and it is a
+   decision rather than a mechanism.
+"""
+
+target = (
+    Path(sys.argv[1]) if len(sys.argv) > 1
+    else Path(__file__).resolve().parents[1] / "docs" / "funnels.md"
+)
+target.write_text(
+    HEADER + "\n\n" + "\n\n".join(blocks) + "\n" + FOOTER, encoding="utf-8"
+)
 print("wrote", target)

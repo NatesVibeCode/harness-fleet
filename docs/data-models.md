@@ -90,26 +90,39 @@ reseller, or subcontract — tied only to cited evidence.
 
 ### The bar **[inferred — a decision you own]**
 
-Today `tier_1`: `delivery_proof` + `independent_validation` + `stack_delivery`.
-`independent_validation` was written when review directories supplied it; those
-answer 403 now, so its surviving carriers are vendor stories and community
-mentions — and **no rung reads either**, which is why the lane cannot qualify
-anything. Either a rung names `vendor_stories`, or the floor drops to `tier_2`.
+Today `tier_2`: `delivery_proof` + `stack_delivery`, both of which the ladder
+carries from the firm's own case studies and services pages.
+
+It was `tier_1`, whose extra requirement is `independent_validation`. That was
+written when review directories supplied it; they answer 403 now, and the only
+surviving carriers are vendor story indexes and community mentions — which is
+the ecosystem this lane exists to look *past*. The lane finds integrators
+directly, so it cannot prove a third party vouched for them, and a bar the
+sources cannot reach is a bar that returns nothing. The floor is the honest one
+until a carrier that is not a vendor's index exists.
 
 ### DAG shape
 
+The ladder *is* the pipeline. `lane_spec` compiles it — the same function a run
+calls — into one node per rung, and each node writes the table it produced
+(`table.csv`, plus the text each verdict stood on). `harness-fleet dag --lane
+partner --from-items captured.jsonl --emit-spec` prints exactly this:
+
 ```
-search (SI-shaped queries, {tech} × {vertical})
-  │
-  rung: result   snippet · kind(size, territory) · 0 fetches
-  │              eliminates a product company; never qualifies
-  rung: surface  fetched · their site: home, about, services, partners, careers
-  │              qualifies firmographics; expertise + shelf live here
-  rung: stories  fetched · case_studies, partners, blog, news
-  │              settles vertical; names clients and outcomes
+g0-result    gate     0 fetches · kind, size, location
+x0-result    resolve  one search per open candidate: "<name>" address / headcount
+c0-result    gate     the same questions, on what the search said
+r1-surface   retrieve home, about, services, partners, careers
+g1-surface   gate     kind, size, location — on pages the run opened
+r2-stories   retrieve case_studies, partners, blog, news, vendor_stories
+g2-stories   gate     vertical
   ▼
-bundle per firm → score → row carrying the fields above
+bundle per firm → score → row carrying the fields below
 ```
+
+A candidate eliminated at any node is absent from every table above it, and a
+candidate whose open gates the search settled is never walked at all. The
+per-lane picture, node by node and rung by rung, is `docs/funnels.md`.
 
 ---
 
@@ -199,12 +212,13 @@ These are shared by all three models, declared once in `contracts.py`:
 
 | model | spec says | code does |
 |---|---|---|
-| partner | GSI/RSI/SI, vendors excluded, verticals + expertise + shelf on the row | queries are SI-shaped; `read_kind` still lets a product vendor through by matching "our customers"; no vendor exclusion; no class field; `tier_1` unreachable |
-| account | competitor's customers with stack, triggers, vertical | no `answers` fields at all; 2 queries, story indexes off |
-| career | requisition rows with role, comp, employer | `delivery_hiring` unreachable — no rung reads `ats` |
+| partner | GSI/RSI/SI, verticals + expertise + shelf on the row | queries are SI-shaped and no longer search for a vendor's product; the product markers decide `read_kind`, so a vendor's own site fails the kind gate; the floor is `tier_2`, which the firm's own pages carry; **the class (GSI/RSI/SI) is still not written onto the row** |
+| account | competitor's customers with stack, triggers, vertical | the ladder gathers them — first-party surfaces plus the searches that settle headcount and country — but **`account-research` defines no `answers`**, so nothing lands on the row |
+| career | requisition rows with role, comp, employer | `ats` is named on the posting rung, so `delivery_hiring` is reachable; firmographics come from the employer profile |
 
-The questions the lanes ask are now right. What the lanes can *gather*, and what
-their rows *carry*, is not yet what this document describes.
+Three things this table said are fixed; what it says now is what is left. Each
+lane's own reachability check, kind by kind, is the OK/GAP block in
+`docs/funnels.md` — computed from the same lane data a run reads.
 
 ---
 
@@ -220,6 +234,7 @@ that carry them are read.
 |---|---|---|
 | search (SI queries) | `snippet` | candidate identity, and whatever the result states: headcount, location, kind |
 | rung `result` | `snippet` | **integrator class** (derived), size, territory — and eliminations |
+| `resolve` (one search) | `snippet` | **size and territory as published facts**, for a candidate whose result did not state them |
 | rung `surface` | `fetched` | **expertise** (services / what-we-do), **service model**, headcount, territory, **software partners they carry** (partners page), hiring signals (careers) |
 | rung `stories` | `fetched` | **verticals they work in**, named clients, client outcomes, published engineering, growth signals, **independent validation** (vendor stories naming them) |
 | score | — | checklist, `identified_practice`, `revenue_hypothesis`, and the 14 `answers` fields: `target_stack`, `service_model`, `industry_verticals`, `delivery_coverage`, `vendor_alliances`, `case_study_outcome`, `client_logos`, `hiring_signals`, `commercial_terms`, `revenue_motion`, `third_party_mentions`, `engineering_output`, `growth_signals`, `evidence_categories` |
@@ -230,6 +245,7 @@ that carry them are read.
 |---|---|---|
 | search | `snippet` | candidate identity, headcount, location |
 | rung `result` | `snippet` | eliminations on size and territory |
+| `resolve` (one search) | `snippet` | **headcount and country**, settled without a page fetch |
 | rung `surface` | `fetched` | **what they run** (stack), firmographics confirmed |
 | rung `stories` | `fetched` | **vertical**, triggers and initiatives in their own words, named clients, outcomes |
 | score | — | checklist, `identified_gap`, `fit_tier`, reasoning — **and no structured fields today**, because `account-research` defines no `answers` |
@@ -240,6 +256,7 @@ that carry them are read.
 |---|---|---|
 | search | `snippet` | candidate role page, employer name |
 | rung `result` | `snippet` | eliminations on territory |
+| `resolve` (one search) | `snippet` | **where the employer is**, which is what the lane's only gate asks |
 | rung `posting` | `fetched` | role, seniority, **location / remote**, compensation, what the employer runs, and the requisition that satisfies `delivery_hiring` |
 | score | — | `priority`, `reason` — the row is a role, and the fields above are its context |
 
