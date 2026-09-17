@@ -227,10 +227,18 @@ def test_a_page_with_no_delivery_work_on_it_fails_the_kind_gate():
     false and they were delivered as zeroes. Reading a page and finding no
     delivery work is an answer, not an absence of one.
     """
+    # The words a therapy practice actually uses, from the live lane that filled
+    # with four of them: a free consultation, a program, insurance plans.
     therapist = ("Ingrid Robinson LMHC. Individual counselling and therapy for anxiety "
-                 "and depression. Sessions by appointment. Contact me to book.")
+                 "and depression. Free consultation. I accept Regence, Premera and Kaiser "
+                 "insurance. Sessions by appointment.")
     result = check_kind(therapist, allows="services", evidence=FETCHED)
     assert result.outcome == "fail" and "no delivery language" in result.reason
+
+    # A real integrator from the same live run, and it says the work.
+    ness = ("Ness delivers Confluent implementation for Michelin. Elite Confluent partner. "
+            "Our certified engineers run the platform.")
+    assert check_kind(ness, allows="services", evidence=FETCHED).outcome == "pass"
 
     # A firm that does the work survives, even without the exact marker words.
     delivering = check_kind(

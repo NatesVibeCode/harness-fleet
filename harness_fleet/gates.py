@@ -66,16 +66,20 @@ DIRECTORY_TERMS = (
 )
 
 #: The vocabulary of *technical delivery work*, which is what separates a firm a
-#: services lane can use from whoever else the search returned. Deliberately not
-#: a list of things an integrator says about itself — those are SERVICES_TERMS —
-#: but of the work: a therapy practice, a personal site and a counsellor say none
-#: of it, and a live lane filled up with exactly those because the kind gate had
-#: no way to answer "not this" once it had read the page.
+#: services lane can use from whoever else the search returned. Deliberately the
+#: work and its technology, not the words anybody uses about themselves: a
+#: therapy practice offers a free "consultation", runs a "program" and takes
+#: "insurance", and a live lane filled with four of those because a vocabulary of
+#: soft words could not tell them from an integrator. `ness.com` — Confluent
+#: implementation, certified team, a named client — says the work.
 DELIVERY_TERMS = (
-    "deliver", "implement", "integrat", "migrat", "deploy", "consult", "advisory",
-    "systems", "platform", "data", "software", "cloud", "engineer", "architect",
-    "automat", "devops", "infrastructure", "digital transformation", "modernis",
-    "moderniz", "onboarding", "implementation", "projects",
+    "implementation", "implement", "integrat", "migrat", "deploy", "devops",
+    "data platform", "data engineering", "data warehouse", "cloud", "kubernetes",
+    "kafka", "snowflake", "databricks", "confluent", "terraform", "airflow",
+    "etl", "api", "microservice", "systems integrator", "system integrator",
+    "managed services", "professional services", "consultancy", "consulting",
+    "solution architect", "solution provider", "software engineer", "automation",
+    "infrastructure", "modernis", "moderniz", "digital transformation",
 )
 
 SOFTWARE_TERMS = (
