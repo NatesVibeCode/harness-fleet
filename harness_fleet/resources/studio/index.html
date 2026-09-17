@@ -177,8 +177,11 @@ function renderCards() {
     if (harness) card.title = harness.detail;
     const status = H.refresh[name];
     const hint = LOGIN_HINT[name] || PROVIDER_HINT[name];
+    // A successful refresh reports "N model(s)": only an "error: …" status
+    // is a failure, so only that one renders in the error style.
+    const failed = !!status && status.indexOf("error:") === 0;
     const note = status
-      ? `<div class="hnote bad" title="${esc(status)}">${esc(firstLine(status, 42))}</div>`
+      ? `<div class="hnote${failed ? " bad" : ""}" title="${esc(status)}">${esc(firstLine(status, 42))}</div>`
       : (hint ? `<div class="hnote">${esc(hint)}</div>` : "");
     const sub = harness
       ? `<div class="hbin">${esc(harness.binary)} · ${harness.available ? "installed" : "not found"}</div>`
@@ -207,7 +210,10 @@ function renderModelList() {
     const group = document.createElement("div"); group.className = "mgroup";
     const head = document.createElement("div"); head.className = "mgroup-head";
     const free = freeOf(provider), usable = usableOf(provider), skipped = disabledCount(provider);
-    head.innerHTML = `<b>${esc(provider)}</b><span class="counts">${free.length} free · ${usable.length} priced · ${skipped} unpriced</span>`;
+    // usable() already includes the free routes, so the priced count is the
+    // remainder: otherwise every free model is counted twice.
+    const priced = usable.length - free.length;
+    head.innerHTML = `<b>${esc(provider)}</b><span class="counts">${free.length} free · ${priced} priced · ${skipped} unpriced</span>`;
     group.appendChild(head);
     const list = document.createElement("div"); list.className = "mlist";
     routesOf(provider).forEach(route => {
@@ -308,6 +314,9 @@ async function load() {
     (saved.providers || []).forEach(p => H.selected.add(p));
     (saved.routes || []).forEach(r => H.picked.add(r));
     if (saved.mode) H.mode = saved.mode;
+    // The dropdown is the mode control: leave it showing "Free models" while
+    // the restored state is specific and the next render disagrees with it.
+    document.getElementById("modeSel").value = H.mode;
   }
   renderMeta();
   watchBuild();

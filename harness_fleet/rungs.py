@@ -220,23 +220,40 @@ def surviving_ids(rows: Sequence[dict[str, Any]]) -> list[str]:
 
 
 def count_rows(rows: Sequence[dict[str, Any]]) -> dict[str, Any]:
-    """The shape of one rung's table, for a run to report instead of imply."""
-    counts: dict[str, Any] = {"candidates": len(rows), "verdicts": {}}
+    """The shape of one rung's table: where the world shrank and what is open.
+
+    Counted off the table rather than off the reports that produced it, so the
+    number a run reports and the rows a person reads are the same fact. Who was
+    eliminated, and why, is in the table itself — a count carrying its own copy
+    of the names is a second source of truth, and second sources drift.
+    """
+    counts: dict[str, Any] = {
+        "candidates": len(rows),
+        "verdicts": {},
+        "eliminated_at": {},
+        "unresolved_at": {},
+        "needing_retrieval": 0,
+    }
     for row in rows:
         verdict = str(row.get("outcome") or "unknown")
         counts["verdicts"][verdict] = counts["verdicts"].get(verdict, 0) + 1
-        if verdict != "eliminated":
+        gates = row.get("gates") or []
+        if verdict == "eliminated":
+            for result in gates:
+                if result.get("outcome") == "fail":
+                    gate = str(result["gate"])
+                    counts["eliminated_at"][gate] = counts["eliminated_at"].get(gate, 0) + 1
+                    break
             continue
-        for result in row.get("gates") or []:
-            if result.get("outcome") == "fail":
-                counts.setdefault("eliminated_at", {})
-                counts["eliminated_at"][result["gate"]] = (
-                    counts["eliminated_at"].get(result["gate"], 0) + 1
-                )
-                break
+        # A survivor still holding a gate open is what the run is waiting on. A
+        # gate it passed is not open, and an eliminated candidate's unknowns are
+        # not the survivors' problem.
+        counts["needing_retrieval"] += 1
+        for result in gates:
+            if result.get("outcome") == "unknown":
+                gate = str(result["gate"])
+                counts["unresolved_at"][gate] = counts["unresolved_at"].get(gate, 0) + 1
     return counts
-
-
 def resolved_gate_profile(
     lane: Any,
     *,
@@ -294,6 +311,9 @@ def lane_spec(
     vendor_stories: bool = True,
     gates: bool = True,
     walk: bool = True,
+    resolve_results: int = 6,
+    resolve_query: str = "",
+    backends: Sequence[str] = (),
 ) -> dict[str, Any]:
     """Compile a lane's ladder into a DAG: one gate per rung, one walk between.
 
@@ -352,6 +372,7 @@ def lane_spec(
                     "id": retrieve_id,
                     "lane": lane.name,
                     "rung": rung.name,
+                    "rung_of": rung.as_dict(),
                     "from_gate": previous_gate,
                     "max_pages": max_pages,
                     "per_surface": per_surface,
@@ -372,11 +393,43 @@ def lane_spec(
                 "id": gate_id,
                 "lane": lane.name,
                 "rung": rung.name,
+                "rung_of": rung.as_dict(),
                 **({"profile": str(profile_path)} if profile_path else {}),
                 **source,
             }
         )
         previous_gate = gate_id
+        if rung.resolve and (index + 1) < len(rungs):
+            # Before anything walks this candidate's site, ask the search engine
+            # the firmographic question: one search instead of a page fetch per
+            # entity, and the answer is a fact somebody already published.
+            resolve_id = f"x{index}-{_node_slug(rung.name)}"
+            nodes.append({
+                "kind": "resolve",
+                "id": resolve_id,
+                "lane": lane.name,
+                "from_gate": gate_id,
+                "fields": list(rung.resolve),
+                "backends": list(backends),
+                "max_results": resolve_results,
+                "timeout": timeout,
+                **({"query": resolve_query} if resolve_query else {}),
+            })
+            # And then ask the rung's questions again, on what came back. This is
+            # the whole point of searching first: a candidate whose open gates the
+            # search settled is not owed a page visit, and the walk below only
+            # reads the ones still standing.
+            recheck_id = f"c{index}-{_node_slug(rung.name)}"
+            nodes.append({
+                "kind": "gate",
+                "id": recheck_id,
+                "lane": lane.name,
+                "rung": rung.name,
+                "rung_of": rung.as_dict(),
+                **({"profile": str(profile_path)} if profile_path else {}),
+                "from_gate": resolve_id,
+            })
+            previous_gate = recheck_id
     return {
         "name": name or f"lane-{getattr(lane, 'name', 'lane')}",
         "nodes": nodes,

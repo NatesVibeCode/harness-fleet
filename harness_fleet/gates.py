@@ -25,7 +25,7 @@ eliminated (a gate failed, with the reason).
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -253,21 +253,6 @@ def read_firmographics(text: str) -> Firmographics:
     )
 
 
-def read_grade(metadata: Any) -> str:
-    """The evidence grade a source carries, in this funnel's two-value alphabet.
-
-    Discovery publishes three grades (``fetched``, ``profile``, ``indicator``),
-    and the distinction that decides what a text may settle is a binary one: was
-    this a page we actually read, or somebody's summary of one? ``profile`` is
-    structured directory text — real, but not a page read — so it grades as a
-    snippet here. Anything unrecognised is the weakest grade, because assuming
-    the strongest is how a summary gets to qualify a candidate.
-    """
-    if not isinstance(metadata, dict):
-        return SNIPPET
-    return FETCHED if str(metadata.get("evidence") or "").strip().lower() == FETCHED else SNIPPET
-
-
 @dataclass(frozen=True)
 class GateProfile:
     """The funnel's view of a profile, however that profile was authored.
@@ -376,11 +361,16 @@ class LadderRung:
     surfaces: list[str] = field(default_factory=list)
     #: What this rung buys, in the lane's own words. A reader tunes by it.
     earns: str = ""
+    #: Gates at this rung that one flat search may settle, so a run can answer
+    #: them without walking the candidate's site. Empty means the rung spends
+    #: only what it declared in ``surfaces``.
+    resolve: list[str] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:
         return {
             "name": self.name, "evidence": self.evidence, "gates": list(self.gates),
             "surfaces": list(self.surfaces), "earns": self.earns,
+            "resolve": list(self.resolve),
         }
 
     def reachable(self, grade: str) -> bool:
@@ -399,6 +389,13 @@ class LadderRung:
             return grade == FETCHED
         return True
 
+
+#: Gates a single flat search can settle. A headcount and a country are facts
+#: somebody has already written down; whether a firm is a delivery shop or a
+#: product company is a judgement about its whole site, and a semantic gate
+#: needs prose only the case studies carry. So this is the cheap half, and it is
+#: the half a run should settle before it spends a page visit.
+RESOLVABLE_GATES: frozenset[str] = frozenset({"location", "size"})
 
 #: The ladder that applies when a lane declares none: prove the cheap gates on
 #: their own pages, and leave the semantic gate to a later rung.
@@ -428,6 +425,12 @@ def validate_ladder(ladder: Sequence[LadderRung]) -> None:
             raise ValueError(f"{where}: every rung has a name")
         if rung.evidence not in (SNIPPET, FETCHED):
             raise ValueError(f"{where}: evidence must be '{SNIPPET}' or '{FETCHED}'")
+        unknown = [gate for gate in rung.resolve if gate not in RESOLVABLE_GATES]
+        if unknown:
+            raise ValueError(
+                f"{where}: resolve {unknown} cannot be settled by a search; "
+                f"a search settles {sorted(RESOLVABLE_GATES)}"
+            )
         if not rung.gates:
             raise ValueError(f"{where}: a rung that settles no gate is not a rung")
         for gate in rung.gates:
@@ -779,112 +782,7 @@ def _rank(grade: str) -> int:
     return 1 if grade == FETCHED else 0
 
 
-def _settled(report: FunnelReport, gate: str) -> bool:    return any(
+def _settled(report: FunnelReport, gate: str) -> bool:
+    return any(
         result.gate == gate and result.outcome in ("pass", "fail") for result in report.results
     )
-
-
-def funnel_counts(reports: list[FunnelReport]) -> dict[str, Any]:
-    """What the funnel did to a list: the number a person tunes thresholds by.
-
-    Reports eliminated-at per gate, unresolved-at per gate, and how many
-    survived to need real retrieval.
-    """
-    eliminated_at: dict[str, int] = {}
-    unresolved_at: dict[str, int] = {}
-    verdicts: dict[str, int] = {}
-    #: Who, not just how many. A count with no names cannot be tuned against:
-    #: a person sees "12 eliminated at kind" and still has to guess whether the
-    #: gate is right or the vocabulary is missing a word.
-    eliminated: dict[str, list[dict[str, str]]] = {}
-    unresolved: dict[str, list[dict[str, str]]] = {}
-    for report in reports:
-        verdicts[report.verdict] = verdicts.get(report.verdict, 0) + 1
-        for result in report.results:
-            if result.outcome == "fail":
-                eliminated_at[result.gate] = eliminated_at.get(result.gate, 0) + 1
-                eliminated.setdefault(result.gate, []).append({
-                    "candidate": report.candidate, "reason": result.reason,
-                })
-            elif result.outcome == "unknown" and not report.eliminated:
-                # Only the candidates still standing. An eliminated candidate
-                # carries unknowns from the gates it cleared on the way to the
-                # gate that killed it, and counting those tells a reader that
-                # survivors are stuck when they are not.
-                unresolved_at[result.gate] = unresolved_at.get(result.gate, 0) + 1
-                unresolved.setdefault(result.gate, []).append({
-                    "candidate": report.candidate, "reason": result.reason,
-                })
-        if not report.eliminated:
-            verdicts["needing_retrieval"] = verdicts.get("needing_retrieval", 0) + 1
-    return {
-        "candidates": len(reports),
-        "verdicts": verdicts,
-        "eliminated_at": eliminated_at,
-        "unresolved_at": unresolved_at,
-        "eliminated": eliminated,
-        "unresolved": unresolved,
-    }
-
-
-def run_evidence_funnel(
-    items: Iterable[Any],
-    *,
-    profile: Any = None,
-    candidate: str = "",
-    ladder: Sequence[LadderRung] | None = None,
-    snippet: str | None = None,
-) -> FunnelReport:
-    """Gate one candidate on the sources gathered for it.
-
-    The entity's grade is its best source's grade: a bundle carrying one page we
-    actually read is read as a page, because the gates read the bundle's text
-    and that text includes the fetch. Every other source stays what it was.
-    """
-    sources = [item for item in items]
-    grade = SNIPPET
-    for item in sources:
-        if read_grade(getattr(item, "metadata", None)) == FETCHED:
-            grade = FETCHED
-            break
-    text = snippet if snippet is not None else "\n".join(
-        str(getattr(item, "text", "") or "") for item in sources
-    )
-    name = candidate or _candidate_name(sources)
-    report = run_funnel(name, snippet=text, profile=profile, evidence=grade, ladder=ladder)
-    report.fetched = grade == FETCHED
-    return report
-
-
-def _candidate_name(sources: Sequence[Any]) -> str:
-    for item in sources:
-        name = str(getattr(item, "item_id", "") or "").strip()
-        if name:
-            return name
-    return ""
-
-
-def funnel_entities(
-    items: Iterable[Any],
-    *,
-    profile: Any = None,
-    ladder: Sequence[LadderRung] | None = None,
-) -> tuple[list[FunnelReport], dict[str, Any], list[FunnelReport]]:
-    """Run the funnel over sources grouped by the entity they are about.
-
-    Returns the reports for the candidates still standing, the counts, and every
-    report including the eliminated. The two views answer different questions: a
-    caller that keeps going needs the survivors, and a caller writing the run's
-    account of itself needs everyone it ruled out, by name and reason.
-    """
-    grouped: dict[str, list[Any]] = {}
-    for item in items:
-        key = str(getattr(item, "item_id", "") or "")
-        if key:
-            grouped.setdefault(key, []).append(item)
-    reports = [
-        run_evidence_funnel(sources, profile=profile, candidate=key, ladder=ladder)
-        for key, sources in grouped.items()
-    ]
-    counts = funnel_counts(reports)
-    return [report for report in reports if not report.eliminated], counts, reports

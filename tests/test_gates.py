@@ -4,8 +4,8 @@ from __future__ import annotations
 from harness_fleet.gates import (
     FETCHED,
     SNIPPET,
+    LadderRung,
     check_vertical,
-    funnel_counts,
     read_size,
     run_funnel,
 )
@@ -94,19 +94,29 @@ def test_vertical_is_the_expensive_gate_and_says_so():
     assert check_vertical(("retail",), wanted=("fintech",)).outcome == "fail"
 
 
-def test_the_funnel_reports_where_the_world_shrank():
-    """The number a person tunes thresholds by, not a list of companies."""
-    reports = [
-        run_funnel("a.com", snippet="Our platform is a SaaS product", profile=PROFILE),
-        run_funnel("b.com", snippet="A consultancy, team of 4, in Boston", profile=PROFILE),
-        run_funnel("c.com", snippet="A consultancy of 300 people in Boston", profile=PROFILE),
-    ]
-    counts = funnel_counts(reports)
+def test_the_table_reports_where_the_world_shrank():
+    """The number a person tunes thresholds by, counted off the rows."""
+    from harness_fleet.rungs import count_rows, gate_rows
+
+    rows, _ = gate_rows(
+        [
+            _record("a.com", "Our platform is a SaaS product"),
+            _record("b.com", "A consultancy, team of 4, in Boston"),
+            _record("c.com", "A consultancy of 300 people in Boston"),
+        ],
+        rung=LadderRung(name="result", evidence=SNIPPET, gates=["kind", "size"]),
+        ladder=[LadderRung(name="result", evidence=SNIPPET, gates=["kind", "size"])],
+        profile=PROFILE,
+        evidence=SNIPPET,
+    )
+    counts = count_rows(rows)
     assert counts["candidates"] == 3
     assert counts["eliminated_at"]["kind"] == 1
     assert counts["eliminated_at"]["size"] == 1
     assert counts["verdicts"]["lead"] == 1
     assert counts["unresolved_at"]["kind"] == 1, "the survivor is unresolved on kind, not passed"
+    eliminated = [row["candidate"] for row in rows if row["outcome"] == "eliminated"]
+    assert eliminated == ["a.com", "b.com"], "and the table names them"
 
 
 def test_a_report_survives_the_round_trip_a_reader_sees():
@@ -192,3 +202,16 @@ def test_the_shipped_account_lane_no_longer_runs_the_partner_test():
     )
     assert partner["funnel"]["allows"] == "services", "the partner population test stays"
     assert "kind" in partner["funnel"]["ladder"][0]["gates"]
+
+
+def _record(item_id: str, text: str):
+    class _Record:
+        pass
+
+    record = _Record()
+    record.item_id = item_id
+    record.text = text
+    record.source_uri = ""
+    record.quotes = []
+    record.metadata = {}
+    return record

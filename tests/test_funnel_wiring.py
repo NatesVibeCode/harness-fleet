@@ -26,13 +26,11 @@ from harness_fleet.gates import (
     SNIPPET,
     GateProfile,
     LadderRung,
-    funnel_entities,
-    read_grade,
-    run_evidence_funnel,
     run_funnel,
 )
 from harness_fleet.models import InputItem
 from harness_fleet.partner import IdealPartnerProfile
+from harness_fleet.rungs import count_rows, gate_rows
 
 #: The checkout itself, because which lanes a run loads depends on where it runs.
 REPO = Path(__file__).resolve().parents[1]
@@ -43,66 +41,33 @@ REPO = Path(__file__).resolve().parents[1]
 # --------------------------------------------------------------------------
 
 
-def test_the_grade_a_source_carried_decides_what_it_may_settle():
-    """`fetched` is a page we read. Everything else is somebody's summary.
+def test_a_fetched_page_may_qualify_where_a_snippet_may_not():
+    """The asymmetry, end to end: a snippet earns a fetch, never a pass.
 
-    This is the distinction the whole funnel rests on — a snippet may eliminate
-    and may never qualify — so it is read from the source's own metadata rather
-    than assumed from the fact that a run happened.
+    The grade belongs to the node that brought the text rather than to the gate,
+    which is the whole reason a rung declares the evidence it reads.
     """
-    assert read_grade({"evidence": "fetched"}) == FETCHED
-    assert read_grade({"evidence": "indicator"}) == SNIPPET
-    assert read_grade({"evidence": "profile"}) == SNIPPET
-    assert read_grade({}) == SNIPPET, "unknown provenance is the weakest, not the strongest"
-    assert read_grade(None) == SNIPPET
-
-
-def test_a_merged_dossier_is_only_as_strong_as_its_best_source():
-    """A page fetched into the middle of a bundle upgrades the bundle.
-
-    A dossier merges several sources per entity; the grade of the whole is the
-    best grade any contributor carried, because a gate reads the bundle's text.
-    """
-    assert run_evidence_funnel([], profile={}).fetched is False  # no sources, weakest grade
-    report = run_evidence_funnel(
-        [
-            InputItem(item_id="acme.com", text="A consultancy of 200 people in Boston.",
-                      metadata={"evidence": "indicator"}),
-            InputItem(item_id="acme.com", text="We are a data consultancy in Boston.",
-                      metadata={"evidence": "fetched"}),
-        ],
-        profile={"allows": "services", "size_min": 20, "locations": ("United States",)},
+    ladder = lane_module.shipped_lanes()["partner"].funnel.rungs()
+    profile = {
+        "allows": "services", "size_min": 20, "size_max": 5000,
+        "locations": ("United Kingdom",), "verticals": ("fintech",),
+    }
+    snippet_rows, _ = gate_rows(
+        [_record("acme.co.uk",
+                 "An advisory firm of 200 people in London serving banking clients.")],
+        rung=ladder[0], ladder=ladder, profile=profile, evidence=SNIPPET,
     )
-    assert report.fetched is True
-    gates = {result.gate: result for result in report.results}
-    assert gates["kind"].outcome == "pass", "a fetched page may qualify where a snippet may not"
-    assert gates["size"].outcome == "pass"
-    assert gates["location"].outcome == "pass"
+    assert snippet_rows[0]["outcome"] == "lead", "a snippet earns a fetch, never a pass"
+    assert "kind" in snippet_rows[0]["because"], "and it says which gate is open"
 
-
-def test_a_snippet_only_candidate_can_never_come_back_qualified():
-    """The asymmetry, enforced end to end and not just per gate."""
-    report = run_evidence_funnel(
-        [
-            InputItem(
-                item_id="acme.com",
-                text="An advisory firm of 200 people in London serving banking clients.",
-                metadata={"evidence": "indicator"},
-            )
-        ],
-        profile={
-            "allows": "services", "size_min": 20, "size_max": 5000,
-            "locations": ("United Kingdom",), "verticals": ("fintech",),
-        },
+    page_rows, _ = gate_rows(
+        [_record("acme.co.uk",
+                 "An advisory firm of 200 people in London serving fintech clients.")],
+        rung=ladder[1], ladder=ladder, profile=profile, evidence=FETCHED,
     )
-    assert report.fetched is False
-    assert report.verdict == "lead", "a snippet earns a fetch, never a pass"
-    assert "kind" in report.unresolved
-
-
-# --------------------------------------------------------------------------
-# 2. The ladder: per-lane data saying what earns what
-# --------------------------------------------------------------------------
+    verdicts = {row["gate"]: row["outcome"] for row in page_rows[0]["gates"]}
+    assert verdicts["kind"] == "pass", "a page the run opened may qualify"
+    assert verdicts["size"] == "pass" and verdicts["location"] == "pass"
 
 
 def test_a_lane_states_its_own_ladder_and_which_rung_fetches():
@@ -125,31 +90,21 @@ def test_a_lane_states_its_own_ladder_and_which_rung_fetches():
 
 def test_the_ladder_tells_a_candidate_what_still_stands_between_it_and_a_pass():
     """A lead is told what would resolve it, not left as a bare unknown."""
+    ladder = lane_module.shipped_lanes()["partner"].funnel.rungs()
     profile = {
         "allows": "services", "size_min": 20, "size_max": 5000,
         "locations": ("United Kingdom",), "verticals": ("fintech",),
     }
-    snippet = run_funnel(
+    step = run_funnel(
         "acme.co.uk",
-        snippet="An advisory firm of 200 people in London serving banking clients.",
+        snippet="An advisory firm of 200 people in London.",
         profile=profile,
-    )
-    step = run_evidence_funnel(
-        [
-            InputItem(item_id="acme.co.uk", text="An advisory firm of 200 people in London.",
-                      metadata={"evidence": "indicator"})
-        ],
-        profile=profile,
+        ladder=ladder,
     )
     assert [rung.name for rung in step.rungs] == ["result", "surface", "stories"]
-    # Two things stand between this candidate and a pass: the page that
-    # confirms it is a delivery firm, and the case studies that name an
-    # industry. It has earned the cheapest one, which is the next rung — not the
-    # furthest blocker, because telling somebody to fetch case studies for a
-    # candidate whose pages were never read sends them past the first gate.
-    assert step.unresolved == ["kind", "vertical"]
-    assert step.earned == "surface", "the next rung to climb is the page fetch"
-    assert not snippet.eliminated and not snippet.qualified
+    assert step.earned == "surface", "the page visit is what it earned"
+    assert "kind" in step.unresolved, "and what still stands between it and a pass"
+    assert step.exhausted is False
 
 
 def test_every_shipped_lane_carries_a_ladder_that_validates(tmp_path: Path):
@@ -307,33 +262,28 @@ def test_the_profile_renders_the_gates_it_will_be_judged_by():
 # --------------------------------------------------------------------------
 
 
-def test_the_wiring_counts_eliminations_per_gate_and_only_survivor_unknowns():
-    items = [
-        InputItem(item_id="vendor.io", text="Our platform helps teams ship faster. Book a demo.",
-                  metadata={"evidence": "indicator"}),
-        InputItem(item_id="tiny.io", text="A boutique consultancy, team of 6, in Austin",
-                  metadata={"evidence": "indicator"}),
-        InputItem(item_id="acme.co.uk", text="An advisory firm of 200 people in London",
-                  metadata={"evidence": "indicator"}),
-    ]
+def test_the_counts_come_off_the_table_a_person_reads():
+    """Where the world shrank, counted from the rows rather than from a copy."""
+    ladder = lane_module.shipped_lanes()["partner"].funnel.rungs()
     profile = {
         "allows": "services", "size_min": 20, "size_max": 5000,
         "locations": ("United Kingdom",), "verticals": ("fintech",),
     }
-    survivors, counts, all_reports = funnel_entities(items, profile=profile)
+    rows, _ = gate_rows(
+        [
+            _record("vendor.io", "Our platform is a SaaS product. Book a demo."),
+            _record("tiny.io", "A boutique consultancy, team of 6, in London"),
+            _record("acme.co.uk", "An advisory firm of 200 people in London"),
+        ],
+        rung=ladder[0], ladder=ladder, profile=profile, evidence=SNIPPET,
+    )
+    counts = count_rows(rows)
     assert counts["candidates"] == 3
-    assert counts["eliminated_at"]["kind"] == 1
-    assert counts["eliminated_at"]["size"] == 1
+    assert counts["eliminated_at"] == {"kind": 1, "size": 1}
     assert counts["unresolved_at"]["kind"] == 1, "the survivor is unresolved, not passed"
-    assert [report.candidate for report in survivors] == ["acme.co.uk"]
-    assert counts["verdicts"]["needing_retrieval"] == 1
-    assert counts["eliminated"]["kind"][0]["candidate"] == "vendor.io", "the count names who"
-    assert counts["unresolved"]["kind"][0]["candidate"] == "acme.co.uk"
-
-
-# --------------------------------------------------------------------------
-# 5. The command wires it up
-# --------------------------------------------------------------------------
+    assert counts["needing_retrieval"] == 1
+    alive = [row["candidate"] for row in rows if row["outcome"] != "eliminated"]
+    assert alive == ["acme.co.uk"], "and the names are in the table itself"
 
 
 def test_the_run_gates_on_the_profile_and_the_lane_together(tmp_path: Path):

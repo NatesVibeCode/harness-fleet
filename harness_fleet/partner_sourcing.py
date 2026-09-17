@@ -25,6 +25,7 @@ returns pages about *tracing*; without this filter they read as evidence.
 from __future__ import annotations
 
 from collections.abc import Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlparse
@@ -253,10 +254,18 @@ class SourcingReport:
 
 
 def _fetch_hits(hits: Sequence[SearchHit], *, timeout: float, respect_robots: bool, snippets_only: bool,
-                report: SourcingReport, seen: set[str] | None = None) -> list[RawRecord]:
-    """Fetch each URL once, however many queries and backends returned it."""
+                report: SourcingReport, seen: set[str] | None = None, pace: float = 0.0) -> list[RawRecord]:
+    """Fetch each URL once, however many queries and backends returned it.
+
+    Pages go through the shared parallel fetch — one slow host must not
+    serialize every other host — while snippets and the dedupe stay inline.
+    Order follows the hits, so the dossier reads the same at any worker count.
+    """
+    from .enrich import _fetch_pages_many
+
     records: list[RawRecord] = []
     seen = seen if seen is not None else set()
+    pending: list[SearchHit] = []
     for hit in hits:
         if hit.url in seen:
             continue
@@ -267,10 +276,18 @@ def _fetch_hits(hits: Sequence[SearchHit], *, timeout: float, respect_robots: bo
                 item_id=hit.url, metadata={"evidence": "indicator", "backend": hit.backend},
             ))
             continue
-        try:
-            records.append(fetch_text(hit.url, timeout=timeout, respect_robots=respect_robots))
-        except Exception as exc:  # a dead link must not stop the sourcing run
-            report.skipped.append({"url": hit.url, "reason": str(exc)[:200]})
+        pending.append(hit)
+    fetched = _fetch_pages_many(
+        [hit.url for hit in pending], fetch_text,
+        timeout=timeout, respect_robots=respect_robots, pace=pace,
+    )
+    by_url = {url: (ok, outcome) for url, ok, outcome in fetched}
+    for hit in pending:
+        ok, outcome = by_url[hit.url]
+        if not ok:  # a dead link must not stop the sourcing run
+            report.skipped.append({"url": hit.url, "reason": str(outcome)[:200]})
+            continue
+        records.append(outcome)
     report.fetched += len(records)
     return records
 
@@ -329,21 +346,34 @@ def enrich_partner(
     queries = [f'"{domain}"'] + contracts.queries_for_gaps(
         domain, tuple(contracts.EVIDENCE_KINDS), limit=len(contracts.EVIDENCE_KINDS)
     )
-    for query in [q for q in queries if q]:
-        for backend in search_backends:
-            report.searched += 1
-            try:
-                hits = web_search(
-                    query, backends=[backend], max_results=max_per_query,
-                    searxng_url=searxng_url, timeout=timeout,
-                )
-            except Exception as exc:
-                report.skipped.append({"backend": backend, "query": query, "reason": str(exc)[:200]})
-                continue
-            records.extend(_fetch_hits(
-                hits, timeout=timeout, respect_robots=respect_robots,
-                snippets_only=snippets_only, report=report, seen=seen_urls,
+    # One (query, backend) pair per worker: mentions come from every backend at
+    # once instead of one search at a time. Assembly below stays sequential, so
+    # searched/skipped counts and dossier order read the same either way.
+    pairs = [(query, backend) for query in queries if query for backend in search_backends]
+
+    def search_one(pair: tuple[str, str]) -> tuple[str, str, bool, Any]:
+        query, backend = pair
+        try:
+            return (query, backend, True, web_search(
+                query, backends=[backend], max_results=max_per_query,
+                searxng_url=searxng_url, timeout=timeout,
             ))
+        except Exception as exc:
+            return (query, backend, False, exc)
+
+    searched: list[tuple[str, str, bool, Any]] = []
+    if pairs:
+        with ThreadPoolExecutor(max_workers=max(1, min(8, len(pairs)))) as pool:
+            searched = list(pool.map(search_one, pairs))
+    for query, backend, ok, outcome in searched:
+        report.searched += 1
+        if not ok:
+            report.skipped.append({"backend": backend, "query": query, "reason": str(outcome)[:200]})
+            continue
+        records.extend(_fetch_hits(
+            outcome, timeout=timeout, respect_robots=respect_robots,
+            snippets_only=snippets_only, report=report, seen=seen_urls, pace=delay,
+        ))
 
     attributed, dropped = filter_attributed(records, domain)
     report.dropped_unattributed = len(dropped)

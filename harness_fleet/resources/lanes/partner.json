@@ -16,7 +16,7 @@
   "preset": "partner-research",
   "tier": "tier_1",
   "top": 25,
-  "revision": 8,
+  "revision": 9,
   "stories": 0,
   "resolve_stories": 0,
   "query_terms": {
@@ -45,6 +45,10 @@
           "kind",
           "size",
           "location"
+        ],
+        "resolve": [
+          "location",
+          "size"
         ],
         "earns": "eliminates a product vendor, or earns one page visit — it never qualifies"
       },

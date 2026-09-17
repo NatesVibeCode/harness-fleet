@@ -30,7 +30,7 @@
     "delivery_hiring"
   ],
   "top": 50,
-  "revision": 5,
+  "revision": 6,
   "funnel": {
     "allows": "any",
     "ladder": [
@@ -38,6 +38,9 @@
         "name": "result",
         "evidence": "snippet",
         "gates": [
+          "location"
+        ],
+        "resolve": [
           "location"
         ],
         "earns": "drops a posting whose employer is not the kind of company this lane wants"

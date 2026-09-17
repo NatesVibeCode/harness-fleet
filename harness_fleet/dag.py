@@ -25,7 +25,14 @@ from .export import (
     export_clean_packet,
     verified_records_from_snapshot,
 )
-from .gates import DEFAULT_LADDER, FETCHED, SNIPPET, LadderRung, _evaluable_gates
+from .gates import (
+    DEFAULT_LADDER,
+    FETCHED,
+    RESOLVABLE_GATES,
+    SNIPPET,
+    LadderRung,
+    _evaluable_gates,
+)
 from .input_data import load_input_items
 from .models import CalibrationReport, ClaimFilter, ClosedModel, RoutePolicy, SortSpec
 from .profile import IdealCompanyProfile
@@ -206,6 +213,12 @@ class GateNode(ClosedModel):
     from_items: str | None = None
     from_gate: str | None = None
     from_retrieve: str | None = None
+    #: The rung this node runs, as data. A spec that carries its own rung keeps
+    #: its meaning after the lane file is revised: re-running an old graph runs
+    #: the gates it ran, not the gates the lane has since grown. Empty falls back
+    #: to reading the rung out of the lane, which is what a hand-written spec
+    #: wants.
+    rung_of: dict[str, Any] | None = None
     #: An explicit grade for what this gate is reading. Empty infers it: text
     #: that came through a retrieve node was read, so it gates as ``fetched``;
     #: a run's own records were given, so they gate as results.
@@ -240,6 +253,7 @@ class RetrieveNode(ClosedModel):
     rung: str
     from_gate: str | None = None
     from_items: str | None = None
+    rung_of: dict[str, Any] | None = None
     max_pages: int = 8
     per_surface: int = 3
     timeout: float = 20.0
@@ -256,9 +270,51 @@ class RetrieveNode(ClosedModel):
         return self
 
 
+class ResolveNode(ClosedModel):
+    """Settle a firmographic with one flat search instead of a site visit.
+
+    A headcount and a country are facts about a company that somebody has
+    already written down — on a register, a profile, a directory. Walking a
+    site for them spends a page fetch per entity and often finds nothing,
+    because the address lives on the contact page nobody links from the
+    homepage. Asking the search engine the question directly costs one search
+    and answers it: the candidate's name, plus the field.
+
+    Only the gates the rung says a search may settle are asked, and only for the
+    candidates still holding them open. Everything else is carried through
+    untouched, so this node can never make a candidate worse off.
+    """
+
+    kind: Literal["resolve"] = "resolve"
+    id: str
+    lane: str
+    from_gate: str
+    #: Which gates a search may put. Empty means the node asks nothing.
+    fields: list[str] = Field(default_factory=list)
+    #: The query, with ``{name}`` and ``{field}`` substituted. The words are
+    #: data because what a field is called is the operator's language, not the
+    #: engine's: "address" finds a registered office, "headquarters" finds the
+    #: city, "employees" finds the headcount.
+    query: str = '"{name}" {field}'
+    field_words: dict[str, str] = Field(default_factory=dict)
+    backends: list[str] = Field(default_factory=list)
+    max_results: int = 6
+    timeout: float = 20.0
+
+    @model_validator(mode="after")
+    def check_fields(self) -> ResolveNode:
+        unknown = [f for f in self.fields if f not in RESOLVABLE_GATES]
+        if unknown:
+            raise DagError(
+                f"resolve node '{self.id}' asks for {unknown}; a search can settle "
+                f"{sorted(RESOLVABLE_GATES)}"
+            )
+        return self
+
+
 DagNode = (
     RunNode | RescoreNode | CalibrateNode | FilterNode | ExportNode | ReviewNode
-    | GateNode | RetrieveNode
+    | GateNode | RetrieveNode | ResolveNode
 )
 
 
@@ -326,7 +382,7 @@ class DagSpec(ClosedModel):
             elif isinstance(node, CalibrateNode):
                 deps[node.id] = set()
             elif isinstance(node, GateNode):
-                refs: list[tuple[str, tuple[type, ...]]] = []
+                pairs: list[tuple[str, tuple[type, ...]]] = []
                 if node.from_items:
                     # Captured items are a file the run wrote before the first
                     # rung: no node produces them, so nothing to depend on.
@@ -342,26 +398,27 @@ class DagSpec(ClosedModel):
                     # happened, and demanding a `run` node for it would make
                     # every ladder graph begin with work it does not need.
                     if by_id.get(node.from_run) is not None:
-                        refs.append((node.from_run, (RunNode, RescoreNode)))
+                        pairs.append((node.from_run, (RunNode, RescoreNode)))
                 if node.from_gate:
-                    refs.append((node.from_gate, (GateNode,)))
+                    pairs.append((node.from_gate, (GateNode, ResolveNode)))
                 if node.from_retrieve:
-                    refs.append((node.from_retrieve, (RetrieveNode,)))
-                for ref, allowed in refs:
-                    target = by_id.get(ref)
+                    pairs.append((node.from_retrieve, (RetrieveNode,)))
+                for source_ref, allowed in pairs:
+                    target = by_id.get(source_ref)
                     if target is None:
-                        raise DagError(f"node '{node.id}' references unknown node '{ref}'")
+                        raise DagError(
+                            f"node '{node.id}' references unknown node '{source_ref}'"
+                        )
                     if not isinstance(target, allowed):
                         wanted = " or ".join(cls.__name__ for cls in allowed)
-                        raise DagError(f"node '{node.id}' reads '{ref}', which is not a {wanted}")
-                    if ref == node.id:
+                        raise DagError(
+                            f"node '{node.id}' reads '{source_ref}', which is not a {wanted}"
+                        )
+                    if source_ref == node.id:
                         raise DagError(f"node '{node.id}' references itself")
-                deps[node.id] = {ref for ref, _ in refs}
-            elif isinstance(node, RetrieveNode):
+                deps[node.id] = {source_ref for source_ref, _ in pairs}
+            elif isinstance(node, ResolveNode):
                 ref = node.from_gate
-                if ref is None:
-                    deps[node.id] = set()
-                    continue
                 target = by_id.get(ref)
                 if target is None:
                     raise DagError(f"node '{node.id}' references unknown node '{ref}'")
@@ -370,6 +427,21 @@ class DagSpec(ClosedModel):
                 if ref == node.id:
                     raise DagError(f"node '{node.id}' references itself")
                 deps[node.id] = {ref}
+            elif isinstance(node, RetrieveNode):
+                gate_ref = node.from_gate
+                if gate_ref is None:
+                    deps[node.id] = set()
+                    continue
+                target = by_id.get(gate_ref)
+                if target is None:
+                    raise DagError(f"node '{node.id}' references unknown node '{gate_ref}'")
+                if not isinstance(target, (GateNode, ResolveNode)):
+                    raise DagError(
+                        f"node '{node.id}' from_gate '{gate_ref}' is not a gate or resolve node"
+                    )
+                if gate_ref == node.id:
+                    raise DagError(f"node '{node.id}' references itself")
+                deps[node.id] = {gate_ref}
             else:
                 ref = node.from_run
                 target = by_id.get(ref)
@@ -725,6 +797,17 @@ def _ensure_routes(store: HarnessStore, policy: RoutePolicy | None) -> None:
     print("No verified-free route yet; refreshing route prices from the providers...")
     catalog.refresh_all()
 
+#: What a search is asked, per gate. A person searching for a company's address
+#: types "address"; the engine's word for the gate is "location". The mapping is
+#: data so a lane can change the question without changing the engine.
+DEFAULT_FIELD_WORDS: dict[str, str] = {
+    "location": "address OR headquarters",
+    "size": "headcount OR employees",
+    "vertical": "industries served",
+    "kind": "services or software company",
+}
+
+
 def _lane_for(name: str, root: Path):
     """The lane a gate or retrieve node names, workspace lane first."""
     from .lanes import load_available_lanes
@@ -737,6 +820,15 @@ def _lane_for(name: str, root: Path):
 
 def _ladder_of(lane: Any) -> list[LadderRung]:
     return list(lane.funnel.rungs() or DEFAULT_LADDER)
+
+
+def _rung_from(node: Any, lane: Any, name: str) -> tuple[LadderRung, list[LadderRung]]:
+    """The rung this node runs: its own copy first, the lane's ladder otherwise."""
+    contract = getattr(node, "rung_of", None)
+    if isinstance(contract, dict) and contract.get("name"):
+        rung = LadderRung(**contract)
+        return rung, _ladder_of(lane)
+    return _rung_of(lane, name)
 
 
 def _rung_of(lane: Any, name: str) -> tuple[LadderRung, list[LadderRung]]:
@@ -791,7 +883,7 @@ def _execute_gate_node(
 ) -> dict[str, Any]:
     """Put one rung's gates to the population above it, and write the table."""
     lane = _lane_for(node.lane, root)
-    rung, ladder = _rung_of(lane, node.rung)
+    rung, ladder = _rung_from(node, lane, node.rung)
     profile = resolved_gate_profile(lane, workspace=root, profile_path=node.profile)
     directory = dag_dir / node.id
     directory.mkdir(parents=True, exist_ok=True)
@@ -898,10 +990,10 @@ def _execute_gate_node(
         evidence=evidence,
     )
     following = next_rung(ladder, rung)
-    for row, report in zip(rows, reports, strict=True):
-        row["text_path"] = text_paths.get(str(row["item_id"]), "")
-        row["advances"] = advances_to(report, following)
-        row["next_rung"] = following.name if following else ""
+    for gate_row, report in zip(rows, reports, strict=True):
+        gate_row["text_path"] = text_paths.get(str(gate_row["item_id"]), "")
+        gate_row["advances"] = advances_to(report, following)
+        gate_row["next_rung"] = following.name if following else ""
     path = table_path(directory)
     write_table(path, rows)
     counts = count_rows(rows)
@@ -951,7 +1043,7 @@ def _execute_retrieve_node(
     from .enrich import walk_entities
 
     lane = _lane_for(node.lane, root)
-    rung, _ladder = _rung_of(lane, node.rung)
+    rung, _ladder = _rung_from(node, lane, node.rung)
     wanted: list[Any] = []
     if node.from_items:
         # No gates asked for, so every captured candidate is walked.
@@ -1071,6 +1163,121 @@ def _execute_retrieve_node(
     }
 
 
+def _open_gates(row: dict[str, Any]) -> set[str]:
+    """Which gates this row is still holding open, from its own verdicts."""
+    try:
+        verdicts = json.loads(str(row.get("gates") or "[]"))
+    except ValueError:
+        return set()
+    return {
+        str(result.get("gate"))
+        for result in verdicts
+        if isinstance(result, dict) and result.get("outcome") == "unknown"
+    }
+
+
+def _execute_resolve_node(
+    node: ResolveNode,
+    root: Path,
+    dag_dir: Path,
+    state: dict[str, Any],
+) -> dict[str, Any]:
+    """Ask the search engine the firmographic question, once per candidate."""
+    from .discover import web_search
+
+    _lane_for(node.lane, root)
+    source_state = (state.get("nodes") or {}).get(node.from_gate) or {}
+    upstream_table = str(source_state.get("table") or "")
+    if not upstream_table or not Path(upstream_table).is_file():
+        raise DagError(
+            f"resolve node '{node.id}' reads '{node.from_gate}', which has no table"
+        )
+    passing = {str(item) for item in source_state.get("ids") or []}
+    directory = dag_dir / node.id
+    directory.mkdir(parents=True, exist_ok=True)
+    rows: list[dict[str, Any]] = []
+    for index, row in enumerate(read_table(upstream_table)):
+        item_id = str(row.get("item_id") or "")
+        if item_id not in passing:
+            continue
+        candidate = str(row.get("candidate") or item_id)
+        carried_text = _read_text(str(row.get("text_path") or ""))
+        asked = [field for field in node.fields if field in _open_gates(row)]
+        queries: list[str] = []
+        hits: list[Any] = []
+        for field in asked:
+            word = node.field_words.get(field) or DEFAULT_FIELD_WORDS.get(field, field)
+            query = node.query.format(name=candidate, field=word)
+            queries.append(query)
+            try:
+                found = web_search(
+                    query,
+                    backends=tuple(node.backends) or ("ddgs",),
+                    max_results=node.max_results,
+                    timeout=node.timeout,
+                )
+            except Exception as exc:  # a search that fails answers nothing
+                hits.append({"query": query, "error": str(exc)[:200]})
+                continue
+            hits.extend(
+                {
+                    "query": query,
+                    "url": hit.url,
+                    "title": hit.title,
+                    "snippet": hit.snippet,
+                }
+                for hit in found
+            )
+        found_text = "\n".join(
+            f"{hit.get('title') or ''} — {hit.get('snippet') or ''} ({hit.get('url') or ''})".strip()
+            for hit in hits
+            if hit.get("url")
+        )
+        text = carried_text + (("\n\n" + found_text) if found_text else "")
+        path = _text_file(directory, index, candidate)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        rows.append({
+            "item_id": item_id,
+            "candidate": candidate,
+            "rung": node.rung if hasattr(node, "rung") else "",
+            "evidence": SNIPPET,
+            "outcome": ("resolved" if found_text else "nothing") if asked else "complete",
+            "earned": "",
+            "because": (
+                "" if not asked
+                else (f"asked {len(asked)} question(s): {', '.join(asked)}"
+                      if found_text else
+                      f"nothing on {', '.join(asked)}: {'; '.join(queries)}")
+            ),
+            "gates": [],
+            "surfaces": {},
+            "pages": [str(hit.get("url") or "") for hit in hits if hit.get("url")],
+            "queries": queries,
+            "hits": len([hit for hit in hits if hit.get("url")]),
+            "text_path": str(path),
+            "source_uri": str(row.get("source_uri") or ""),
+            "advances": True,
+        })
+    path = table_path(directory)
+    write_table(path, rows)
+    return {
+        "kind": "resolve",
+        "lane": node.lane,
+        "fields": list(node.fields),
+        "from_gate": node.from_gate,
+        "table": str(path),
+        "evidence": SNIPPET,
+        "count": len(rows),
+        "asked": sum(1 for row in rows if row["queries"]),
+        "questions": sum(len(row["queries"]) for row in rows),
+        "resolved": sum(1 for row in rows if row["outcome"] == "resolved"),
+        "nothing": sum(1 for row in rows if row["outcome"] == "nothing"),
+        "queries": sorted({q for row in rows for q in row["queries"]}),
+        "ids": [str(row["item_id"]) for row in rows],
+    }
+
+
 def run_dag(
     spec: DagSpec,
     store: HarnessStore,
@@ -1122,6 +1329,16 @@ def run_dag(
                 id_sets[node_id] = {str(item) for item in saved.get("ids") or []}
                 continue
             saved = _execute_gate_node(node, store, root, dag_dir, state, dag_id)
+            state["nodes"][node_id] = saved
+            id_sets[node_id] = {str(item) for item in saved.get("ids") or []}
+            sidecar.write_text(json.dumps(state, indent=2), encoding="utf-8")
+            continue
+        if isinstance(node, ResolveNode):
+            if resume and isinstance(saved, dict) and saved.get("table") and Path(saved["table"]).is_file():
+                saved["cached"] = True
+                id_sets[node_id] = {str(item) for item in saved.get("ids") or []}
+                continue
+            saved = _execute_resolve_node(node, root, dag_dir, state)
             state["nodes"][node_id] = saved
             id_sets[node_id] = {str(item) for item in saved.get("ids") or []}
             sidecar.write_text(json.dumps(state, indent=2), encoding="utf-8")

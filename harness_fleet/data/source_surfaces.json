@@ -14,6 +14,9 @@
   },
   "first_party_paths": {
     "_comment": "Fallbacks for a site whose sitemap is missing or thin. Ordered by how often each answered in the probe.",
+    "home": [
+      "/"
+    ],
     "careers": [
       "/careers",
       "/jobs",

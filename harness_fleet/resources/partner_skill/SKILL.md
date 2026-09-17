@@ -14,15 +14,15 @@ carries what is specific to the `partner` lane:
 
 - **Lane config:** `lanes/partner.json` — seeds, queries, sources, filters.
 - **Preset:** `partner-research` · **Bar:** `tier_1` · **Output:** top 25.
-- **Looks for:** vendor-published stories about partners, and the partner's own
-  website — its case studies and the partners *it* lists.
-- **Volume:** `stories: 80` in the lane file. The run enumerates each vendor's
-  own customer-story index (Snowflake, Databricks, Elastic, Datadog, MongoDB)
-  and takes one candidate per story, which is how a lane returns hundreds of
-  companies instead of the handful a search returns.
+- **Looks for:** net-new systems integrators, found directly — never harvested
+  from a vendor's site. The run qualifies each candidate layer by layer on its
+  own pages, then scores which software tools it implements, in which
+  verticals, and with what expertise.
+- **Volume:** the lane's queries (`stories: 0`) — no vendor customer-story
+  sweep. Those indexes name the vendors' buyers, and a partner already sitting
+  on a vendor site is by definition not net new.
 - **The walk:** every entity short of the bar gets visited on its own surfaces —
-  sitemap first, then case studies, services, partners, hiring board (JSON API)
-  and the vendor stories that name it.
+  sitemap first, then case studies, services, partners and hiring board (JSON API).
 
 Run it with `harness-fleet research --lane partner`, or over MCP by passing
 `lane: "partner"` to the pipeline tools.

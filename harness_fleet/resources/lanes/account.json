@@ -12,7 +12,7 @@
   "preset": "account-research",
   "tier": "tier_3",
   "top": 25,
-  "revision": 7,
+  "revision": 8,
   "stories": 0,
   "resolve_stories": 0,
   "funnel": {
@@ -24,6 +24,10 @@
         "gates": [
           "size",
           "location"
+        ],
+        "resolve": [
+          "location",
+          "size"
         ],
         "earns": "eliminates on firmographics, or earns one page visit — it never qualifies"
       },

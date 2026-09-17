@@ -76,8 +76,12 @@ def _verdict(gate: str, outcome: str):
 def test_every_rung_becomes_a_gate_and_the_walk_between_them_is_a_retrieve():
     spec = DagSpec.model_validate(lane_spec(_lane("partner"), from_run="discovery"))
 
+    # A rung that declares what a flat search may settle gets three nodes: the
+    # gate, the search, and the gate again on what the search found.
     assert spec.topo_order() == [
         "g0-result",
+        "x0-result",
+        "c0-result",
         "r1-surface",
         "g1-surface",
         "r2-stories",
@@ -89,7 +93,7 @@ def test_every_rung_becomes_a_gate_and_the_walk_between_them_is_a_retrieve():
     assert by_id["g0-result"].from_run == "discovery"
     # The fetched rung is earned by a walk that reads exactly its surfaces.
     assert isinstance(by_id["r1-surface"], RetrieveNode)
-    assert by_id["r1-surface"].from_gate == "g0-result"
+    assert by_id["r1-surface"].from_gate == "c0-result"
     rung, _ladder = _rung_of(_lane("partner"), "surface")
     assert rung.surfaces == ["home", "about", "services", "partners", "careers"]
     assert by_id["r1-surface"].rung == "surface"
@@ -125,7 +129,7 @@ def test_a_gate_needs_exactly_one_source():
 
 
 def test_a_retrieve_cannot_hang_off_a_run():
-    with pytest.raises(ValidationError, match="not a gate node"):
+    with pytest.raises(ValidationError, match="not a gate or resolve node"):
         DagSpec.model_validate({
             "name": "x",
             "nodes": [
@@ -446,7 +450,8 @@ def test_the_cli_compiles_a_lane_ladder_into_a_spec(tmp_path, capsys):
     ))
     payload = json.loads(capsys.readouterr().out)
     assert [node["id"] for node in payload["nodes"]] == [
-        "g0-result", "r1-surface", "g1-surface", "r2-stories", "g2-stories",
+        "g0-result", "x0-result", "c0-result", "r1-surface", "g1-surface",
+        "r2-stories", "g2-stories",
     ]
 
 
@@ -462,3 +467,141 @@ def test_the_cli_refuses_a_lane_with_no_run_to_gate(tmp_path):
             dag_id=None, dry_run=False, no_resume=False, profile=None,
             workspace_root=str(tmp_path), db=str(tmp_path / "t.db"), json=True,
         ))
+
+
+# --------------------------------------------------------------------------
+# The cheap question before the expensive one
+
+
+def test_one_search_settles_the_address_the_walk_would_have_looked_for(
+    tmp_path, monkeypatch
+):
+    """Take the firm's name, search the address, and skip the walk it saves.
+
+    A headcount and a country are published facts. Asking for them directly is
+    one search; walking the site for them is a fetch per entity that often finds
+    nothing, because the address is on a page nobody links to.
+    """
+    from harness_fleet import dag as dag_module
+    from harness_fleet.dag import DagSpec
+    from harness_fleet.discover import SearchHit
+    from harness_fleet.rungs import lane_spec
+
+    asked: list[str] = []
+
+    def fake_search(query, **kwargs):
+        asked.append(query)
+        return [
+            SearchHit(url="https://register.example/acme", title="ACME Ltd",
+                      snippet="Registered office: 12 Kingsway, London, United Kingdom. 200 employees."),
+        ]
+
+    monkeypatch.setattr("harness_fleet.discover.web_search", fake_search)
+    lane = _lane("partner")
+    lane.funnel.ladder = [
+        LadderRung(name="result", evidence=SNIPPET, gates=["kind", "size", "location"],
+                   resolve=["location", "size"]),
+        # The rung above only wants the country, so a search can finish the job
+        # and the candidate never needs its site read at all.
+        LadderRung(name="confirm", evidence=SNIPPET, gates=["location"]),
+    ]
+    (tmp_path / "lanes").mkdir()
+    _profile(tmp_path)
+    store = _store(tmp_path)
+    _seed_run(monkeypatch, store, [])
+    spec = DagSpec.model_validate(lane_spec(
+        lane,
+        # A candidate whose result names no place: the address is exactly what
+        # the search result does not carry, and what one search answers.
+        from_items=_items_file(tmp_path, "Northwind Consulting is a systems integrator."),
+        workspace=tmp_path,
+    ))
+    assert spec.topo_order() == [
+        "g0-result", "x0-result", "c0-result", "g1-confirm",
+    ]
+
+    state = dag_module.run_dag(spec, store, workspace_root=tmp_path, dag_id="rungs")
+
+    node = state["nodes"]["x0-result"]
+    assert node["queries"] == ['"northwind.example" address OR headquarters',
+                               '"northwind.example" headcount OR employees']
+    assert node["resolved"] == 1
+    # What the search found is the text the gate above stands on, and it is
+    # enough: the country and the headcount are both settled without a page.
+    row = read_table(node["table"])[0]
+    assert "Registered office: 12 Kingsway, London" in Path(row["text_path"]).read_text(
+        encoding="utf-8"
+    )
+    recheck = read_table(state["nodes"]["c0-result"]["table"])[0]
+    verdicts = {
+        gate["gate"]: gate["outcome"] for gate in json.loads(recheck["gates"])
+    }
+    assert verdicts["location"] == "pass" and verdicts["size"] == "pass"
+    # Two questions asked — the country and the headcount — and no walk node
+    # exists to spend anything: the ladder above wanted only the country, and
+    # the search settled it.
+    assert node["asked"] == 1, "one candidate was asked something"
+    assert node["questions"] == 2, "and it was asked both open questions"
+    assert [node_id for node_id in state["nodes"] if node_id.startswith("r")] == []
+
+
+def test_the_walk_only_reads_what_is_still_open_after_the_search(tmp_path, monkeypatch):
+    """A search that settles half the gates still leaves the rest to the walk."""
+    from harness_fleet import dag as dag_module
+    from harness_fleet.dag import DagSpec
+    from harness_fleet.discover import SearchHit
+    from harness_fleet.enrich import EnrichReport
+    from harness_fleet.rungs import lane_spec
+
+    walked: list[str] = []
+
+    def fake_search(query, **kwargs):
+        return [SearchHit(url="https://acme.example", title="ACME",
+                          snippet="ACME is based in London, United Kingdom.")]
+
+    def fake_enrich(entity, **kwargs):
+        walked.append(entity)
+        report = EnrichReport(entity=entity, domain=entity,
+                              surfaces=list(kwargs.get("surface_order") or []))
+        report.visited, report.kept, report.by_surface = 1, 1, {"about": 1}
+        return [_record(f"{entity}-about", "ACME is a systems integrator of 200 people.")], report
+
+    monkeypatch.setattr("harness_fleet.discover.web_search", fake_search)
+    monkeypatch.setattr("harness_fleet.enrich.enrich_entity", fake_enrich)
+    lane = _lane("partner")
+    lane.funnel.ladder = [
+        LadderRung(name="result", evidence=SNIPPET, gates=["kind", "size", "location"],
+                   resolve=["location", "size"]),
+        LadderRung(name="surface", evidence=FETCHED, gates=["kind", "size", "location"],
+                   surfaces=["about"]),
+    ]
+    (tmp_path / "lanes").mkdir()
+    _profile(tmp_path)
+    store = _store(tmp_path)
+    _seed_run(monkeypatch, store, [])
+    spec = DagSpec.model_validate(lane_spec(
+        lane, from_items=_items_file(tmp_path), workspace=tmp_path,
+    ))
+
+    state = dag_module.run_dag(spec, store, workspace_root=tmp_path, dag_id="rungs")
+
+    # The country came from the search; the kind question still needed the site.
+    assert walked == ["northwind.example"]
+    assert state["nodes"]["x0-result"]["resolved"] == 1
+    final = read_table(state["nodes"]["g1-surface"]["table"])[0]
+    assert final["candidate"] == "northwind.example"
+
+
+def _items_file(tmp_path, text: str = INTEGRATOR):
+    """The captured items a research run hands to its first rung."""
+    from harness_fleet.discover import write_items_jsonl
+    from harness_fleet.models import InputItem
+
+    path = tmp_path / "captured.jsonl"
+    write_items_jsonl(
+        [InputItem(item_id="northwind.example", text=text,
+                   source_uri="https://northwind.example",
+                   metadata={"entity": "northwind.example"})],
+        path,
+    )
+    return str(path)

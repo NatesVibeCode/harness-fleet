@@ -844,6 +844,68 @@ def _extract_title(html: str) -> str:
     return _WS.sub(" ", _html.unescape(re.sub(r"<[^>]+>", "", match.group(1)))).strip()[:500]
 
 
+def _meta_description(html: str) -> str:
+    """The page's own one-sentence self-description, `og:description` first.
+
+    A consultancy's meta description usually states what kind of firm it is in
+    one clean sentence — the kind gate's best evidence on the page — and the
+    body extractors never see it: it lives in `<head>`, which every content
+    extractor skips.
+    """
+    import html as _html
+
+    patterns = (
+        r'<meta\b[^>]*\bproperty="og:description"[^>]*\bcontent="([^"]*)"',
+        r'<meta\b[^>]*\bcontent="([^"]*)"[^>]*\bproperty="og:description"',
+        r'<meta\b[^>]*\bname="description"[^>]*\bcontent="([^"]*)"',
+        r'<meta\b[^>]*\bcontent="([^"]*)"[^>]*\bname="description"',
+    )
+    for pattern in patterns:
+        match = re.search(pattern, html, re.IGNORECASE)
+        if match:
+            text = _WS.sub(" ", _html.unescape(match.group(1))).strip()
+            if text:
+                return text[:500]
+    return ""
+
+
+#: Alt texts that name nothing: kept out of the evidence so a logo grid does
+#: not read as a client list. A real name ("acme-bank-logo") keeps its full
+#: string — only a bare generic word is dropped.
+_GENERIC_ALTS = frozenset({
+    "logo", "icon", "image", "photo", "picture", "banner", "avatar",
+    "thumbnail", "illustration", "spacer", "pixel", "arrow", "button",
+    "background", "header", "footer",
+})
+
+
+def _keep_alt(alt: str) -> bool:
+    """Whether an image alt names something worth quoting."""
+    import html as _html
+
+    text = _html.unescape(alt or "").strip()
+    if len(text) < 3:
+        return False
+    return re.sub(r"[\W_]+", "", text).lower() not in _GENERIC_ALTS
+
+
+def _expose_alts(html: str) -> str:
+    """Rewrite images as the words they carry, so every extractor sees them.
+
+    Partner pages show named clients as logo images: the name lives only in
+    `alt`, which every content extractor drops. Rewriting the tag to its words
+    keeps the verbatim string quotable in whatever extractor wins.
+    """
+    def _swap(match: re.Match[str]) -> str:
+        alt = match.group(1) if match.group(1) is not None else match.group(2)
+        return f" {alt} " if _keep_alt(alt or "") else " "
+
+    return re.sub(
+        r"<img\b[^>]*?\balt=(?:\"([^\"]*)\"|'([^']*)')[^>]*>",
+        _swap, html, flags=re.IGNORECASE,
+    )
+
+
 _DENSITY_MIN_DOC_WORDS = 200  # a document below this is genuinely thin (JS shell, stub)
 _DENSITY_MIN_CAPTURE_RATIO = 0.2  # an extractor must capture this share of a real body
 
@@ -893,7 +955,7 @@ def extract_text(html: str) -> str:
     """
     if not html.strip():
         return ""
-    cleaned = _remove_hidden_blocks(html)
+    cleaned = _expose_alts(_remove_hidden_blocks(html))
     document_words = _document_word_count(cleaned)
     best_rejected = ""
     try:
@@ -925,7 +987,15 @@ def extract_text(html: str) -> str:
     fallback = _fallback_strip(cleaned).strip()
     # The full-document strip is the last resort. An extractor's widget is still
     # better than an empty record when that strip finds nothing.
-    return fallback or best_rejected
+    result = fallback or best_rejected
+    # The page's self-description leads: it is verbatim page content the body
+    # extractors never see (it lives in <head>), and it is usually the cleanest
+    # statement of what kind of firm this is. Skipped when the body already says
+    # it, so the text never states the same sentence twice.
+    description = _meta_description(cleaned)
+    if description and " ".join(description.split()) not in " ".join(result.split()):
+        result = f"{description}\n\n{result}" if result else description
+    return result
 
 def require_playwright() -> None:
     """Fail fast with an install hint when the ``js`` extra is missing."""
@@ -1368,6 +1438,13 @@ def _record_from_response(final_url: str, raw_header: str, raw: bytes, source_ur
         raise DiscoverError(f"no extractable text for {source_url}")
     title = _extract_title(html) or domain_of(final_url)
     metadata: dict[str, Any] = {"evidence": "fetched", **archive}
+    # A partner page linking snowflake.com/partners is alliance evidence
+    # without another fetch: the link targets ride on the record. The page's
+    # own host is excluded — site navigation is not an alliance.
+    metadata["outbound_hosts"] = _outbound_hosts(html, final_url)
+    description = _meta_description(html)
+    if description:
+        metadata["meta_description"] = description
     employer, employer_domain = _json_ld_employer(html)
     if employer_domain or employer:
         # The posting names its own employer. Attribution prefers the domain the
@@ -1381,6 +1458,20 @@ def _record_from_response(final_url: str, raw_header: str, raw: bytes, source_ur
     return RawRecord(text=text, source_uri=final_url, title=title,
                      item_id=record_id(final_url, title),
                      metadata=metadata)
+def _outbound_hosts(html: str, base_url: str) -> list[str]:
+    """External hosts this page links to, sorted and deduped."""
+    from urllib.parse import urlparse
+
+    own = (urlparse(base_url).netloc or "").lower()
+    hosts: list[str] = []
+    for link in extract_links(html, base_url):
+        host = (urlparse(link).netloc or "").lower()
+        if not host or host == own or host in hosts:
+            continue
+        hosts.append(host)
+    return sorted(hosts)
+
+
 def _decode_body(raw: bytes, content_type: str) -> str:
     """Decode honoring an explicit charset (xml/html default utf-8, text latin-1 per RFC)."""
     match = re.search(r"charset=([\w-]+)", content_type)

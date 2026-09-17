@@ -300,6 +300,9 @@
   function clear(node) { while (node.firstChild) node.removeChild(node.firstChild); }
   function pct(part, whole) { return whole ? Math.round((part / whole) * 100) : 0; }
   function scoreClass(tier) { return ({ tier_1:"ok", tier_2:"info", tier_3:"warn", unfit:"bad" })[tier] || ""; }
+  // An unscored row has no tier: without the fallback the class would be
+  // "tier_null" (or "tier_None"), which no rule styles.
+  function tierTagClass(tier) { return "tag " + (tier ? "tier_" + tier : "soft"); }
   function isPlainObject(v) { return !!v && typeof v === "object" && !Array.isArray(v); }
   function isEmptyValue(v) {
     if (v === null || v === undefined) return true;
@@ -539,7 +542,9 @@
           el("div", { class:"score-cell" }, [
             el("span", { class:"score-num", text: partner.score === null ? "—" : partner.score + " / " + p.checklist_total }),
             el("span", { class:"bar " + scoreClass(partner.tier), style:"width:74px" }, [
-              el("span", { style:"width:" + (partner.score === null ? 0 : Math.max(2, partner.score)) + "%" })
+              // A score is points out of this run's checklist total, not a
+              // percent: 45 of 60 fills the bar, not under half of it.
+              el("span", { style:"width:" + (partner.score === null ? 0 : Math.max(2, pct(partner.score, p.checklist_total))) + "%" })
             ])
           ])
         ]),
@@ -707,7 +712,7 @@
       el("div", { class:"panel-head" }, [el("span", { class:"panel-title", text:"Score distribution" })]),
       el("div", { class:"panel-body" }, [
         stack, legend,
-        el("div", { class:"section-sub", style:"margin-top:12px", text:"Average " + avgEarned + " of " + p.checklist_total + " points across " + scored.length + " scored partner(s). Bands come from the scoring policy, not this page." })
+        el("div", { class:"section-sub", style:"margin-top:12px", text:"Average " + avgEarned + " of " + p.checklist_total + " points across " + scored.length + " scored " + recordNoun().many.toLowerCase() + ". Bands come from the scoring policy, not this page." })
       ])
     ]);
 
@@ -755,7 +760,9 @@
       return el("div", { style:"margin-bottom:18px" }, [
         el("div", { style:"display:flex;align-items:center;gap:9px;margin-bottom:8px;flex-wrap:wrap" }, [
           el("span", { class:"cell-name", text:partner.name || partner.id }),
-          el("span", { class:"tag tier_" + partner.tier, text:TIER_LABEL[partner.tier] || "—" }),
+          // An unscored row has no tier: without the fallback the class is
+          // "tier_null", which no rule styles, so the tag renders unstyled.
+          el("span", { class:tierTagClass(partner.tier), text:TIER_LABEL[partner.tier] || "—" }),
           partner.source && partner.source.uri
             ? el("a", { href:partner.source.uri, target:"_blank", rel:"noopener noreferrer", text:"open source" })
             : el("span", { class:"empty-value", text:"input had no source_uri" })
@@ -874,7 +881,7 @@
   function tierCell(partner) {
     var ev = partner.evidence || {};
     var shown = ev.tier_capped && ev.tier_supported ? ev.tier_supported : partner.tier;
-    var node = el("span", { class:"tag tier_" + shown, text:TIER_LABEL[shown] || shown || "—" });
+    var node = el("span", { class:tierTagClass(shown), text:TIER_LABEL[shown] || shown || "—" });
     if (!ev.tier_capped) return el("td", null, [node]);
     return el("td", null, [el("div", { style:"display:flex;align-items:center;gap:6px;flex-wrap:wrap" }, [
       node,
@@ -898,7 +905,7 @@
       el("div", { style:"flex:1;min-width:0" }, [
         el("h3", { class:"drawer-title", text:partner.name || partner.id }),
         el("div", { style:"display:flex;align-items:center;gap:8px;flex-wrap:wrap" }, [
-          el("span", { class:"tag tier_" + ((partner.evidence || {}).tier_capped && (partner.evidence || {}).tier_supported ? partner.evidence.tier_supported : partner.tier), text:TIER_LABEL[(partner.evidence || {}).tier_capped && (partner.evidence || {}).tier_supported ? partner.evidence.tier_supported : partner.tier] || partner.tier || "unscored" }),
+          el("span", { class:tierTagClass((partner.evidence || {}).tier_capped && (partner.evidence || {}).tier_supported ? partner.evidence.tier_supported : partner.tier), text:TIER_LABEL[(partner.evidence || {}).tier_capped && (partner.evidence || {}).tier_supported ? partner.evidence.tier_supported : partner.tier] || partner.tier || "unscored" }),
           ((partner.evidence || {}).tier_capped ? el("span", { class:"tag mini", style:"border-color:var(--warn-line);color:var(--warn)", text:"evidence-capped" }) : null),
           el("span", { class:"section-sub", text:partner.score === null ? "no score" : partner.score + " / " + p.checklist_total + " points" }),
           el("span", { class:"section-sub", text:(partner.quotes || []).length + " verified quote(s)" })
@@ -911,7 +918,7 @@
 
     body.appendChild(el("div", { class:"section" }, [
       el("div", { class:"section-head" }, [el("h4", { class:"section-title", style:"font-size:14px", text:"Score breakdown" })]),
-      el("div", { class:"bar " + scoreClass(partner.tier), style:"height:8px" }, [el("span", { style:"width:" + (partner.score || 0) + "%" })]),
+      el("div", { class:"bar " + scoreClass(partner.tier), style:"height:8px" }, [el("span", { style:"width:" + (partner.score === null ? 0 : Math.max(2, pct(partner.score, p.checklist_total))) + "%" })]),
       el("div", { class:"section-sub", style:"margin-top:6px", text:partner.earned_points + " of " + p.checklist_total + " points earned" }),
       el("div", { class:"q-list", style:"margin-top:10px" }, (p.checklist || []).map(function (c) {
         var passed = !!(partner.checklist || {})[c.item_id];
@@ -1005,7 +1012,7 @@
             }))
           ])
         ]);
-      })) : el("div", { class:"panel" }, [el("div", { class:"state", text:"No verified quotes for this partner." })])
+      })) : el("div", { class:"panel" }, [el("div", { class:"state", text:"No verified quotes for this " + recordNoun().one.toLowerCase() + "." })])
     ]));
 
     var src = partner.source || {}, prov = partner.provenance || {};
