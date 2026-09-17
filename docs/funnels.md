@@ -81,11 +81,11 @@ lanes in.
   c0-result     gate     0 fetches
                 reads x0-result        | writes rung_rows + rung_text (the text it gated on)
   r1-surface    retrieve pages: about, services, careers
-                reads c0-result        | writes rung_rows + rung_text + its own items table
+                reads c0-result        | writes rung_rows + rung_text + rung_items
   g1-surface    gate     0 fetches (reads what the walk brought back)
                 reads r1-surface       | writes rung_rows + rung_text (the text it gated on)
   r2-stories    retrieve pages: case_studies, blog, news
-                reads g1-surface       | writes rung_rows + rung_text + its own items table
+                reads g1-surface       | writes rung_rows + rung_text + rung_items
   g2-stories    gate     0 fetches (reads what the walk brought back)
                 reads r2-stories       | writes rung_rows + rung_text (the text it gated on)
   s-score       score    reads the standing firms, runs the campaign
@@ -96,9 +96,9 @@ lanes in.
   | `g0-result` | gate | result | size, location | - | `rung_rows`, `rung_text` |
   | `x0-result` | resolve | - | searches: location, size -> `"{name}" {field}` | - | `rung_rows`, `rung_text` |
   | `c0-result` | gate | result | size, location | - | `rung_rows`, `rung_text` |
-  | `r1-surface` | retrieve | surface | reads pages | `about`, `services`, `careers` | `rung_rows`, `rung_text`, items table |
+  | `r1-surface` | retrieve | surface | reads pages | `about`, `services`, `careers` | `rung_rows`, `rung_text`, `rung_items` |
   | `g1-surface` | gate | surface | size, location | `about`, `services`, `careers` | `rung_rows`, `rung_text` |
-  | `r2-stories` | retrieve | stories | reads pages | `case_studies`, `blog`, `news` | `rung_rows`, `rung_text`, items table |
+  | `r2-stories` | retrieve | stories | reads pages | `case_studies`, `blog`, `news` | `rung_rows`, `rung_text`, `rung_items` |
   | `g2-stories` | gate | stories | vertical | `case_studies`, `blog`, `news` | `rung_rows`, `rung_text` |
   | `s-score` | score | - | the checklist and the bar, on whoever is standing | - | `rung_rows`, `rung_text`, `entity_state` |
 
@@ -166,7 +166,7 @@ lanes in.
   c0-result     gate     0 fetches
                 reads x0-result        | writes rung_rows + rung_text (the text it gated on)
   r1-posting    retrieve pages: careers, about, ats
-                reads c0-result        | writes rung_rows + rung_text + its own items table
+                reads c0-result        | writes rung_rows + rung_text + rung_items
   g1-posting    gate     0 fetches (reads what the walk brought back)
                 reads r1-posting       | writes rung_rows + rung_text (the text it gated on)
   s-score       score    reads the standing firms, runs the campaign
@@ -177,7 +177,7 @@ lanes in.
   | `g0-result` | gate | result | location | - | `rung_rows`, `rung_text` |
   | `x0-result` | resolve | - | searches: location -> `"{name}" {field}` | - | `rung_rows`, `rung_text` |
   | `c0-result` | gate | result | location | - | `rung_rows`, `rung_text` |
-  | `r1-posting` | retrieve | posting | reads pages | `careers`, `about`, `ats` | `rung_rows`, `rung_text`, items table |
+  | `r1-posting` | retrieve | posting | reads pages | `careers`, `about`, `ats` | `rung_rows`, `rung_text`, `rung_items` |
   | `g1-posting` | gate | posting | location | `careers`, `about`, `ats` | `rung_rows`, `rung_text` |
   | `s-score` | score | - | the checklist and the bar, on whoever is standing | - | `rung_rows`, `rung_text`, `entity_state` |
 
@@ -258,11 +258,11 @@ lanes in.
   c0-result     gate     0 fetches
                 reads x0-result        | writes rung_rows + rung_text (the text it gated on)
   r1-surface    retrieve pages: home, about, services, partners, careers
-                reads c0-result        | writes rung_rows + rung_text + its own items table
+                reads c0-result        | writes rung_rows + rung_text + rung_items
   g1-surface    gate     0 fetches (reads what the walk brought back)
                 reads r1-surface       | writes rung_rows + rung_text (the text it gated on)
   r2-stories    retrieve pages: case_studies, partners, blog, news
-                reads g1-surface       | writes rung_rows + rung_text + its own items table
+                reads g1-surface       | writes rung_rows + rung_text + rung_items
   g2-stories    gate     0 fetches (reads what the walk brought back)
                 reads r2-stories       | writes rung_rows + rung_text (the text it gated on)
   s-score       score    reads the standing firms, runs the campaign
@@ -273,9 +273,9 @@ lanes in.
   | `g0-result` | gate | result | kind, size, location | - | `rung_rows`, `rung_text` |
   | `x0-result` | resolve | - | searches: location, size -> `"{name}" {field}` | - | `rung_rows`, `rung_text` |
   | `c0-result` | gate | result | kind, size, location | - | `rung_rows`, `rung_text` |
-  | `r1-surface` | retrieve | surface | reads pages | `home`, `about`, `services`, `partners`, `careers` | `rung_rows`, `rung_text`, items table |
+  | `r1-surface` | retrieve | surface | reads pages | `home`, `about`, `services`, `partners`, `careers` | `rung_rows`, `rung_text`, `rung_items` |
   | `g1-surface` | gate | surface | kind, size, location | `home`, `about`, `services`, `partners`, `careers` | `rung_rows`, `rung_text` |
-  | `r2-stories` | retrieve | stories | reads pages | `case_studies`, `partners`, `blog`, `news` | `rung_rows`, `rung_text`, items table |
+  | `r2-stories` | retrieve | stories | reads pages | `case_studies`, `partners`, `blog`, `news` | `rung_rows`, `rung_text`, `rung_items` |
   | `g2-stories` | gate | stories | vertical | `case_studies`, `partners`, `blog`, `news` | `rung_rows`, `rung_text` |
   | `s-score` | score | - | the checklist and the bar, on whoever is standing | - | `rung_rows`, `rung_text`, `entity_state` |
 

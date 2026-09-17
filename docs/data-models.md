@@ -106,10 +106,15 @@ until a carrier that is not a vendor's index exists.
 The ladder *is* the pipeline. `lane_spec` compiles it — the same function a run
 calls — into one node per rung, and each node writes the table it produced into
 the run's own SQLite database: `rung_rows` (the population, the verdicts, who it
-passes on) and `rung_text` (the prose each verdict stood on). The next node
-queries those tables rather than parsing a file, and CSV is an export you ask
-for. Each write is an *attempt* keyed by `run_seq`, so re-running a rung adds an
-answer rather than replacing one.
+passes on), `rung_text` (the prose each verdict stood on) and `rung_items` (what
+a walk gathered). The next node queries those tables rather than parsing a file,
+and CSV is an export you ask for. Each write is an *attempt* keyed by `run_seq`,
+so re-running a rung adds an answer rather than replacing one.
+
+Nothing prunes itself: a fleet run a hundred times is a hundred attempts per
+node. `harness-fleet db stats` says what the store is holding and
+`harness-fleet db prune --keep-attempts N` drops all but the newest attempts —
+the newest is the answer, so pruning never changes one.
 
 Two tables outlive the run:
 

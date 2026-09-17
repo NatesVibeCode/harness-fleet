@@ -87,7 +87,7 @@ def render_dag(lane) -> str:
             rung = getattr(node, "rung", "")
             surfaces = (getattr(node, "rung_of", None) or {}).get("surfaces") or []
             cost = "pages: " + (", ".join(surfaces) or "none")
-            writes = "rung_rows + rung_text + its own items table"
+            writes = "rung_rows + rung_text + rung_items"
         reads = next(
             (
                 getattr(node, attr, None)
@@ -119,7 +119,7 @@ def render_dag(lane) -> str:
         writes = {
             "gate": "`rung_rows`, `rung_text`",
             "resolve": "`rung_rows`, `rung_text`",
-            "retrieve": "`rung_rows`, `rung_text`, items table",
+            "retrieve": "`rung_rows`, `rung_text`, `rung_items`",
             "score": "`rung_rows`, `rung_text`, `entity_state`",
         }.get(kind, "-")
         add("  | `" + node_id + "` | " + kind + " | " + rung + " | " + asks
