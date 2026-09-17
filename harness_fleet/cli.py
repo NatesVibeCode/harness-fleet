@@ -572,8 +572,7 @@ def cmd_validate(args: argparse.Namespace) -> None:
     # Detect long documents that were sliced into partial windows
     truncated = 0
     total_slices = 0
-    for b in iter_packed_batches(_iter_input(args), task.batch_size, task.max_slice_chars,
-                            task.max_batch_chars):
+    for b in iter_packed_batches(_iter_input(args), task.batch_size, task.max_slice_chars):
         batch_count += 1
         for itm in b.get("items", []) if isinstance(b, dict) else []:
             total_items += 1
@@ -608,8 +607,7 @@ def cmd_test(args: argparse.Namespace) -> None:
     # malformed records hidden after the first batch.
     for _ in input_factory():
         pass
-    batch = next(iter_packed_batches(input_factory(), task.batch_size, task.max_slice_chars,
-                                                    task.max_batch_chars), None)
+    batch = next(iter_packed_batches(input_factory(), task.batch_size, task.max_slice_chars), None)
     if batch is None:
         raise ValueError("input contains no packable items to test")
     engine = Engine(task=task, store=store, policy=policy)
