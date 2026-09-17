@@ -248,3 +248,20 @@ def test_a_page_with_no_delivery_work_on_it_fails_the_kind_gate():
 
     # And a snippet still cannot fail it: there is not enough of the page yet.
     assert check_kind(therapist, allows="services", evidence=SNIPPET).outcome == "unknown"
+
+
+def test_consultancy_with_soft_product_markers_survives_kind_gate():
+    """Soft product vocabulary ('our platform', 'book a demo') does not kill a consultancy.
+
+    Integrators that run client portals, demo accelerators, or build platform
+    engineering practices were falsely eliminated as vendors. Dominance and primary
+    services identity protect them.
+    """
+    # Royal Cyber / Nebulaworks style copy
+    integrator = (
+        "Royal Cyber is an IT consulting and systems integrator. "
+        "Our platform engineering team delivers cloud migrations for our clients. "
+        "Book a demo of our commerce accelerator."
+    )
+    result = check_kind(integrator, allows="services", evidence=FETCHED)
+    assert result.outcome == "pass" and "reads as a delivery firm" in result.reason

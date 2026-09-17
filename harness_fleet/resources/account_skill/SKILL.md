@@ -12,7 +12,8 @@ procedure (discover, bundle per entity, score, read the evidence with its
 confidence, export, then `lane report` to see what it produced). This file only
 carries what is specific to the `account` lane:
 
-- **Lane config:** `lanes/account.json` — seeds, queries, sources, filters.
+- **Lane config:** `lanes/account.json` — queries, sources, filters, and the
+  onboarding profile that supplies the traits its templates ask for.
 - **Preset:** `account-research` · **Bar:** the tier ladder, floor `tier_3` (a record clearing tier_3, tier_2 or tier_1 has met it) · **Output:** top 25.
 - **Looks for:** companies doing the work, and companies hiring for it.
 - **Volume:** the lane's queries only (`stories: 0`) — candidates come from

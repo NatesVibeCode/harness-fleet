@@ -141,10 +141,14 @@ def render(lane) -> str:
     add = out.append
 
     templates = len(lane.queries or [])
-    combos = 1
-    for values in (lane.query_terms or {}).values():
-        combos *= max(1, len(values))
-    queries = min(templates * combos, lane.max_queries or 0) if lane.query_terms else templates
+    # The real expansion, not `templates x combos`. A template naming two axes
+    # does not produce one query per term set — it produces one per *combination*
+    # of the axes it names, and a template naming none produces one regardless.
+    # Multiplying them together overstated the entry as soon as lanes became
+    # templated, which is exactly the drift this doc exists to make impossible.
+    from harness_fleet.cli import expand_lane_queries
+
+    queries = len(expand_lane_queries(lane))
 
     add(rule("\u2550"))
     add("  " + lane.name.upper() + " LANE - " + lane.description)

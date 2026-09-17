@@ -1,15 +1,21 @@
 {
   "name": "career",
   "description": "Enterprise sales and sales-ops roles, scored on what the posting can prove",
-  "seeds": [
-    "enterprise software"
-  ],
+  "onboarding_profile": "ideal_employer",
   "queries": [
-    "\"enterprise sales\" remote (\"apply now\" OR \"job description\" OR \"join our team\")",
-    "\"sales operations\" remote hiring (\"apply now\" OR \"job description\")",
-    "\"enterprise sales\" \"responsibilities\" \"qualifications\" remote",
-    "\"sales operations\" \"what you'll do\" \"what we're looking for\" remote"
+    "\"{role}\" remote (\"apply now\" OR \"job description\" OR \"join our team\")",
+    "\"{role}\" \"responsibilities\" \"qualifications\" remote",
+    "\"{role}\" \"{tech}\" remote hiring (\"apply now\" OR \"job description\")"
   ],
+  "query_terms": {
+    "role": [
+      "enterprise sales",
+      "sales operations"
+    ],
+    "tech": [
+      "Kafka"
+    ]
+  },
   "backends": [
     "ddgs",
     "hn"

@@ -216,15 +216,27 @@ def _load_evidence(runs_dir: Path | str | None, run_id: str | None) -> dict[str,
 #: interesting about this one", which is a different question from "does it
 #: match", and the one a reader has when the filtering is settled.
 HIGHLIGHT_KEYS: tuple[str, ...] = (
+    # Partner
     "client_logos",
     "case_study_outcome",
     "vendor_alliances",
+    "revenue_motion",
     "hiring_signals",
     "engineering_output",
     "growth_signals",
     "commercial_terms",
     "industry_verticals",
     "service_model",
+    # Career
+    "compensation",
+    "territory",
+    "seniority",
+    "function",
+    "stack",
+    "buyers",
+    # Account
+    "identified_gap",
+    "target_stack",
 )
 
 #: Labels too long to sit on a row are the ones a reader can open the drawer for.
@@ -232,12 +244,21 @@ HIGHLIGHT_LABELS: dict[str, str] = {
     "client_logos": "clients",
     "case_study_outcome": "outcome",
     "vendor_alliances": "alliances",
+    "revenue_motion": "motion",
     "hiring_signals": "hiring",
     "engineering_output": "engineering",
     "growth_signals": "growth",
     "commercial_terms": "terms",
     "industry_verticals": "verticals",
     "service_model": "model",
+    "function": "function",
+    "seniority": "seniority",
+    "territory": "territory",
+    "compensation": "comp",
+    "stack": "stack",
+    "target_stack": "stack",
+    "buyers": "buyers",
+    "identified_gap": "gap",
 }
 
 
@@ -323,6 +344,7 @@ def build_board_payload(
     # firms it looked at last week.
     ledger_payload = ledger_view(store, limit=ledger_limit)
     snapshot = store.run_snapshot(run_id) if run_id else store.run_snapshot(latest_run_id(store))
+    lane = lane_for_run(store, str(snapshot.get("run_id") or ""), runs_dir)
     # A reader tolerates a record the current rules no longer accept, and says
     # how many: strictness is for the deliverable, not for the page.
     records, task = verified_records_from_snapshot(snapshot, tolerate_rejected=True)
@@ -338,11 +360,24 @@ def build_board_payload(
     checklist_total = sum(checklist_points.values())
     answers_spec = _field_specs(task, ("answers",), records[0].claims.get("answers", {}) if records else {})
     generic_spec = _field_specs(task, (), records[0].claims if records else {})
+    # When a task defines its claim schema at the top level without a nested
+    # `answers` object (e.g. `account-research`'s `identified_gap`), promote those
+    # top-level claim fields (excluding framework fields) so they get attribute columns,
+    # facets, and drawer entries rather than going invisible.
+    attribute_candidates = answers_spec if answers_spec else [
+        spec for spec in generic_spec
+        if spec["key"] not in ("score", "checklist", "fit_tier", "reasoning")
+    ]
 
     partners: list[dict[str, Any]] = []
     for record in records:
         claims = record.claims if isinstance(record.claims, dict) else {}
         answers = claims.get("answers") if isinstance(claims.get("answers"), dict) else {}
+        if not answers:
+            answers = {
+                k: v for k, v in claims.items()
+                if k not in ("checklist", "score", "fit_tier", "reasoning")
+            }
         raw_checklist = claims.get("checklist")
         raw_checklist = raw_checklist if isinstance(raw_checklist, dict) else {}
         score = claims.get("score")
@@ -369,19 +404,49 @@ def build_board_payload(
         evidence_item = evidence_items.get(str(record.item_id)) or {}
         if not isinstance(evidence_item, dict):
             evidence_item = {}
+
+        # Determine the primary detail (practice, gap, or role) across lanes
+        primary_detail = (
+            claims.get("identified_practice")
+            or claims.get("identified_gap")
+            or claims.get("role_focus")
+            or answers.get("function")
+        )
+        # Determine the strategic hypothesis or focus for the row
+        hypothesis = (
+            claims.get("revenue_hypothesis")
+            or claims.get("fit_hypothesis")
+            or claims.get("role_focus")
+            or claims.get("identified_gap")
+        )
+        # For career, prefer employer name if recorded, falling back to item_id
+        display_name = answers.get("employer") or str(record.item_id)
+        merged_for_highlights = {**claims, **answers}
+
+        # Determine quick action URL and label based on item_id, answers, and source
+        action_url = answers.get("requisition_url") or getattr(record, "source_uri", None)
+        action_label = "Apply ↗" if (lane == "career" or answers.get("requisition_url")) else "Site ↗"
+        item_id_str = str(record.item_id)
+        if not action_url and "." in item_id_str and not item_id_str.startswith("http") and "/" not in item_id_str:
+            action_url = f"https://{item_id_str}"
+
         partners.append({
             "id": str(record.item_id),
-            "name": str(record.item_id),
+            "name": display_name,
             "score": score,
             "tier": claims.get("fit_tier"),
             "tier_supported": evidence_item.get("tier_supported") or "",
-            "highlights": _highlights(answers if isinstance(answers, dict) else {}),
+            "highlights": _highlights(merged_for_highlights),
             "tier_capped": bool(evidence_item.get("tier_capped")),
             "checklist": {item: bool(raw_checklist.get(item)) for item in checklist_points},
             "checklist_points": checklist_points,
             "earned_points": sum(points for item, points in checklist_points.items() if raw_checklist.get(item)),
-            "practice": claims.get("identified_practice"),
+            "practice": primary_detail,
+            "detail": primary_detail,
+            "hypothesis": hypothesis,
             "reasoning": claims.get("reasoning"),
+            "action_url": action_url,
+            "action_label": action_label,
             "answers": answers,
             "claims": claims,
             "quotes": quotes,
@@ -401,7 +466,7 @@ def build_board_payload(
 
     # Facets are computed over the whole set so the filters can describe it.
     facets: dict[str, dict[str, int]] = {}
-    for spec in answers_spec:
+    for spec in attribute_candidates:
         key = spec["key"]
         if spec["type"] == "list":
             facets[key] = _counter([v for p in partners for v in (p["answers"].get(key) or [])])
@@ -425,7 +490,7 @@ def build_board_payload(
             "attempts_used": snapshot.get("attempts_used"),
             "input_path": snapshot.get("input_path"),
             "task": getattr(task, "name", None),
-            "lane": lane_for_run(store, str(snapshot.get("run_id") or ""), runs_dir),
+            "lane": lane,
             "task_revision": snapshot.get("task_revision_id"),
             "instructions": getattr(task, "instructions", None),
         },
@@ -465,7 +530,7 @@ def build_board_payload(
         # they came for — the field is still in the drawer for anyone who wants
         # the schema, but the table shows the data.
         "attributes": [
-            spec for spec in answers_spec
+            spec for spec in attribute_candidates
             if any(
                 (partner.get("answers") or {}).get(spec["key"]) not in (None, "", [], {})
                 for partner in partners

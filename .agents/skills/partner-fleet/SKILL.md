@@ -12,7 +12,8 @@ procedure (discover, bundle per entity, score, read the evidence with its
 confidence, export, then `lane report` to see what it produced). This file only
 carries what is specific to the `partner` lane:
 
-- **Lane config:** `lanes/partner.json` — seeds, queries, sources, filters.
+- **Lane config:** `lanes/partner.json` — queries, sources, filters, and the
+  onboarding profile that supplies the traits its templates ask for.
 - **Preset:** `partner-research` · **Bar:** `tier_2` · **Output:** top 25.
 - **Looks for:** net-new systems integrators, found directly — never harvested
   from a vendor's site. The run qualifies each candidate layer by layer on its

@@ -72,9 +72,23 @@ def test_a_page_is_classified_by_its_path():
 
 
 def test_a_note_in_the_surface_file_is_not_a_surface():
-    """The file documents itself with _-prefixed keys; prose is not data."""
+    """The file documents itself with _-prefixed keys; prose is not data.
+
+    The note lives *inside* the maps a reader enumerates, so reading them raw
+    made ``first_party_paths`` name a surface called ``_comment`` with 103
+    paths — the comment string, taken character by character — and gave
+    ``channels`` and ``community`` one each. They are dropped at the door now.
+    """
+    raw = json.loads(enrich.SURFACES_PATH.read_text(encoding="utf-8"))
+    assert any(
+        str(key).startswith("_")
+        for section in ("match", "first_party_paths", "channels", "community")
+        for key in (raw.get(section) or {})
+    ), "the shipped plan still explains itself in place"
     plan = enrich.load_surfaces()
-    assert "_comment" in (plan.get("match") or {})
+    for section in ("match", "first_party_paths", "channels", "community", "vendor_stories"):
+        leaked = [key for key in (plan.get(section) or {}) if str(key).startswith("_")]
+        assert not leaked, f"{section} still names a comment as data: {leaked}"
     assert classify_page("https://acme.com/comment/case-studies") == "case_studies"
 
 

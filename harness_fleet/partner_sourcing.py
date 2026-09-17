@@ -210,7 +210,7 @@ def enrich_urls(plan: dict[str, Any] | None, entity: str) -> dict[str, list[str]
         "first_party": [
             url
             for surface in ("services", "case_studies", "careers", "about", "blog")
-            for url in surface_urls(surface, domain, surfaces=plan)[:2]
+            for url in surface_urls(surface, domain, surfaces=plan)
         ],
         # The HTML board hosts are not listed: they answer 200 for a slug that
         # does not exist, so the readable form is the API.

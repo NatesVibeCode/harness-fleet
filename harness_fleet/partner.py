@@ -100,6 +100,27 @@ class IdealPartnerProfile(BaseModel):
             "verticals": tuple(self.target_industries),
         }
 
+    def query_terms(self) -> dict[str, list[str]]:
+        """The values this IPP supplies to the lane's query templates.
+
+        The ecosystem leads the tech axis because it is the one thing the
+        partner must actually implement; the adjacent competencies follow,
+        since a firm that names them is a firm that does the work.
+
+        ``anchor_partners`` is deliberately absent: a named exemplar is a
+        calibration example, not a search — querying it returns that firm's own
+        marketing rather than the class of integrator this profile describes.
+        """
+        tech = ([self.target_ecosystem] if self.target_ecosystem else []) + list(
+            self.required_adjacent_competencies
+        )
+        return {
+            "tech": list(dict.fromkeys(tech)),
+            "vertical": list(self.target_industries),
+            "role": list(self.key_delivery_roles),
+            "pain": list(self.service_models),
+        }
+
     def to_company_profile(self) -> IdealCompanyProfile:
         """Map to IdealCompanyProfile for persistence in the SQLite store."""
         trigger_phrases = [

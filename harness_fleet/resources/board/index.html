@@ -19,6 +19,16 @@
     --shadow-lg:0 12px 32px rgba(16,24,40,.12);
     --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
   }
+  /* ---------- lane themes ---------- */
+  body[data-lane="partner"] {
+    --accent:#059669; --accent-soft:#ecfdf5; --accent-line:#a7f3d0;
+  }
+  body[data-lane="account"] {
+    --accent:#1d4ed8; --accent-soft:#eff6ff; --accent-line:#bfdbfe;
+  }
+  body[data-lane="career"] {
+    --accent:#7c3aed; --accent-soft:#f5f3ff; --accent-line:#ddd6fe;
+  }
   * { box-sizing:border-box; }
   html,body { margin:0; padding:0; }
   body {
@@ -133,6 +143,50 @@
   .tag.unfit { background:var(--bad-soft); border-color:var(--bad-line); color:var(--bad); }
   .tag.soft { background:var(--surface-3); color:var(--text-2); font-weight:550; }
   .tag.mini { font-size:11px; padding:1px 7px; }
+  .tag.tag-comp { background:#ecfdf3; color:#067647; border-color:#abefc6; font-weight:600; }
+  .tag.tag-geo { background:#eff8ff; color:#175cd3; border-color:#b2ddff; }
+  .tag.tag-tech { background:#f5f3ff; color:#6938ef; border-color:#d9d6fe; font-weight:600; }
+  .tag.tag-motion { background:#f0fdf9; color:#0f766e; border-color:#99f6e4; font-weight:600; }
+
+  .score-pill {
+    display:inline-flex; align-items:center; justify-content:center;
+    padding:1.5px 7px; border-radius:6px; font-weight:700; font-size:12px;
+    font-variant-numeric:tabular-nums; border:1px solid var(--border);
+    background:var(--surface-3); color:var(--text-2); min-width:32px;
+  }
+  .score-pill.tier_1 { background:var(--ok-soft); color:var(--ok); border-color:var(--ok-line); }
+  .score-pill.tier_2 { background:var(--info-soft); color:var(--info); border-color:var(--info-line); }
+  .score-pill.tier_3 { background:var(--warn-soft); color:var(--warn); border-color:var(--warn-line); }
+  .score-pill.unfit { background:var(--bad-soft); color:var(--bad); border-color:var(--bad-line); }
+
+  .card-action-btn {
+    display:inline-flex; align-items:center; gap:4px; padding:2px 8px;
+    border-radius:5px; font-size:11px; font-weight:600; border:1px solid var(--accent-line);
+    background:var(--accent-soft); color:var(--accent); text-decoration:none;
+    margin-left:auto; transition:all .15s ease;
+  }
+  .card-action-btn:hover {
+    background:var(--accent); color:#fff; border-color:var(--accent); text-decoration:none;
+  }
+
+  .verdict-box {
+    padding:13px 15px; border-radius:var(--radius-sm); border:1px solid var(--border);
+    border-left:4px solid var(--accent); background:var(--accent-soft);
+  }
+  .verdict-head {
+    font-size:11.5px; font-weight:700; text-transform:uppercase; letter-spacing:.04em;
+    color:var(--accent); margin-bottom:6px; display:flex; align-items:center; justify-content:space-between;
+  }
+  .verdict-copy-btn {
+    background:none; border:1px solid var(--accent-line); border-radius:4px; padding:2px 7px;
+    font-size:11px; color:var(--accent); cursor:pointer; font-weight:600;
+  }
+  .verdict-copy-btn:hover {
+    background:var(--accent); color:#fff;
+  }
+  .verdict-text {
+    font-size:13.5px; line-height:1.55; color:var(--text); font-weight:500;
+  }
 
   /* ---------- cards / grid ---------- */
   .cols { display:grid; grid-template-columns:minmax(0,1.35fr) minmax(0,1fr); gap:18px; align-items:start; }
@@ -173,17 +227,25 @@
   .kanban { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:14px; align-items:start; }
   @media (max-width:1080px) { .kanban { grid-template-columns:repeat(2,minmax(0,1fr)); } }
   @media (max-width:680px) { .kanban { grid-template-columns:1fr; } }
-  .kanban-col { background:var(--surface-2); border:1px solid var(--border); border-radius:var(--radius); padding:10px; min-height:120px; }
+  .kanban-col {
+    background:var(--surface-2); border:1px solid var(--border);
+    border-top:3.5px solid var(--border-strong); border-radius:var(--radius);
+    padding:11px; min-height:120px; transition:border-color .15s ease;
+  }
+  .kanban-col[data-tier="tier_1"] { border-top-color:var(--ok); }
+  .kanban-col[data-tier="tier_2"] { border-top-color:var(--info); }
+  .kanban-col[data-tier="tier_3"] { border-top-color:var(--warn); }
+  .kanban-col[data-tier="unfit"] { border-top-color:var(--bad); }
   .kanban-head { display:flex; align-items:center; gap:8px; padding:2px 2px 10px; border-bottom:1px solid var(--border); margin-bottom:10px; }
   .lane-count { font-size:12px; font-weight:650; color:var(--text-2); background:var(--surface); border:1px solid var(--border); border-radius:999px; padding:1px 8px; font-variant-numeric:tabular-nums; }
   .kanban-empty { font-size:12.5px; color:var(--muted); font-style:italic; padding:10px 4px; }
-  .card { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius-sm); padding:10px 11px; margin-bottom:8px; cursor:pointer; box-shadow:var(--shadow); }
+  .card { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius-sm); padding:10px 11px; margin-bottom:8px; cursor:pointer; box-shadow:var(--shadow); transition:border-color .15s ease, box-shadow .15s ease; }
   .card:last-child { margin-bottom:0; }
-  .card:hover { border-color:var(--border-strong); }
+  .card:hover { border-color:var(--border-strong); box-shadow:0 2px 6px rgba(16,24,40,.08); }
   .card[aria-selected=true] { border-color:var(--accent); background:var(--accent-soft); }
-  .card-top { display:flex; align-items:baseline; gap:8px; }
+  .card-top { display:flex; align-items:center; gap:8px; }
   .card-top .score-num { margin-left:auto; font-size:15px; }
-  .card-practice { font-size:12.5px; color:var(--text-2); margin-top:4px; }
+  .card-practice { font-size:12.5px; color:var(--text-2); margin-top:5px; line-height:1.4; }
   .card-tags { display:flex; flex-wrap:wrap; gap:5px; margin-top:8px; }
 
   /* ---------- drawer ---------- */
@@ -284,11 +346,10 @@
      than hardcoded to one product: a partner run shows partners, an account run
      accounts, a career run roles. The board is a viewer for every task. */
   var NOUNS = {
-    partner:["Partner","Partners","Practice"],
-    account:["Account","Accounts","Gap"],
-    // A career run's rows are keyed by the employer and the detail column is
-    // the requisition, so the two headers are not the same word.
-    career:["Employer","Roles","Role"],
+    partner:["Partner","Partners","Practice","Partner"],
+    account:["Account","Accounts","Gap","Account"],
+    // A career run's rows are keyed by the employer and each record is a role.
+    career:["Role","Roles","Role","Employer"],
   };
   /* The lane first, because it is the fact: a lane and a preset are
      independent (career's preset is `triage`), so reading the noun off the
@@ -297,10 +358,10 @@
   function recordNoun() {
     var run = (STATE.payload || {}).run || {};
     var lane = String(run.lane || "").toLowerCase();
-    if (NOUNS[lane]) return { one:NOUNS[lane][0], many:NOUNS[lane][1], detail:NOUNS[lane][2] };
+    if (NOUNS[lane]) return { one:NOUNS[lane][0], many:NOUNS[lane][1], detail:NOUNS[lane][2], primary:NOUNS[lane][3] || NOUNS[lane][0] };
     var task = String(run.task || "").toLowerCase();
-    for (var key in NOUNS) { if (task.indexOf(key) === 0) return { one:NOUNS[key][0], many:NOUNS[key][1], detail:NOUNS[key][2] }; }
-    return { one:"Record", many:"Records", detail:"Detail" };
+    for (var key in NOUNS) { if (task.indexOf(key) === 0) return { one:NOUNS[key][0], many:NOUNS[key][1], detail:NOUNS[key][2], primary:NOUNS[key][3] || NOUNS[key][0] }; }
+    return { one:"Record", many:"Records", detail:"Detail", primary:"Record" };
   }
   var TIER_LABEL = { tier_1:"Tier 1", tier_2:"Tier 2", tier_3:"Tier 3", unfit:"Unfit" };
 
@@ -405,10 +466,11 @@
       list: String(((p.ledger || {}).counts || {}).entities || 0)
     };
     VIEWS.forEach(function (v) {
+      var label = v.id === "partners" ? recordNoun().many : v.label;
       nav.appendChild(el("button", {
         type:"button", role:"tab", "aria-selected": STATE.view === v.id,
         onclick: function () { STATE.view = v.id; render(); }
-      }, [el("span", { text:v.label }), el("span", { class:"count", text:counts[v.id] })]));
+      }, [el("span", { text:label }), el("span", { class:"count", text:counts[v.id] })]));
     });
   }
 
@@ -496,7 +558,11 @@
 
   function renderPartners() {
     var p = STATE.payload, main = document.getElementById("main");
-    var search = el("input", { type:"search", placeholder:"Search " + recordNoun().one.toLowerCase() + ", " + recordNoun().detail.toLowerCase() + ", evidence…", value:STATE.query, "aria-label":"Search rows" });
+    var rn = recordNoun();
+    var searchTerms = rn.primary.toLowerCase() === rn.one.toLowerCase()
+      ? [rn.one.toLowerCase(), rn.detail.toLowerCase()]
+      : [rn.primary.toLowerCase(), rn.one.toLowerCase()];
+    var search = el("input", { type:"search", placeholder:"Search " + searchTerms.join(", ") + ", evidence…", value:STATE.query, "aria-label":"Search rows" });
     search.addEventListener("input", function () {
       STATE.query = search.value;
       renderNav();
@@ -541,11 +607,20 @@
        checklist, so no score and no tier. Two columns of dashes are the board
        reporting the shape of a lane it is not looking at. */
     var scored = (p.checklist_total || 0) > 0 && (p.partners || []).some(function (x) { return x.score !== null; });
+    var primaryNoun = (recordNoun().primary || recordNoun().one).toLowerCase();
+    var detailNoun = recordNoun().detail.toLowerCase();
+    // Exclude attributes that duplicate the primary entity name column or detail column
+    var visibleAttributes = (p.attributes || []).filter(function (a) {
+      var k = (a.key || "").toLowerCase();
+      var l = (a.label || "").toLowerCase();
+      return k !== primaryNoun && l !== primaryNoun && k !== detailNoun && l !== detailNoun;
+    });
+
     var head = el("tr", null, [
-      headerCell(recordNoun().one, "id", "sticky-col"),
+      headerCell(recordNoun().primary || recordNoun().one, "id", "sticky-col"),
     ].concat(scored ? [headerCell("Score", "score"), el("th", { scope:"col", text:"Tier" })] : [])
      .concat([headerCell(recordNoun().detail, "practice")]));
-    (p.attributes || []).forEach(function (a) { head.appendChild(headerCell(a.label, a.key)); });
+    visibleAttributes.forEach(function (a) { head.appendChild(headerCell(a.label, a.key)); });
     head.appendChild(el("th", { scope:"col", text:"Evidence" }));
 
     var body = el("tbody");
@@ -556,23 +631,33 @@
           el("div", { class:"cell-sub", text: (partner.quotes || []).length + " quote(s) · " + ((partner.provenance || {}).route || "no route") }),
           (partner.highlights || []).length
             ? el("div", { class:"callout" }, partner.highlights.map(function (text) {
-                return el("span", { class:"tag-soft", text:text, title:text });
+                var tagClass = "tag soft mini";
+                if (text.indexOf("comp:") === 0) tagClass = "tag tag-comp mini";
+                else if (text.indexOf("territory:") === 0) tagClass = "tag tag-geo mini";
+                else if (text.indexOf("stack:") === 0 || text.indexOf("alliances:") === 0) tagClass = "tag tag-tech mini";
+                else if (text.indexOf("motion:") === 0) tagClass = "tag tag-motion mini";
+                return el("span", { class:tagClass, text:text, title:text });
               }))
             : null
         ]),
-        el("td", null, [el("div", { class:"cell-text", text:partner.practice || "" })])
+        el("td", null, [el("div", { class:"cell-text", text:partner.detail || partner.practice || "" })])
       ];
       if (scored) {
+        var ev = partner.evidence || {};
+        var effectiveTier = ev.tier_capped && ev.tier_supported ? ev.tier_supported : partner.tier;
         cells.splice(1, 0, el("td", null, [
           el("div", { class:"score-cell" }, [
-            el("span", { class:"score-num", text: partner.score === null ? "" : partner.score + " / " + p.checklist_total }),
+            el("div", { style:"display:flex;align-items:center;gap:6px" }, [
+              el("span", { class:"score-pill " + (effectiveTier || "none"), text: partner.score === null ? "—" : partner.score }),
+              el("span", { class:"cell-sub", text:"/ " + p.checklist_total })
+            ]),
             el("span", { class:"bar " + scoreClass(partner.tier), style:"width:74px" }, [
               el("span", { style:"width:" + (partner.score === null ? 0 : Math.max(2, pct(partner.score, p.checklist_total))) + "%" })
             ])
           ])
         ]), tierCell(partner));
       }
-      (p.attributes || []).forEach(function (a) {
+      visibleAttributes.forEach(function (a) {
         var value = (partner.answers || {})[a.key];
         // Nothing to show is nothing shown: a dash is the page talking about
         // its own gaps when the reader asked about the firm.
@@ -616,7 +701,7 @@
         : tier === "tier_2" ? (tiersByKey.tier_2 || 70) + "–" + ((tiersByKey.tier_1 || 85) - 1)
         : tier === "tier_3" ? (tiersByKey.tier_3 || 50) + "–" + ((tiersByKey.tier_2 || 70) - 1)
         : "below " + (tiersByKey.tier_3 || 50);
-      var column = el("div", { class:"kanban-col" }, [
+      var column = el("div", { class:"kanban-col", "data-tier": tier }, [
         el("div", { class:"kanban-head" }, [
           el("span", { class:"swatch", style:"background:" + TIER_COLOR[tier] }),
           el("span", { style:"font-weight:650", text:TIER_LABEL[tier] }),
@@ -626,23 +711,63 @@
         ])
       ]);
       if (!cards.length) {
-        column.appendChild(el("div", { class:"kanban-empty", text:"No " + recordNoun().one.toLowerCase() + " in this stage for the current filters." }));
+        column.appendChild(el("div", { class:"kanban-empty", text:"No " + recordNoun().many.toLowerCase() + " in this stage for the current filters." }));
       } else {
         cards.forEach(function (partner) {
+          var detailText = partner.detail || partner.practice;
+          var ev = partner.evidence || {};
+          var effectiveTier = ev.tier_capped && ev.tier_supported ? ev.tier_supported : partner.tier;
+          var scorePill = el("span", {
+            class: "score-pill " + (effectiveTier || "none"),
+            text: partner.score === null ? "—" : partner.score,
+            title: partner.score === null ? "unscored" : partner.score + " / " + p.checklist_total + " points"
+          });
+          var actionUrl = partner.action_url
+            || (partner.answers || {}).requisition_url
+            || (partner.source || {}).uri;
+          if (!actionUrl && partner.id && partner.id.indexOf(".") !== -1 && partner.id.indexOf("/") === -1) {
+            actionUrl = "https://" + partner.id;
+          }
+          var actionLabel = (p.run.lane === "career" || (partner.answers || {}).requisition_url) ? "Apply ↗" : "Site ↗";
+
+          var cardTags = [];
+          cardTags.push(el("span", { class:"tag soft mini", text:(partner.quotes || []).length + " quotes" }));
+          (partner.highlights || []).slice(0, 3).forEach(function (h) {
+            var tagClass = "tag soft mini";
+            if (h.indexOf("comp:") === 0) tagClass = "tag tag-comp mini";
+            else if (h.indexOf("territory:") === 0) tagClass = "tag tag-geo mini";
+            else if (h.indexOf("stack:") === 0 || h.indexOf("alliances:") === 0) tagClass = "tag tag-tech mini";
+            else if (h.indexOf("motion:") === 0) tagClass = "tag tag-motion mini";
+            cardTags.push(el("span", { class:tagClass, text:h }));
+          });
+
+          var cardTopChildren = [
+            el("span", { class:"cell-name", text:partner.name || partner.id }),
+            el("span", { class:"spacer" }),
+            ev.tier_capped ? el("span", { class:"tag mini", style:"border-color:var(--warn-line);color:var(--warn);font-weight:700", text:"capped", title:(ev.tier_reasons || []).join("; ") }) : null,
+            scorePill
+          ];
+
+          var cardFooter = el("div", { style:"display:flex;align-items:center;gap:6px;margin-top:8px;flex-wrap:wrap" }, [
+            el("div", { class:"card-tags", style:"margin-top:0;flex:1" }, cardTags),
+            actionUrl ? el("a", {
+              class: "card-action-btn",
+              href: actionUrl,
+              target: "_blank",
+              rel: "noopener noreferrer",
+              text: actionLabel,
+              title: "Open " + actionLabel,
+              onclick: function (e) { e.stopPropagation(); }
+            }) : null
+          ]);
+
           column.appendChild(el("div", {
             class:"card", "aria-selected": STATE.selected === partner.id,
             onclick: function () { openDrawer(partner.id); }
           }, [
-            el("div", { class:"card-top" }, [
-              el("span", { class:"cell-name", text:partner.name || partner.id }),
-              el("span", { class:"score-num", text:partner.score === null ? "—" : partner.score })
-            ]),
-            el("div", { class:"card-practice", text: partner.practice || ("no verified " + recordNoun().detail.toLowerCase() + " named") }),
-            el("div", { class:"card-tags" }, [
-              el("span", { class:"tag soft mini", text:(partner.quotes || []).length + " quotes" }),
-              partner.source && partner.source.uri ? el("span", { class:"tag soft mini", text:"source linked" }) : null,
-              el("span", { class:"tag soft mini", text:topAttribute(partner, p) })
-            ])
+            el("div", { class:"card-top" }, cardTopChildren),
+            el("div", { class:"card-practice", text: detailText || ("no verified " + recordNoun().detail.toLowerCase() + " named") }),
+            cardFooter
           ]));
         });
       }
@@ -925,20 +1050,69 @@
     var host = document.getElementById("drawerContent");
     clear(host);
 
+    var roleText = partner.detail || (partner.claims || {}).role_focus;
+    var drawerHeading = partner.name || partner.id;
+    if (roleText && roleText !== drawerHeading) {
+      drawerHeading = drawerHeading + " — " + roleText;
+    }
+    var actionUrl = partner.action_url || (partner.answers || {}).requisition_url || (partner.source || {}).uri;
+    if (!actionUrl && partner.id && partner.id.indexOf(".") !== -1 && partner.id.indexOf("/") === -1) {
+      actionUrl = "https://" + partner.id;
+    }
+    var actionLabel = (p.run.lane === "career" || (partner.answers || {}).requisition_url) ? "Apply / View Requisition ↗" : "Visit Website ↗";
+
     host.appendChild(el("div", { class:"drawer-head" }, [
       el("div", { style:"flex:1;min-width:0" }, [
-        el("h3", { class:"drawer-title", text:partner.name || partner.id }),
+        el("h3", { class:"drawer-title", text:drawerHeading }),
         el("div", { style:"display:flex;align-items:center;gap:8px;flex-wrap:wrap" }, [
           el("span", { class:tierTagClass((partner.evidence || {}).tier_capped && (partner.evidence || {}).tier_supported ? partner.evidence.tier_supported : partner.tier), text:TIER_LABEL[(partner.evidence || {}).tier_capped && (partner.evidence || {}).tier_supported ? partner.evidence.tier_supported : partner.tier] || partner.tier || "unscored" }),
           ((partner.evidence || {}).tier_capped ? el("span", { class:"tag mini", style:"border-color:var(--warn-line);color:var(--warn)", text:"evidence-capped" }) : null),
           el("span", { class:"section-sub", text:partner.score === null ? "no score" : partner.score + " / " + p.checklist_total + " points" }),
-          el("span", { class:"section-sub", text:(partner.quotes || []).length + " verified quote(s)" })
+          el("span", { class:"section-sub", text:(partner.quotes || []).length + " verified quote(s)" }),
+          actionUrl ? el("a", { class:"card-action-btn", style:"margin-left:0;font-size:12px;padding:3px 10px", href:actionUrl, target:"_blank", rel:"noopener noreferrer", text:actionLabel }) : null
         ])
       ]),
       el("button", { class:"iconbtn", type:"button", "aria-label":"Close", text:"✕", onclick:closeDrawer })
     ]));
 
     var body = el("div", { class:"drawer-body" });
+
+    var hypothesisText = partner.hypothesis
+      || (partner.claims || {}).revenue_hypothesis
+      || (partner.claims || {}).fit_hypothesis
+      || (partner.claims || {}).identified_gap;
+
+    if (hypothesisText) {
+      var sectionTitle = p.run.lane === "partner" ? "Revenue hypothesis"
+        : p.run.lane === "account" ? "Identified technical gap"
+        : p.run.lane === "career" ? "Role fit & focus"
+        : "Strategic verdict";
+      body.appendChild(el("div", { class:"section" }, [
+        el("div", { class:"section-head" }, [
+          el("h4", { class:"section-title", style:"font-size:14px", text:sectionTitle }),
+          el("span", { class:"section-sub", text:"grounded verdict from verified sources" })
+        ]),
+        el("div", { class:"verdict-box" }, [
+          el("div", { class:"verdict-head" }, [
+            el("span", { text:sectionTitle }),
+            el("button", {
+              class:"verdict-copy-btn",
+              type:"button",
+              text:"Copy",
+              onclick: function (e) {
+                var copyText = ((partner.claims || {}).role_focus ? "Focus: " + partner.claims.role_focus + "\n" : "") + hypothesisText;
+                navigator.clipboard.writeText(copyText).then(function () {
+                  e.target.textContent = "Copied!";
+                  setTimeout(function () { e.target.textContent = "Copy"; }, 1500);
+                });
+              }
+            })
+          ]),
+          (partner.claims || {}).role_focus ? el("div", { style:"color:var(--accent);font-weight:650;font-size:13px;margin-bottom:6px", text:"Focus: " + partner.claims.role_focus }) : null,
+          el("div", { class:"verdict-text", text:hypothesisText })
+        ])
+      ]));
+    }
 
     body.appendChild(el("div", { class:"section" }, [
       el("div", { class:"section-head" }, [el("h4", { class:"section-title", style:"font-size:14px", text:"Score breakdown" })]),
@@ -1012,6 +1186,11 @@
           else if (isPlainObject(value)) acc.push(el("dd", null, [el("div", { class:"kv" }, Object.keys(value).map(function (k) {
             return el("div", null, [el("span", { class:"k", text:k.replace(/_/g, " ") }), el("div", null, [dashText(value[k])])]);
           }))]));
+          else if (typeof value === "string" && (value.indexOf("http://") === 0 || value.indexOf("https://") === 0)) {
+            acc.push(el("dd", null, [
+              el("a", { href:value, target:"_blank", rel:"noopener noreferrer", style:"color:var(--accent);text-decoration:none;word-break:break-all", text:value + " ↗" })
+            ]));
+          }
           else acc.push(el("dd", null, [el("span", { text:String(value) })]));
           return acc;
         }, []))
@@ -1174,11 +1353,23 @@
       STATE.payload = res.body;
       STATE.selected = null;
       var p = STATE.payload;
-      var boardTitle = (p.run.lane ? p.run.lane + " lane" : (p.run.task ? p.run.task : "Results")) + " board";
+      var lane = (p.run.lane || "").toLowerCase();
+      document.body.setAttribute("data-lane", lane || "partner");
+      var mark = document.querySelector(".brand-mark");
+      if (mark) {
+        mark.textContent = lane === "career" ? "CA" : lane === "account" ? "AC" : "PA";
+      }
+      function titleCase(str) {
+        return (str || "").split(/[-_\s]+/).filter(Boolean).map(function (w) {
+          return w.charAt(0).toUpperCase() + w.slice(1);
+        }).join(" ");
+      }
+      var boardTitle = (p.run.lane ? titleCase(p.run.lane) + " Lane" : (p.run.task ? titleCase(p.run.task) : "Results")) + " Board";
       document.title = boardTitle + " · " + p.run.run_id;
       var brandTitle = document.getElementById("brandTitle");
       if (brandTitle) brandTitle.textContent = boardTitle;
-      document.getElementById("runSub").textContent = (p.run.lane ? p.run.lane + " · " : "") + (p.run.task || "run") + " · " + p.stats.records + " record(s) · " + shortTime(p.run.created_at);
+      var entityCountNoun = p.stats.records === 1 ? recordNoun().one.toLowerCase() : recordNoun().many.toLowerCase();
+      document.getElementById("runSub").textContent = (p.run.lane ? p.run.lane + " · " : "") + (p.run.task || "run") + " · " + p.stats.records + " " + entityCountNoun + " · " + shortTime(p.run.created_at);
       setStatus(p.run.status);
       if (history.replaceState) history.replaceState(null, "", "?run=" + encodeURIComponent(p.run.run_id));
       renderRunPicker();

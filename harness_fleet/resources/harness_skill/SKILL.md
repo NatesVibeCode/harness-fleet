@@ -60,7 +60,7 @@ harness-fleet lane report <run_id> --lane career   # what it actually produced
 Over MCP: `harness_fleet_lanes` lists what this install can run, and every
 pipeline tool takes `lane`, so the assistant picks the product for the task.
 
-A lane carries seeds, queries, sources, title/remote filters, the preset it
+A lane carries queries, sources, title/remote filters, the preset it
 scores with, its tier bar and its output shape. Add your own by dropping
 `lanes/<name>.json` in the workspace; it overrides a shipped lane of the same
 name. What a lane may **not** do is change a mechanism — the evidence bar,

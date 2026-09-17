@@ -58,7 +58,7 @@ CREATE INDEX IF NOT EXISTS idx_companies_status ON companies(status);
 
 CREATE TABLE IF NOT EXISTS profile_revisions (
     revision_id TEXT PRIMARY KEY,
-    profile_kind TEXT NOT NULL CHECK(profile_kind IN ('ideal_company', 'ideal_employer')),
+    profile_kind TEXT NOT NULL CHECK(profile_kind IN ('ideal_company', 'ideal_partner', 'ideal_employer')),
     profile_name TEXT NOT NULL,
     profile_version TEXT NOT NULL,
     profile_json TEXT NOT NULL,
@@ -66,7 +66,7 @@ CREATE TABLE IF NOT EXISTS profile_revisions (
 );
 
 CREATE TABLE IF NOT EXISTS active_profiles (
-    profile_kind TEXT PRIMARY KEY CHECK(profile_kind IN ('ideal_company', 'ideal_employer')),
+    profile_kind TEXT PRIMARY KEY CHECK(profile_kind IN ('ideal_company', 'ideal_partner', 'ideal_employer')),
     revision_id TEXT NOT NULL REFERENCES profile_revisions(revision_id),
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -133,6 +133,40 @@ CREATE INDEX IF NOT EXISTS idx_evals_company ON evaluations(company_id);
 CREATE INDEX IF NOT EXISTS idx_evals_lane ON evaluations(lane);
 """
 
+#: Rebuilds the profile tables for a database created before a partner profile
+#: had a kind of its own, carrying every row across. Applied by `_init_db` only
+#: when the live DDL predates the widening.
+PROFILE_KINDS_REBUILD = """
+PRAGMA foreign_keys=OFF;
+CREATE TABLE IF NOT EXISTS profile_revisions_v2 (
+    revision_id TEXT PRIMARY KEY,
+    profile_kind TEXT NOT NULL CHECK(profile_kind IN ('ideal_company', 'ideal_partner', 'ideal_employer')),
+    profile_name TEXT NOT NULL,
+    profile_version TEXT NOT NULL,
+    profile_json TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+INSERT OR IGNORE INTO profile_revisions_v2(
+    revision_id, profile_kind, profile_name, profile_version, profile_json, created_at
+)
+SELECT revision_id, profile_kind, profile_name, profile_version, profile_json, created_at
+FROM profile_revisions;
+CREATE TABLE IF NOT EXISTS active_profiles_v2 (
+    profile_kind TEXT PRIMARY KEY CHECK(profile_kind IN ('ideal_company', 'ideal_partner', 'ideal_employer')),
+    revision_id TEXT NOT NULL REFERENCES profile_revisions(revision_id),
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+INSERT OR IGNORE INTO active_profiles_v2(profile_kind, revision_id, updated_at)
+SELECT profile_kind, revision_id, updated_at FROM active_profiles;
+DROP TABLE IF EXISTS active_profiles;
+DROP TABLE IF EXISTS profile_revisions;
+ALTER TABLE profile_revisions_v2 RENAME TO profile_revisions;
+ALTER TABLE active_profiles_v2 RENAME TO active_profiles;
+PRAGMA foreign_keys=ON;
+"""
+
+
+
 
 class CareerStore:
     """Manages SQLite database for career intelligence."""
@@ -173,6 +207,16 @@ class CareerStore:
         with self.connect() as con:
             with con:
                 con.executescript(SCHEMA)
+                # A partner profile has a kind of its own, and SQLite cannot
+                # alter a CHECK. The live DDL says which kinds the table accepts,
+                # so it decides whether the rebuild is owed — a database built
+                # from the widened SCHEMA skips this entirely.
+                ddl_row = con.execute(
+                    "SELECT sql FROM sqlite_master WHERE type='table' AND name='profile_revisions'"
+                ).fetchone()
+                ddl = str(ddl_row["sql"] or "") if ddl_row else ""
+                if ddl and "ideal_partner" not in ddl:
+                    con.executescript(PROFILE_KINDS_REBUILD)
                 # Keep existing user databases usable when new metadata fields
                 # are added in a later package version.
                 for table in ("companies", "job_postings", "evaluations", "community_signals"):

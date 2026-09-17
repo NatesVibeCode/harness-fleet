@@ -821,6 +821,12 @@ def test_discover_sitemap_url_prefers_robots_hint(fake_http):
     assert discover.discover_sitemap_url("a.example") == "https://a.example/custom-map.xml"
 
 
+def test_discover_sitemap_url_canonical_host_fallback(fake_http):
+    FakeClient.routes["https://www.a.example/sitemap.xml"] = FakeResponse(
+        content=b"<urlset><url><loc>https://www.a.example/x</loc></url></urlset>")
+    assert discover.discover_sitemap_url("a.example") == "https://www.a.example/sitemap.xml"
+
+
 def test_discover_sitemap_url_not_found(fake_http):
     with pytest.raises(DiscoverError, match="no sitemap found"):
         discover.discover_sitemap_url("https://a.example")

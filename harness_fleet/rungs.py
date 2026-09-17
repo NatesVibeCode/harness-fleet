@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import csv
 import json
-from collections.abc import Iterable, Sequence
+from collections.abc import Collection, Iterable, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -531,29 +531,41 @@ def gate_rows(
     return rows, reports
 
 
-def advances_to(report: FunnelReport, rung: LadderRung | None) -> bool:
-    """Whether this candidate is owed the next rung's evidence.
+def advances_to(report: FunnelReport, rung: LadderRung | None,
+                read_surfaces: Collection[str] = ()) -> bool:
+    """Whether this candidate is owed the next rung.
 
-    Two ways to be owed it, and both are the same question asked twice. The
-    ladder has already named the rung this report earned — that is the answer,
-    and it is why ``earned`` is on the row. Failing that, the report is a lead
-    still holding something open that the next rung's gates would settle, which
-    happens when the rung above it was not the one the walk was standing on.
+    A survivor is owed the rung above it, and there are five ways to be owed it.
+    The rung may read evidence this report does not have — a search result can
+    pass every cheap gate a lane puts to it and still carry none of the evidence
+    the run's bar demands, because only a page can; the career lane delivered
+    nothing at all until that clause existed. The rung may read surfaces this
+    candidate's walk has not touched, which is how a ladder buys deeper evidence
+    than a name-and-a-place verdict: the partner ladder's third rung exists to
+    read case studies, and a firm's own services page does not carry them. The
+    rung may ask a gate this report has not passed, a *new* question rather than
+    a restatement of the one below. The ladder may already have named the rung
+    this report earned. Or the report may be a lead still holding something open
+    that the rung's gates would settle.
 
-    An eliminated candidate is never owed anything, and a qualified one has
-    nothing left to buy — *unless* the rung above reads evidence this report
-    does not have. That is the one case the old rule got wrong: a search result
-    can pass every cheap gate a lane puts to it, and still carry none of the
-    evidence the run's bar demands, because only a page can. The career lane
-    delivered nothing at all that way — a snippet-qualified posting earned no
-    visit, the ladder stopped, and the scoring stage was handed an empty room.
+    Two clauses here are corrections, and both were silent. Reading "qualified"
+    as "nothing left to buy" starved the shipped partner ladder's third rung:
+    the graph planned the node, the node was handed nobody, and the lane called
+    the run finished. And a rung whose gate the rung below happens to have
+    already asked — the partner profile states target industries, so *vertical*
+    is live at every rung — was skipped even though the pages it reads had never
+    been fetched. A rung is a gate to be earned: passing the rung below is an
+    admission to the next one, not an exemption from it.
     """
     if report.eliminated or rung is None:
         return False
     if rung.evidence == FETCHED and not report.fetched:
         return True
-    if report.qualified:
-        return False
+    if rung.surfaces and any(surface not in set(read_surfaces) for surface in rung.surfaces):
+        return True
+    passed = {result.gate for result in report.results if result.outcome == "pass"}
+    if any(gate not in passed for gate in rung.gates):
+        return True
     if report.earned and report.earned == rung.name:
         return True
     return any(gate in rung.gates for gate in report.unresolved)

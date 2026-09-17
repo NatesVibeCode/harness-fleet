@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -57,6 +57,11 @@ class Dealbreakers(BaseModel):
 class IdealEmployerProfile(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    #: The store's kind for this document. Without it a saved IEP fell back to
+    #: "ideal_company" and filed an employer profile under the account kind,
+    #: which is how two different onboardings ended up sharing one active slot.
+    profile_kind: ClassVar[str] = "ideal_employer"
+
     profile_name: str = Field(
         default="My Career Fit Profile",
         description="Descriptive name for the candidate or role target."
@@ -104,6 +109,32 @@ class IdealEmployerProfile(BaseModel):
     target_industries: list[str] = Field(
         default_factory=list, description="Industries the employer must be in (e.g. fintech)."
     )
+    #: The role family this search is for — "enterprise sales", "sales operations".
+    #: The one axis the IEP could not state before, which left the career lane's
+    #: seed (the role it is looking for) with nowhere in the onboarding to come
+    #: from.
+    target_roles: list[str] = Field(
+        default_factory=list, description="Role families to search for (e.g. enterprise sales, sales operations)."
+    )
+
+    def query_terms(self) -> dict[str, list[str]]:
+        """The values this IEP supplies to the lane's query templates.
+
+        The role family leads: a career lane's question is the job it is looking
+        for, and everything else — the stack, the industry — narrows that search
+        rather than replacing it.
+
+        ``anchor_companies`` is deliberately absent. Exemplars calibrate a
+        judgement about a population; they are not members to go and find, and a
+        company name as a query returns that company's own site rather than the
+        kind of employer this profile describes.
+        """
+        return {
+            "role": list(self.target_roles),
+            "tech": list(self.required_stack),
+            "vertical": list(self.target_industries),
+            "pain": list(self.hiring_catalysts),
+        }
 
     def funnel_profile(self) -> dict[str, Any]:
         """The firmographics the gate engine runs on, in the shape it reads.

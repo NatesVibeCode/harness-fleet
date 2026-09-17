@@ -13,7 +13,7 @@ def _workspace(tmp_path, **lane_fields):
     (tmp_path / "lanes" / "career.json").write_text(json.dumps({
         "name": "career",
         "description": "enterprise sales/ops, remote",
-        "seeds": ["enterprise software"],
+        "queries": ['"enterprise sales" remote ("apply now" OR "job description")'],
         "title_include": ["enterprise sales", "sales ops"],
         "remote": True,
         "preset": "triage",
@@ -83,7 +83,9 @@ def test_the_lane_supplies_queries_sources_filters_and_preset(tmp_path, monkeypa
     cli.cmd_research(_args(tmp_path))
     out = capsys.readouterr().out
     assert "Lane 'career'" in out
-    assert seen["queries"] == ["enterprise software"], "the lane supplied the query"
+    assert seen["queries"] == ['"enterprise sales" remote ("apply now" OR "job description")'], (
+        "the lane supplied the query"
+    )
     assert seen["task"] == "triage", "the lane chose the checklist"
 
 

@@ -1,10 +1,24 @@
 {
   "name": "account",
   "description": "Target accounts for a technical ICP: a competitor's customers — the firms that buy in this space, and what they run",
+  "onboarding_profile": "ideal_company",
   "queries": [
-    "\"case study\" \"Kafka\" implementation bank -site:medium.com",
-    "\"customer story\" (\"Snowflake\" OR \"Databricks\" OR \"Confluent\") (\"we migrated\" OR \"our data platform\")"
+    "\"case study\" \"{tech}\" (implementation OR migration) -site:medium.com",
+    "\"customer story\" \"{tech}\" (\"we migrated\" OR \"our data platform\")",
+    "\"{tech}\" \"{pain}\" (architecture OR engineering)"
   ],
+  "query_terms": {
+    "tech": [
+      "Kafka",
+      "Snowflake",
+      "Databricks",
+      "Confluent"
+    ],
+    "pain": [
+      "we migrated",
+      "our data platform"
+    ]
+  },
   "backends": [
     "ddgs",
     "hn"
@@ -44,19 +58,6 @@
           "careers"
         ],
         "earns": "qualifies the cheap gates; the stack they actually run lives here"
-      },
-      {
-        "name": "stories",
-        "evidence": "fetched",
-        "gates": [
-          "vertical"
-        ],
-        "surfaces": [
-          "case_studies",
-          "blog",
-          "news"
-        ],
-        "earns": "settles which industries the work is actually in"
       }
     ]
   }

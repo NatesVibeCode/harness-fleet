@@ -1,6 +1,7 @@
 {
   "name": "partner",
   "description": "Net-new systems integrators and consultancies, found directly and qualified layer by layer",
+  "onboarding_profile": "ideal_partner",
   "queries": [
     "\"{tech}\" consultancy \"our clients\" (implementation OR migration)",
     "\"{tech}\" systems integrator consulting services",

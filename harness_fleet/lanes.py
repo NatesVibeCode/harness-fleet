@@ -86,8 +86,15 @@ class Lane(ClosedModel):
 
     name: str
     description: str = ""
-    #: Anchors the lane starts from: a company, a vendor, a role family.
-    seeds: list[str] = []
+    #: The onboarding profile *kind* that supplies this lane's query values —
+    #: ``ideal_company``, ``ideal_partner`` or ``ideal_employer`` — resolved from
+    #: the store's active revision (the workspace's authoring JSON creates that
+    #: revision). A lane declares the shape of its questions; the onboarding
+    #: declares the traits — stack, industry, role, pain — that fill them. The
+    #: kind, not a filename, so there is one place a profile lives. Empty means
+    #: the lane's own illustrative terms run, which is what a fresh install with
+    #: no onboarding does.
+    onboarding_profile: str = ""
     queries: list[str] = []
     backends: list[str] = []
     channels: list[str] = []

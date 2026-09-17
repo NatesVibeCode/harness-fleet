@@ -110,6 +110,26 @@ class IdealCompanyProfile(BaseModel):
             "verticals": tuple(self.target_industries) or terms("verticals"),
         }
 
+    def query_terms(self) -> dict[str, list[str]]:
+        """The values this ICP supplies to the lane's query templates.
+
+        The onboarding's contribution. A lane's templates name axes —
+        ``{tech}``, ``{vertical}``, ``{role}``, ``{pain}`` — and this is where
+        the operator's own answers land, so discovery searches what the ICP says
+        rather than the lane's illustrative literals.
+
+        ``anchor_logos`` is deliberately absent. An anchor is a calibration
+        exemplar, and a company name as a query returns that one company's own
+        pages instead of the class of firm the ICP describes. Anchors belong in
+        the scoring prompt, and in an exclusion list where one exists.
+        """
+        return {
+            "tech": list(self.required_stack),
+            "vertical": list(self.target_industries),
+            "role": list(self.target_roles),
+            "pain": list(self.trigger_pain_phrases),
+        }
+
     def to_prompt_context(self) -> str:
         """Render explicit ICP context for an account task when requested."""
         return (

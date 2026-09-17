@@ -57,6 +57,29 @@ class EnrichError(RuntimeError):
     """The surfaces this install ships could not be read."""
 
 
+def _without_comments(value: Any) -> Any:
+    """Drop ``_``-prefixed keys: in this plan they are prose, not surfaces.
+
+    The plan explains itself inline, and the explanation sits *inside* the maps
+    a reader enumerates. So ``first_party_paths`` was read as naming a surface
+    called ``_comment`` with 103 paths — the comment string, taken character by
+    character — and ``channels`` and ``community`` each named one too. Nothing
+    fetched those, but a report of what this install reads counted three
+    surfaces that do not exist, and any code that walked the maps would have
+    built a URL out of the letter "F". Comments are for people; leave them out
+    of the maps the walk reads.
+    """
+    if isinstance(value, dict):
+        return {
+            key: _without_comments(item)
+            for key, item in value.items()
+            if not str(key).startswith("_")
+        }
+    if isinstance(value, list):
+        return [_without_comments(item) for item in value]
+    return value
+
+
 def load_surfaces(path: str | Path | None = None) -> dict[str, Any]:
     """The shipped surface plan: where each kind of evidence lives."""
     target = Path(path).expanduser() if path else SURFACES_PATH
@@ -64,7 +87,7 @@ def load_surfaces(path: str | Path | None = None) -> dict[str, Any]:
     if key in _SURFACE_CACHE:
         return _SURFACE_CACHE[key]
     try:
-        payload = json.loads(target.read_text(encoding="utf-8"))
+        payload = _without_comments(json.loads(target.read_text(encoding="utf-8")))
     except OSError as exc:
         raise EnrichError(f"could not read the surface plan at {target}: {exc}") from exc
     except json.JSONDecodeError as exc:
@@ -1102,7 +1125,7 @@ def enrich_entity(
             for surface in first_party:
                 if surface in covered:
                     continue
-                for url in surface_urls(surface, domain, surfaces=plan)[:2]:
+                for url in surface_urls(surface, domain, surfaces=plan):
                     fetch_into(url, surface)
 
     for surface in probe_surfaces:

@@ -1935,7 +1935,7 @@ def _enrich_entities(
         respect_robots=respect_robots,
         vendor_stories=vendor_stories,
     )
-def expand_lane_queries(lane: Any) -> list[str]:
+def expand_lane_queries(lane: Any, profile: Any = None) -> list[str]:
     """A lane's query templates, one query per combination of its terms.
 
     A lane that names its axes once gathers from all of them: two literal
@@ -1943,31 +1943,29 @@ def expand_lane_queries(lane: Any) -> list[str]:
     and four verticals find forty-eight. The expansion is capped, and the cap is
     reported, because breadth is a cost the operator should see rather than
     discover in the wall clock.
-    """
-    import itertools
 
-    queries = [str(query) for query in (lane.queries or []) if str(query).strip()]
-    terms = {name: [str(v) for v in values] for name, values in (lane.query_terms or {}).items()}
-    expanded: list[str] = []
-    for query in queries:
-        names = [name for name in terms if "{" + name + "}" in query]
-        if not names:
-            expanded.append(query)
-            continue
-        for combination in itertools.product(*(terms[name] for name in names)):
-            filled = query
-            for name, value in zip(names, combination, strict=True):
-                filled = filled.replace("{" + name + "}", value)
-            expanded.append(filled)
-    seen: list[str] = []
-    for query in expanded:
-        if query not in seen:
-            seen.append(query)
+    ``profile`` is the onboarding document — the ICP, IPP or IEP — and its
+    values override the lane's own on each axis it states. That is where the
+    traits come from: a lane declares the shape of the question, the profile
+    declares the stack, the industry, the role and the pain. With no profile the
+    lane's illustrative terms run, so a fresh install is unchanged.
+    """
+    from .onboarding import expand, lane_query_terms
+
+    terms = (
+        lane_query_terms(lane, profile)
+        if profile is not None
+        else {
+            str(name): [str(value) for value in values]
+            for name, values in (lane.query_terms or {}).items()
+        }
+    )
+    seen = expand(lane.queries or [], terms)
     cap = int(getattr(lane, "max_queries", 0) or 0)
     return seen[:cap] if cap else seen
 
 
-def _load_lane_for_run(args: argparse.Namespace, workspace: Path) -> Any:
+def _load_lane_for_run(args: argparse.Namespace, workspace: Path, store: Any = None) -> Any:
     """Load the lane this run names, validating it against what is installed."""
     from .channels import load_channels
     from .discover import BACKENDS
@@ -1989,6 +1987,23 @@ def _load_lane_for_run(args: argparse.Namespace, workspace: Path) -> Any:
         raise ValueError(
             f"no lane '{name}' (have: {', '.join(sorted(available)) or 'none'})"
         )
+    # The traits come from the onboarding, not from the lane file. The lane
+    # names the profile *kind* (`onboarding_profile`: ideal_company,
+    # ideal_partner or ideal_employer) and the store's active revision for that
+    # kind supplies them, with the workspace's authoring JSON creating the
+    # revision when none exists yet. Applied to the loaded lane rather than
+    # threaded through every caller, so the entry's expansion and the quota's
+    # widening search the same space and cannot drift apart.
+    from .onboarding import lane_query_terms, load_onboarding_profile
+
+    profile = load_onboarding_profile(
+        workspace, lane, getattr(args, "profile", None), store
+    )
+    if profile is not None:
+        onboarded = lane_query_terms(lane, profile)
+        if onboarded != dict(lane.query_terms or {}):
+            lane = lane.model_copy(update={"query_terms": onboarded})
+        args._onboarding_profile = getattr(profile, "profile_name", "") or lane.onboarding_profile
     return lane
 
 
@@ -2284,7 +2299,7 @@ def cmd_research(args: argparse.Namespace) -> dict[str, Any]:
         # a run that files its deliverable in the operator's shell's cwd is a run
         # whose output nobody can find twice.
         output = workspace / output
-    lane = _load_lane_for_run(args, workspace)
+    lane = _load_lane_for_run(args, workspace, store)
 
     # Routes are checked before anything expensive happens. When scoring moved
     # into the graph this check went with the block it lived in, so a run with no
@@ -2317,7 +2332,7 @@ def cmd_research(args: argparse.Namespace) -> dict[str, Any]:
         return _quota_run(args, store, lane, output, base_run_id, one_round)
     if lane is not None:
         # The lane supplies defaults; an explicit flag still wins.
-        args.query = list(args.query or []) or expand_lane_queries(lane) or list(lane.seeds)
+        args.query = list(args.query or []) or expand_lane_queries(lane)
         if lane.query_terms and getattr(args, "query", None):
             print(
                 f"Lane '{lane.name}': {len(args.query)} queries from "
@@ -2333,7 +2348,7 @@ def cmd_research(args: argparse.Namespace) -> dict[str, Any]:
         print(f"Lane '{lane.name}': {lane.description or 'configured run'}")
     if not getattr(args, "query", None):
         raise ValueError(
-            "no query: pass --query, or name a lane (--lane NAME) whose queries/seeds supply one"
+            "no query: pass --query, or name a lane (--lane NAME) whose queries supply one"
         )
     preset = getattr(args, "preset", None) or "account-research"
     top = int(getattr(args, "top", None) or 25)
@@ -2401,7 +2416,7 @@ def cmd_research(args: argparse.Namespace) -> dict[str, Any]:
         )
     items, dropped = _lane_items(items, lane)
     if dropped:
-        print(f"Lane filter dropped {dropped} item(s) that do not match {lane.title_include or lane.seeds}")
+        print(f"Lane filter dropped {dropped} item(s) that do not match {lane.title_include or lane.query_terms}")
     if not items:
         raise DiscoverError(
             f"nothing captured that matches this lane ({lane.name if lane else 'no lane'})"
@@ -2822,6 +2837,105 @@ def _cmd_lane_list(args: argparse.Namespace) -> None:
     )
 
 
+def cmd_tune(args: argparse.Namespace) -> None:
+    """Evaluate and tune lanes, rungs, gate filters, and sources."""
+    from .tune import (
+        audit_database,
+        diagnose_gates,
+        diagnose_gates_batch,
+        evaluate_surface,
+        format_audit_report,
+        format_batch_gate_report,
+        format_benchmark_result,
+        format_gate_report,
+        format_sim_report,
+        format_surface_report,
+        load_batch_file,
+        run_benchmark,
+        simulate_candidate,
+    )
+
+    action = getattr(args, "tune_command", None) or "benchmark"
+    json_mode = bool(getattr(args, "json", False) or getattr(args, "global_json", False))
+
+    if action == "gate":
+        profile_overrides: dict[str, Any] = {}
+        if getattr(args, "size_min", None) is not None:
+            profile_overrides["size_min"] = args.size_min
+        if getattr(args, "size_max", None) is not None:
+            profile_overrides["size_max"] = args.size_max
+        if getattr(args, "location", None):
+            profile_overrides["locations"] = args.location
+        if getattr(args, "vertical", None):
+            profile_overrides["verticals"] = args.vertical
+
+        batch_path = getattr(args, "batch", None)
+        if batch_path:
+            items = load_batch_file(batch_path)
+            batch_rep = diagnose_gates_batch(
+                items,
+                evidence=getattr(args, "evidence", "snippet"),
+                lane_name=getattr(args, "lane", "partner") or "partner",
+                profile=profile_overrides or None,
+            )
+            _emit(batch_rep.as_dict(), json_mode, format_batch_gate_report(batch_rep))
+            return
+
+        text = getattr(args, "text", None)
+        file_path = getattr(args, "file", None)
+        if not text and file_path:
+            text = Path(file_path).read_text(encoding="utf-8")
+        elif not text and not sys.stdin.isatty():
+            text = sys.stdin.read()
+        if not text:
+            raise ValueError("tune gate requires --text, --file, --batch, or piped stdin")
+
+        report = diagnose_gates(
+            text,
+            evidence=getattr(args, "evidence", "snippet"),
+            lane_name=getattr(args, "lane", "partner") or "partner",
+            profile=profile_overrides or None,
+        )
+        _emit(report.as_dict(), json_mode, format_gate_report(report))
+        return
+
+    if action == "sim":
+        sim = simulate_candidate(
+            candidate=getattr(args, "candidate", "candidate.example") or "candidate.example",
+            snippet=getattr(args, "snippet", "") or "",
+            page_text=getattr(args, "page", "") or "",
+            stories_text=getattr(args, "stories", "") or "",
+            lane_name=getattr(args, "lane", "partner") or "partner",
+        )
+        _emit(sim.as_dict(), json_mode, format_sim_report(sim))
+        return
+
+    if action == "surface":
+        surf = evaluate_surface(
+            str(getattr(args, "target", "") or ""),
+            lane_name=getattr(args, "lane", "partner") or "partner",
+            probe_network=bool(getattr(args, "probe", False)),
+        )
+        _emit(surf.as_dict(), json_mode, format_surface_report(surf))
+        return
+
+    if action == "benchmark":
+        bench = run_benchmark(corpus_path=getattr(args, "corpus", None))
+        _emit(bench.as_dict(), json_mode, format_benchmark_result(bench))
+        return
+
+    if action == "audit":
+        db = getattr(args, "database", None)
+        if not db:
+            workspace = Path(getattr(args, "workspace_root", ".")).expanduser().resolve()
+            db = workspace / "harness-fleet.db"
+        aud = audit_database(db)
+        _emit(aud, json_mode, format_audit_report(aud))
+        return
+
+    raise ValueError(f"unknown tune action '{action}' (have: gate, sim, surface, benchmark, audit)")
+
+
 def cmd_lane(args: argparse.Namespace) -> None:
     """List the lanes this install can run, or measure a finished run.
 
@@ -2836,14 +2950,17 @@ def cmd_lane(args: argparse.Namespace) -> None:
     if action == "list":
         _cmd_lane_list(args)
         return
+    if action in ("tune", "eval"):
+        cmd_tune(args)
+        return
     if action != "report":
-        raise ValueError(f"unknown lane action '{action}' (have: list, report)")
+        raise ValueError(f"unknown lane action '{action}' (have: list, report, tune, eval)")
     run_id = str(getattr(args, "run_id", "") or "").strip()
     if not run_id:
         raise ValueError("lane report needs a run id: `lane report <run_id>`")
 
     store = _store(args)
-    lane = _load_lane_for_run(args, workspace)
+    lane = _load_lane_for_run(args, workspace, store)
     if lane is None:
         # A run records the lane that asked for it, so `lane report <run_id>` can
         # measure against the right bar without the caller repeating themselves.
@@ -2851,7 +2968,7 @@ def cmd_lane(args: argparse.Namespace) -> None:
         implied = _lane_name_from_run(workspace, run_id)
         if implied:
             namespace = argparse.Namespace(**{**vars(args), "lane": implied})
-            lane = _load_lane_for_run(namespace, workspace)
+            lane = _load_lane_for_run(namespace, workspace, store)
             if lane is not None:
                 # stdout carries the report itself (and JSON when --json is set),
                 # so this note goes to stderr like every other aside.
@@ -3425,6 +3542,56 @@ def build_parser() -> argparse.ArgumentParser:
     lane_report.add_argument("--workspace-root", default=".", help="Workspace root for relative paths")
     _common(lane_report)
 
+    lane_tune = lane_sub.add_parser("tune", help="Evaluate and tune lanes, rungs, gate filters, and sources")
+    lane_tune_sub = lane_tune.add_subparsers(dest="tune_command", required=True)
+
+    lane_eval = lane_sub.add_parser("eval", help="Alias for lane tune")
+    lane_eval_sub = lane_eval.add_subparsers(dest="tune_command", required=True)
+
+    tune = commands.add_parser("tune", help="Evaluate and tune lanes, rungs, gate filters, and sources")
+    tune_sub = tune.add_subparsers(dest="tune_command", required=True)
+
+    def _populate_tune_subparsers(sub: Any) -> None:
+        t_gate = sub.add_parser("gate", help="Diagnose and tune gate filters on text")
+        t_gate.add_argument("--text", help="Text to evaluate (or read from --file / stdin)")
+        t_gate.add_argument("--file", help="File containing single text to evaluate")
+        t_gate.add_argument("--batch", help="Path to JSONL/CSV file of candidate records to evaluate in batch")
+        t_gate.add_argument("--lane", default="partner", help="Lane profile to evaluate against (default: partner)")
+        t_gate.add_argument("--evidence", choices=["snippet", "fetched"], default="snippet",
+                            help="Evidence grade: snippet or fetched")
+        t_gate.add_argument("--size-min", type=int, help="Override profile size_min")
+        t_gate.add_argument("--size-max", type=int, help="Override profile size_max")
+        t_gate.add_argument("--location", action="append", help="Override profile locations (repeatable)")
+        t_gate.add_argument("--vertical", action="append", help="Override profile verticals (repeatable)")
+        _common(t_gate)
+
+        t_sim = sub.add_parser("sim", help="Simulate a candidate progressing through a lane ladder")
+        t_sim.add_argument("--candidate", default="candidate.example", help="Candidate domain or entity id")
+        t_sim.add_argument("--snippet", default="", help="Search snippet text for rung 1")
+        t_sim.add_argument("--page", default="", help="Page body text for rung 2")
+        t_sim.add_argument("--stories", default="", help="Stories / case studies text for rung 3")
+        t_sim.add_argument("--lane", default="partner", help="Lane whose ladder to simulate (default: partner)")
+        _common(t_sim)
+
+        t_surf = sub.add_parser("surface", help="Inspect URL surface classification or domain surface coverage")
+        t_surf.add_argument("target", help="URL to classify or domain to probe")
+        t_surf.add_argument("--lane", default="partner", help="Target lane context (default: partner)")
+        t_surf.add_argument("--probe", action="store_true", help="Perform live network probe for sitemaps")
+        _common(t_surf)
+
+        t_bench = sub.add_parser("benchmark", help="Run synthetic benchmark suite against current gate logic")
+        t_bench.add_argument("--corpus", help="Path to custom JSONL/JSON benchmark corpus file")
+        _common(t_bench)
+
+        t_audit = sub.add_parser("audit", help="Audit a run database or workspace")
+        t_audit.add_argument("database", nargs="?", default="", help="Path to SQLite run database (default: workspace harness-fleet.db)")
+        t_audit.add_argument("--workspace-root", default=".", help="Workspace root for relative paths")
+        _common(t_audit)
+
+    _populate_tune_subparsers(tune_sub)
+    _populate_tune_subparsers(lane_tune_sub)
+    _populate_tune_subparsers(lane_eval_sub)
+
     sources = commands.add_parser(
         "sources", help="Inspect and grow the source taxonomy (promoted domains, proposals, channels)"
     )
@@ -3905,6 +4072,7 @@ def main() -> None:
         "discover": cmd_discover,
         "sources": cmd_sources,
         "lane": cmd_lane,
+        "tune": cmd_tune,
         "research": cmd_research,
         "fetch": cmd_fetch,
         "dag": cmd_dag,

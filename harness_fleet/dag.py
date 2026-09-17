@@ -935,6 +935,7 @@ def _execute_gate_node(
     carried: list[Any] = []
     evidence = node.evidence or SNIPPET
     texts: dict[str, str] = {}
+    read_surfaces: dict[str, set[str]] = {}
     upstream_node: str = ""
     if node.from_items:
         items_path = Path(node.from_items)
@@ -1007,6 +1008,17 @@ def _execute_gate_node(
         for row in tables.rows(dag_id, source_id):
             item_id = str(row.get("item_id") or "")
             texts[item_id] = upstream_texts.get(item_id, "")
+            # Which surfaces this candidate's walk has actually stood on. A rung
+            # above that reads pages nobody has opened is owed the candidate even
+            # when every gate it asks is already answered.
+            read_here = row.get("surfaces")
+            if isinstance(read_here, str) and read_here:
+                try:
+                    read_surfaces[item_id] = {
+                        str(name) for name, count in json.loads(read_here).items() if count
+                    }
+                except ValueError:
+                    read_surfaces[item_id] = set()
             carried.append(
                 _Carried(
                     item_id=item_id,
@@ -1025,7 +1037,9 @@ def _execute_gate_node(
     )
     following = next_rung(ladder, rung)
     for gate_row, report in zip(rows, reports, strict=True):
-        gate_row["advances"] = advances_to(report, following)
+        gate_row["advances"] = advances_to(
+            report, following, read_surfaces=read_surfaces.get(str(gate_row.get("item_id") or ""), ()),
+        )
         gate_row["next_rung"] = following.name if following else ""
     attempt = tables.write(dag_id, node.id, rows, texts=texts, kind="gate", lane=node.lane)
     Ledger(store).record(rows, dag_id=dag_id, node_id=node.id, run_seq=attempt, lane=node.lane)
@@ -1403,7 +1417,14 @@ def _score_rows(
             # had actually earned.
             "outcome": "",
             "earned": "",
-            "because": str(claims.get("reason") or claims.get("identified_gap") or "")[:400],
+            "because": str(
+                claims.get("reasoning")
+                or claims.get("reason")
+                or claims.get("identified_gap")
+                or claims.get("fit_hypothesis")
+                or claims.get("revenue_hypothesis")
+                or ("0.0: no checklist claims verified with cited quotes" if score == 0.0 else "")
+            )[:400],
             "gates": [],
             "surfaces": {},
             "pages": [],

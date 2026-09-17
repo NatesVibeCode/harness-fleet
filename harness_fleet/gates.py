@@ -87,6 +87,15 @@ SOFTWARE_TERMS = (
     "pricing plans", "per seat", "saas", "sign up free", "start your free trial",
     "our software", "download the app",
 )
+HARD_SOFTWARE_TERMS = (
+    "pricing plans", "per seat", "free trial", "start your free trial",
+    "sign up free", "download the app", "saas",
+)
+PRIMARY_SERVICES_TERMS = (
+    "consultancy", "consulting", "systems integrator", "system integrator",
+    "implementation partner", "managed services", "advisory", "solution provider",
+    "services firm", "professional services", "staff augmentation",
+)
 
 #: Headcount written the way companies write it.
 _SIZE_PATTERNS = (
@@ -255,25 +264,32 @@ def read_verticals(text: str) -> tuple[str, ...]:
 def read_kind(text: str) -> str:
     """Whether a text reads as a delivery firm, a product company, or neither.
 
-    **The product markers decide, not the delivery ones.** That is the opposite
-    of what this did, and the old precedence was a hole in the gate that exists
-    to keep product vendors out: the delivery vocabulary contains "our clients",
-    "our customers" and "we build", which is how a software company's own
-    homepage describes itself. A vendor read as a delivery firm, passed the kind
-    gate, and the size and location gates had no opinion about Snowflake.
-
-    The markers are not symmetric. "Book a demo", "our platform", "pricing
-    plans", "per seat" and "free trial" are near-certain evidence of a product
-    company; "our customers" is evidence of nothing at all. So a text carrying
-    both is a product company that also talks about its customers — which is
-    every product company.
+    The product markers decide when dominant, but soft markers ("our platform",
+    "book a demo") do not override an explicit services identity. A consultancy
+    whose site mentions platform engineering, a client portal demo, or an
+    accelerator is a delivery firm, not a product company.
     """
     if matches_any(text, DIRECTORY_TERMS):
         return "directory"
-    software = bool(matches_any(text, SOFTWARE_TERMS))
-    if software:
-        return "software"
-    if matches_any(text, SERVICES_TERMS):
+
+    software_matches = matches_any(text, SOFTWARE_TERMS)
+    services_matches = matches_any(text, SERVICES_TERMS)
+    primary_services = matches_any(text, PRIMARY_SERVICES_TERMS)
+
+    if software_matches:
+        hard_software = matches_any(text, HARD_SOFTWARE_TERMS)
+        # Explicit SaaS / pricing markers classify as software unless
+        # primary services identity is substantially stronger.
+        if hard_software and not (len(primary_services) >= 2 and len(services_matches) > len(software_matches)):
+            return "software"
+        # Soft product terms without any primary services identity -> software
+        if not primary_services:
+            return "software"
+        # When primary services are present, software must strictly outnumber services
+        if len(software_matches) > len(services_matches):
+            return "software"
+
+    if services_matches:
         return "services"
     return ""
 

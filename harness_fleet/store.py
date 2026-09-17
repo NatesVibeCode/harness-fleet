@@ -36,6 +36,10 @@ SCHEMA_SQL = SCHEMA_PATH.read_text(encoding="utf-8")
 MIGRATION_002_PATH = Path(__file__).resolve().parent / "migrations" / "002_intelligence_and_policy.sql"
 MIGRATION_003_PATH = Path(__file__).resolve().parent / "migrations" / "003_profiles.sql"
 MIGRATION_004_PATH = Path(__file__).resolve().parent / "migrations" / "004_studio_settings.sql"
+#: Widens `profile_kind` on databases built before a partner profile had a kind
+#: of its own. SQLite cannot alter a CHECK, so this rebuilds and carries rows;
+#: migrate() applies it only when the live DDL predates the widening.
+MIGRATION_005_PATH = Path(__file__).resolve().parent / "migrations" / "005_profile_kinds.sql"
 
 # Tables added after the numbered migrations were frozen. They are defined here
 # rather than inline in migrate() so that migrate() and
@@ -213,6 +217,23 @@ class _StreamingRunWriter:
         return False
 
 
+#: The onboarding documents the store keeps, one active revision per kind. Every
+#: kind is first-class: a partner profile is stored as a partner profile rather
+#: than flattened into an ICP, so the fields its own lane's questions need —
+#: the target ecosystem, the service models, the delivery roles — survive the
+#: round trip. A kind is what a lane points at, not a filename.
+PROFILE_KINDS = ("ideal_company", "ideal_partner", "ideal_employer")
+
+
+def check_profile_kind(kind: str) -> str:
+    """The kind, or the error naming the kinds that exist."""
+    if kind not in PROFILE_KINDS:
+        raise ValueError(
+            f"unsupported profile kind: {kind} (have: {', '.join(PROFILE_KINDS)})"
+        )
+    return kind
+
+
 class HarnessStore:
     def __init__(self, path: str | Path | None = None):
         self.path = Path(path) if path is not None else default_db_path()
@@ -252,6 +273,21 @@ class HarnessStore:
                 connection.executescript(MIGRATION_003_PATH.read_text(encoding="utf-8"))
             if MIGRATION_004_PATH.is_file():
                 connection.executescript(MIGRATION_004_PATH.read_text(encoding="utf-8"))
+            # Widen `profile_kind` so a partner profile is stored as itself. The
+            # live DDL says which kinds the table accepts, so it decides whether
+            # the rebuild is owed: a database built from the widened 003 already
+            # names `ideal_partner` and skips this entirely, which keeps the
+            # rewrite off the path of every command.
+            profile_ddl_row = connection.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='profile_revisions'"
+            ).fetchone()
+            profile_ddl = str(profile_ddl_row["sql"] or "") if profile_ddl_row else ""
+            if (
+                profile_ddl
+                and "ideal_partner" not in profile_ddl
+                and MIGRATION_005_PATH.is_file()
+            ):
+                connection.executescript(MIGRATION_005_PATH.read_text(encoding="utf-8"))
             cols = [row["name"] for row in connection.execute("PRAGMA table_info(runs)").fetchall()]
             if "policy_json" not in cols:
                 connection.execute("ALTER TABLE runs ADD COLUMN policy_json TEXT")
@@ -576,8 +612,7 @@ class HarnessStore:
     def save_profile(self, profile: Any, profile_kind: str | None = None) -> str:
         """Persist an immutable profile revision and make it active."""
         kind = profile_kind or getattr(profile, "profile_kind", "ideal_company")
-        if kind not in {"ideal_company", "ideal_employer"}:
-            raise ValueError(f"unsupported profile kind: {kind}")
+        check_profile_kind(kind)
         payload = profile.model_dump(mode="json", by_alias=True)
         encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
         revision_id = digest_json({"profile_kind": kind, "profile": payload})
@@ -607,8 +642,7 @@ class HarnessStore:
 
     def load_profile(self, profile_kind: str = "ideal_company") -> Any | None:
         """Load the active typed profile for a profile kind, if one exists."""
-        if profile_kind not in {"ideal_company", "ideal_employer"}:
-            raise ValueError(f"unsupported profile kind: {profile_kind}")
+        check_profile_kind(profile_kind)
         with self.connect() as connection:
             row = connection.execute(
                 """SELECT r.profile_json
@@ -621,8 +655,7 @@ class HarnessStore:
 
     def load_profile_revision(self, revision_id: str, profile_kind: str = "ideal_company") -> Any | None:
         """Load one immutable profile revision by ID for run resumption."""
-        if profile_kind not in {"ideal_company", "ideal_employer"}:
-            raise ValueError(f"unsupported profile kind: {profile_kind}")
+        check_profile_kind(profile_kind)
         with self.connect() as connection:
             row = connection.execute(
                 "SELECT profile_json FROM profile_revisions WHERE revision_id=? AND profile_kind=?",
@@ -634,16 +667,23 @@ class HarnessStore:
     def _profile_from_row(row: Any, profile_kind: str) -> Any | None:
         if row is None:
             return None
+        # Each kind loads back as its own contract, so a caller that stored an
+        # IPP reads IPP fields rather than a flattened ICP.
         if profile_kind == "ideal_company":
             from .profile import IdealCompanyProfile
 
             return IdealCompanyProfile.model_validate(json.loads(row["profile_json"]))
-        return json.loads(row["profile_json"])
+        if profile_kind == "ideal_partner":
+            from .partner import IdealPartnerProfile
+
+            return IdealPartnerProfile.model_validate(json.loads(row["profile_json"]))
+        from career_fleet.profile import IdealEmployerProfile
+
+        return IdealEmployerProfile.model_validate(json.loads(row["profile_json"]))
 
     def active_profile_revision_id(self, profile_kind: str = "ideal_company") -> str | None:
         """Return the active profile revision selected for a profile kind."""
-        if profile_kind not in {"ideal_company", "ideal_employer"}:
-            raise ValueError(f"unsupported profile kind: {profile_kind}")
+        check_profile_kind(profile_kind)
         with self.connect() as connection:
             row = connection.execute(
                 "SELECT revision_id FROM active_profiles WHERE profile_kind=?",

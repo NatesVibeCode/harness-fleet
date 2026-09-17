@@ -207,10 +207,40 @@ def test_an_eliminated_candidate_is_not_owed_the_next_rung():
 
     rung = LadderRung(name="stories", evidence=FETCHED, gates=["vertical"])
     assert not advances_to(killed, rung)
-    # A candidate that has *read* the page and qualified has nothing left to
-    # buy: walking it spends a visit on a question that is already answered.
-    assert not advances_to(settled_on_a_page, rung)
-    # But a candidate qualified on a search result is still owed the page. Every
+    # A candidate that has read the page and qualified on kind, size and
+    # location is *still* owed this rung, because this rung asks something the
+    # one below never asked: the vertical. Reading "qualified" as "nothing left
+    # to buy" starved the shipped partner ladder's third rung — planned, wired,
+    # handed nobody, and reported as a finished run.
+    assert advances_to(settled_on_a_page, rung)
+    # A rung that only restates the gates just passed, on evidence already in
+    # hand, buys nothing: there is no question left for it to answer.
+    assert not advances_to(
+        settled_on_a_page,
+        LadderRung(name="again", evidence=FETCHED, gates=["kind"]),
+    )
+    # Unless it reads pages this walk never opened. The partner profile states
+    # target industries, so *vertical* is live at every rung and the rung above
+    # can ask nothing new — but case studies are on surfaces the services page
+    # was never going to carry, so the candidate is owed that walk anyway.
+    settled_on_a_page_and_vertical = FunnelReport(
+        candidate="read.com",
+        results=[_verdict("kind", "pass"), _verdict("vertical", "pass")],
+        fetched=True,
+    )
+    assert advances_to(
+        settled_on_a_page_and_vertical,
+        LadderRung(name="stories", evidence=FETCHED, gates=["vertical"],
+                   surfaces=["case_studies", "blog"]),
+        read_surfaces={"home", "about", "services"},
+    )
+    assert not advances_to(
+        settled_on_a_page_and_vertical,
+        LadderRung(name="stories", evidence=FETCHED, gates=["vertical"],
+                   surfaces=["about"]),
+        read_surfaces={"home", "about", "services"},
+    )
+    # A candidate qualified on a search result is still owed the page. Every
     # cheap gate can pass on a snippet while carrying none of the evidence the
     # run's bar demands — only a page can — and the career lane delivered
     # nothing at all until this was true: no visit, no evidence, nobody scored.
@@ -421,14 +451,24 @@ def test_the_fetched_rung_above_a_walk_gates_on_what_was_read(tmp_path, monkeypa
     assert state["nodes"]["r1-surface"]["read"] == 1
     second = _rows(store, state, "g1-surface")[0]
     # Read, so this rung gates as a page: the headcount and the place are on the
-    # page, the gates pass, and nothing is left to settle.
+    # page, the gates pass, and the candidate is owed the rung above this one —
+    # which asks the vertical, a question this rung never put to it.
     assert second["evidence"] == FETCHED
     assert second["outcome"] == "qualified"
     assert second["because"] == ""
-    assert second["advances"] is False
+    assert second["advances"] is True
+    assert second["next_rung"] == "stories"
     assert _text(store, state, "r1-surface", "northwind.example").startswith(
         "northwind.example"
     )
+    # And the rung above it is handed the candidate. This is the assertion that
+    # was missing: the ladder declared three rungs, the graph built three rungs,
+    # and the third one was handed nobody — a finished-looking run with the
+    # case-study read silently skipped.
+    assert state["nodes"]["r2-stories"]["count"] >= 1
+    third = _rows(store, state, "g2-stories")[0]
+    assert third["item_id"] == "northwind.example"
+    assert third["rung"] == "stories"
 
 
 def test_a_rung_reports_the_gates_it_ran_and_where_its_table_lives(tmp_path, monkeypatch):

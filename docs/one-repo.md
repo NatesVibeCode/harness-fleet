@@ -20,7 +20,7 @@ This is not a cosmetic merge. It removes whole categories of work:
 
 ## What a lane becomes
 
-A lane is already defined (`lanes/<lane>.json`, closed schema: seeds, queries,
+A lane is already defined (`lanes/<lane>.json`, closed schema: queries,
 sources, channels, title/remote filters, preset, tier bar, output). Today it is
 a workspace file; after the merge the package **ships a set of lanes**
 (`account`, `career`, `partner`, plus the generic ones) and a user may add their
@@ -111,7 +111,8 @@ With one repo, a new surface costs **one JSON file, a preset, a paragraph, and a
 proof run**. Partner is the first one under this model; anything nobody has
 thought of yet works the same way.
 
-1. **The lane** — `lanes/<name>.json`: seeds and queries, backends and channels,
+1. **The lane** — `lanes/<name>.json`: queries and their onboarding profile,
+   backends and channels,
    title/location/remote filters, the preset it scores with, the tier bar it
    demands, and how it presents results (`top`, `min_score`). Closed schema, so
    a lane cannot smuggle in a mechanism override.

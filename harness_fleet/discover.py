@@ -3650,17 +3650,25 @@ def discover_sitemap_url(
         close = True
     try:
         parts = urlparse(site_url if "://" in site_url else f"https://{site_url}")
-        origin = f"{parts.scheme or 'https'}://{parts.netloc or parts.path}"
-        candidates = [f"{origin}/sitemap.xml", f"{origin}/sitemap_index.xml"]
-        try:
-            resp = client.get(f"{origin}/robots.txt", timeout=timeout)
-            if resp.status_code == 200:
-                for line in resp.text.splitlines():
-                    clean = line.split("#", 1)[0].strip()
-                    if clean.lower().startswith("sitemap:"):
-                        candidates.append(clean.split(":", 1)[1].strip())
-        except Exception:
-            pass
+        scheme = parts.scheme or "https"
+        host = parts.netloc or parts.path
+        origins = [f"{scheme}://{host}"]
+        alt_host = host[4:] if host.startswith("www.") else f"www.{host}"
+        origins.append(f"{scheme}://{alt_host}")
+
+        candidates: list[str] = []
+        for origin in origins:
+            candidates.extend([f"{origin}/sitemap.xml", f"{origin}/sitemap_index.xml"])
+            try:
+                resp = client.get(f"{origin}/robots.txt", timeout=timeout)
+                if resp.status_code == 200:
+                    for line in resp.text.splitlines():
+                        clean = line.split("#", 1)[0].strip()
+                        if clean.lower().startswith("sitemap:"):
+                            candidates.append(clean.split(":", 1)[1].strip())
+            except Exception:
+                pass
+        candidates = list(dict.fromkeys(candidates))
         for candidate in candidates:
             try:
                 resp = client.get(candidate, timeout=timeout)

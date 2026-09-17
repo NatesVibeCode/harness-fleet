@@ -28,7 +28,7 @@ def test_every_shipped_lane_validates():
     assert loaded, "the package ships lanes"
     for name, lane in loaded.items():
         assert lane.description, f"{name} explains what it is for"
-        assert lane.queries or lane.seeds, f"{name} has something to search for"
+        assert lane.queries, f"{name} has something to search for"
         lane_module.validate_lane(lane, channels=set(), backends=set(BACKENDS))
 
 

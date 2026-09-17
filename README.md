@@ -426,8 +426,9 @@ mechanism. Three ship in the package:
 {
   "name": "partner",
   "description": "Implementation partners and consultancies, from vendor-published stories",
-  "seeds": ["snowflake"],              // anchors the lane starts from
-  "queries": ["\"partner of the year\" (\"case study\" OR \"customer story\")"],
+  "onboarding_profile": "ideal_partner_profile.json",  // supplies the traits a template asks for
+  "queries": ["\"{tech}\" consultancy \"our clients\" (implementation OR migration)"],
+  "query_terms": {"tech": ["snowflake"]},  // illustrative fallback, used before onboarding
   "backends": ["ddgs", "hn"],          // search surfaces, or a channel you installed
   "channels": [],                      // <workspace>/sources/*.json|py you can also search
   "title_include": [], "title_exclude": [], "remote": false,   // deterministic filters

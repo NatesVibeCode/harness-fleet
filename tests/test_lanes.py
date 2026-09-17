@@ -15,7 +15,7 @@ def _write(tmp_path, name, **fields):
 
 def test_a_lane_carries_the_things_that_differ(tmp_path):
     _write(tmp_path, "career", description="enterprise sales/ops roles, remote",
-           seeds=["enterprise software"], title_include=["enterprise sales", "sales ops"],
+           title_include=["enterprise sales", "sales ops"],
            remote=True, preset="triage", tier="tier_3", top=50)
     lane = lanes.load_lanes(tmp_path)["career"]
     assert lane.title_include == ["enterprise sales", "sales ops"]

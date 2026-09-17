@@ -40,10 +40,12 @@ lanes in.
   population gate : allows='any'   (asks no kind question)
   bar             : tier_3
   scored with     : account-research    output: top 25
-  volume          : 2 queries, no story indexes
+  volume          : 16 queries, no story indexes
 
   +-- ENTRY ----------------------------------------------------------+
-  | keyword search: 2 template(s) -> 2 queries
+  | keyword search: 3 template(s) x 2 term set(s) -> 16 queries
+  |   tech: Kafka, Snowflake, Databricks, Confluent
+  |   pain: we migrated, our data platform
   | backends: ddgs, hn
   +-------------------------------------------------------------------+
                       |  candidates: one row per company
@@ -62,15 +64,6 @@ lanes in.
     read    : services        paths: /services, /what-we-do, /solutions...
     read    : careers         paths: /careers, /jobs, /join-us
   earns     : qualifies the cheap gates; the stack they actually run lives here
-                      |
-                      v  only what passed surface continues
-──────────────────────────────────────────────────────────────────────────────
-  RUNG 3 . stories   evidence=fetched  (reads pages)
-  gates     : vertical
-    read    : case_studies    paths: /case-studies, /case-study, /our-work...
-    read    : blog            paths: /blog, /insights, /resources...
-    read    : news            paths: /news, /newsroom, /press
-  earns     : settles which industries the work is actually in
 
   THE DAG THIS LADDER COMPILES TO
 
@@ -84,10 +77,6 @@ lanes in.
                 reads c0-result        | writes rung_rows + rung_text + rung_items
   g1-surface    gate     0 fetches (reads what the walk brought back)
                 reads r1-surface       | writes rung_rows + rung_text (the text it gated on)
-  r2-stories    retrieve pages: case_studies, blog, news
-                reads g1-surface       | writes rung_rows + rung_text + rung_items
-  g2-stories    gate     0 fetches (reads what the walk brought back)
-                reads r2-stories       | writes rung_rows + rung_text (the text it gated on)
   s-score       score    reads the standing firms, runs the campaign
                 reads captured.jsonl   | writes rung_rows + rung_text (score, tier, facts) + the running list
 
@@ -98,8 +87,6 @@ lanes in.
   | `c0-result` | gate | result | size, location | - | `rung_rows`, `rung_text` |
   | `r1-surface` | retrieve | surface | reads pages | `about`, `services`, `careers` | `rung_rows`, `rung_text`, `rung_items` |
   | `g1-surface` | gate | surface | size, location | `about`, `services`, `careers` | `rung_rows`, `rung_text` |
-  | `r2-stories` | retrieve | stories | reads pages | `case_studies`, `blog`, `news` | `rung_rows`, `rung_text`, `rung_items` |
-  | `g2-stories` | gate | stories | vertical | `case_studies`, `blog`, `news` | `rung_rows`, `rung_text` |
   | `s-score` | score | - | the checklist and the bar, on whoever is standing | - | `rung_rows`, `rung_text`, `entity_state` |
 
   a search settles location, size at result, so no page is fetched for them
@@ -110,7 +97,6 @@ lanes in.
   |---|---|---|---|---|---|---|
   | 1 | **result** | `snippet` | 0 fetches | size, location | nothing | eliminates on firmographics, or earns one page visit — it never qualifies |
   | 2 | **surface** | `fetched` | pages | size, location | `about`, `services`, `careers` | qualifies the cheap gates; the stack they actually run lives here |
-  | 3 | **stories** | `fetched` | pages | vertical | `case_studies`, `blog`, `news` | settles which industries the work is actually in |
 
 ──────────────────────────────────────────────────────────────────────────────
                       v
@@ -122,7 +108,7 @@ lanes in.
                       |  survivors, bundled per company
                       v
   BAR . tier_3 needs: stack_delivery
-    OK  stack_delivery           carried by services, case_studies, blog, code   <- rung reads: services, case_studies, blog
+    OK  stack_delivery           carried by services, case_studies, blog, code   <- rung reads: services
 
   FIELDS THE ROW CARRIES . preset account-research
     claims: checklist, score, identified_gap, fit_tier, reasoning
@@ -134,10 +120,12 @@ lanes in.
   population gate : allows='any'   (asks no kind question)
   bar             : none + require_kinds=['delivery_hiring']
   scored with     : career-research    output: top 50
-  volume          : 4 queries, no story indexes
+  volume          : 6 queries, no story indexes
 
   +-- ENTRY ----------------------------------------------------------+
-  | keyword search: 4 template(s) -> 4 queries
+  | keyword search: 3 template(s) x 2 term set(s) -> 6 queries
+  |   role: enterprise sales, sales operations
+  |   tech: Kafka
   | backends: ddgs, hn
   +-------------------------------------------------------------------+
                       |  candidates: one row per company
@@ -203,7 +191,7 @@ lanes in.
     OK  delivery_hiring          carried by ats   <- rung reads: ats
 
   FIELDS THE ROW CARRIES . preset career-research
-    claims: checklist, score, role_focus, fit_hypothesis
+    claims: checklist, score, role_focus, fit_hypothesis, reasoning, fit_tier
     answers (9): employer, function, seniority, territory, compensation, stack, buyers, requisition_url, posted_at
              required by the preset: yes
 

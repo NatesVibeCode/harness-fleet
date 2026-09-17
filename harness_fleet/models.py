@@ -1032,7 +1032,7 @@ class TaskRegistrationResult(ClosedModel):
 
 
 class ProfileResult(ClosedModel):
-    profile_kind: Literal["ideal_company", "ideal_employer"]
+    profile_kind: Literal["ideal_company", "ideal_partner", "ideal_employer"]
     revision: str = Field(pattern=r"^[0-9a-f]{64}$")
     profile: dict[str, JsonValue]
 

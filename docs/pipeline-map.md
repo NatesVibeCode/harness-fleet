@@ -81,6 +81,19 @@ One writer per fact. A second writer is the defect, not the fix.
 3. **`docs/pipeline-map.md` itself.** Its commands and table names are checked;
    the claims in its tables — who writes what — are prose. A cheap guard would
    assert the writer column against the code that calls `RungTables.write`.
+4. **The kind gate's product rule.** `read_kind` gives product markers
+   precedence, and one match in the concatenated fetched text decides, so
+   consultancies that mention a platform or run a demo are eliminated as
+   vendors. Measured, with named firms, in
+   [quality-findings.md](quality-findings.md) §3: dominance, not presence, plus
+   the disqualifier vocabulary the ladder has never had.
+5. **Zeros with no reason.** 13 of 14 score rows in the live probe are zero and
+   every one carries an empty `because`. The unbacked-claims rule is right; a
+   zero that cannot be audited is not a measurement. See §4.
+6. **`about`, and the sitemap host.** 1 record in 34 attempts on the live
+   partner population. Two of three fallback paths are tried and the third is
+   never reached; the sitemap is requested on the bare host while the site
+   answers on `www`. See §2.
 
 ## 4b. Verified end to end, outside the checkout
 

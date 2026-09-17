@@ -490,3 +490,73 @@ def test_the_board_names_a_lane_by_its_lane_not_its_preset(tmp_path):
     assert lane_for_run(store, "run-career") == "", (
         "a database without the log is a database without a lane, not an error"
     )
+
+
+def test_board_payload_enriches_account_and_career_lanes(tmp_path: Path):
+    """Account and career runs expose verified details, hypotheses, and highlights."""
+    # Account run
+    acc_db = tmp_path / "account.db"
+    acc_store = HarnessStore(acc_db)
+    acc_catalog = RouteCatalog(db_path=acc_store.path)
+    acc_catalog.add_route(
+        route_id="demo/fake",
+        provider="demo",
+        cost_per_1k_input=0.0,
+        cost_per_1k_output=0.0,
+        enabled=True,
+        price_state=PriceState.PRICE_OBSERVED_ZERO.value,
+        verification_source="test",
+    )
+    acc_task = create_task_from_preset("account_research", preset_name="account-research")
+    acc_store.register_task(acc_task)
+    Engine(
+        task=acc_task,
+        store=acc_store,
+        policy=RoutePolicy(allowed_routes=["demo/fake"], free_only=True),
+    ).run_campaign(
+        raw_items=[{"item_id": "acme.com", "text": "Acme Bank migrated its customer ledger to Kafka and Snowflake."}],
+        run_id="acc-run",
+        input_path=str(tmp_path / "accounts.csv"),
+        concurrency=1,
+    )
+    acc_payload = build_board_payload(acc_db, "acc-run")
+    assert len(acc_payload["partners"]) == 1
+    acc_record = acc_payload["partners"][0]
+    assert acc_record["detail"], "account record should expose detail from identified_gap"
+    assert acc_record["hypothesis"] == acc_record["detail"]
+    assert any("gap:" in h for h in acc_record["highlights"])
+    assert acc_payload["attributes"], "attributes should be populated even without nested answers"
+
+    # Career run
+    car_db = tmp_path / "career.db"
+    car_store = HarnessStore(car_db)
+    car_catalog = RouteCatalog(db_path=car_store.path)
+    car_catalog.add_route(
+        route_id="demo/fake",
+        provider="demo",
+        cost_per_1k_input=0.0,
+        cost_per_1k_output=0.0,
+        enabled=True,
+        price_state=PriceState.PRICE_OBSERVED_ZERO.value,
+        verification_source="test",
+    )
+    car_task = create_task_from_preset("career_research", preset_name="career-research")
+    car_store.register_task(car_task)
+    Engine(
+        task=car_task,
+        store=car_store,
+        policy=RoutePolicy(allowed_routes=["demo/fake"], free_only=True),
+    ).run_campaign(
+        raw_items=[{"item_id": "req-101", "text": "Stripe is hiring an Enterprise Sales Director remote 200k-250k OTE."}],
+        run_id="car-run",
+        input_path=str(tmp_path / "roles.csv"),
+        concurrency=1,
+    )
+    car_payload = build_board_payload(car_db, "car-run")
+    assert len(car_payload["partners"]) == 1
+    car_record = car_payload["partners"][0]
+    assert car_record["detail"], "career record should expose role_focus / function as detail"
+    assert car_record["hypothesis"]
+    assert car_record["highlights"], "career record should expose role highlights"
+    assert car_record["name"], "name should be populated from employer"
+
