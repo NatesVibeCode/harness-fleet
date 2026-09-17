@@ -459,3 +459,34 @@ def test_a_reader_skips_a_record_the_rules_no_longer_accept(tmp_path):
     records, _task = verified_records_from_snapshot(reading, tolerate_rejected=True)
     assert records == [], "the record it cannot vouch for is left out"
     assert reading["records_rejected"] == 1, "and counted, so a reader can say so"
+
+
+def test_the_board_names_a_lane_by_its_lane_not_its_preset(tmp_path):
+    """A lane and a preset are independent, and the noun has to come from the lane.
+
+    The board inferred it from the task's name, which worked for partners by
+    luck ("partner-research" starts with "partner") and called a career run's
+    roles "Records" — because the career lane's preset is `triage`. The visit
+    log records the lane a node ran for, which is the fact itself.
+    """
+    import sqlite3
+
+    from harness_fleet.board import lane_for_run
+    from harness_fleet.ledger import Ledger
+    from harness_fleet.store import HarnessStore
+
+    db = tmp_path / "t.db"
+    store = HarnessStore(db)
+    Ledger(store).record(
+        [{"item_id": "acme.com", "candidate": "acme.com", "outcome": "read", "gates": [],
+          "score": 0.0, "run_id": "run-career"}],
+        dag_id="ui-career", node_id="s-score", lane="career",
+    )
+    assert lane_for_run(store, "run-career") == "career"
+    assert lane_for_run(store, "no-such-run") == "", "and an unknown run says nothing"
+
+    with sqlite3.connect(db) as connection:
+        connection.execute("DROP TABLE entity_events")
+    assert lane_for_run(store, "run-career") == "", (
+        "a database without the log is a database without a lane, not an error"
+    )

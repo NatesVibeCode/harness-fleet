@@ -283,9 +283,22 @@
   /* What this run's rows are called, taken from the run's own task name rather
      than hardcoded to one product: a partner run shows partners, an account run
      accounts, a career run roles. The board is a viewer for every task. */
-  var NOUNS = { partner:["Partner","Partners","Practice"], account:["Account","Accounts","Gap"], career:["Role","Roles","Role"] };
+  var NOUNS = {
+    partner:["Partner","Partners","Practice"],
+    account:["Account","Accounts","Gap"],
+    // A career run's rows are keyed by the employer and the detail column is
+    // the requisition, so the two headers are not the same word.
+    career:["Employer","Roles","Role"],
+  };
+  /* The lane first, because it is the fact: a lane and a preset are
+     independent (career's preset is `triage`), so reading the noun off the
+     task's name worked for partners by luck and called a career run's roles
+     "Records". The prefix stays as a fallback for a run with no lane recorded. */
   function recordNoun() {
-    var task = String(((STATE.payload || {}).run || {}).task || "").toLowerCase();
+    var run = (STATE.payload || {}).run || {};
+    var lane = String(run.lane || "").toLowerCase();
+    if (NOUNS[lane]) return { one:NOUNS[lane][0], many:NOUNS[lane][1], detail:NOUNS[lane][2] };
+    var task = String(run.task || "").toLowerCase();
     for (var key in NOUNS) { if (task.indexOf(key) === 0) return { one:NOUNS[key][0], many:NOUNS[key][1], detail:NOUNS[key][2] }; }
     return { one:"Record", many:"Records", detail:"Detail" };
   }
@@ -524,12 +537,14 @@
     }
 
     // Most-consulted columns first; the long attribute tail scrolls horizontally.
+    /* A lane judged by its own fields — career's rows are requisitions — has no
+       checklist, so no score and no tier. Two columns of dashes are the board
+       reporting the shape of a lane it is not looking at. */
+    var scored = (p.checklist_total || 0) > 0 && (p.partners || []).some(function (x) { return x.score !== null; });
     var head = el("tr", null, [
       headerCell(recordNoun().one, "id", "sticky-col"),
-      headerCell("Score", "score"),
-      el("th", { scope:"col", text:"Tier" }),
-      headerCell(recordNoun().detail, "practice")
-    ]);
+    ].concat(scored ? [headerCell("Score", "score"), el("th", { scope:"col", text:"Tier" })] : [])
+     .concat([headerCell(recordNoun().detail, "practice")]));
     (p.attributes || []).forEach(function (a) { head.appendChild(headerCell(a.label, a.key)); });
     head.appendChild(el("th", { scope:"col", text:"Evidence" }));
 
@@ -545,19 +560,18 @@
               }))
             : null
         ]),
-        el("td", null, [
+        el("td", null, [el("div", { class:"cell-text", text:partner.practice || "" })])
+      ];
+      if (scored) {
+        cells.splice(1, 0, el("td", null, [
           el("div", { class:"score-cell" }, [
-            el("span", { class:"score-num", text: partner.score === null ? "—" : partner.score + " / " + p.checklist_total }),
+            el("span", { class:"score-num", text: partner.score === null ? "" : partner.score + " / " + p.checklist_total }),
             el("span", { class:"bar " + scoreClass(partner.tier), style:"width:74px" }, [
-              // A score is points out of this run's checklist total, not a
-              // percent: 45 of 60 fills the bar, not under half of it.
               el("span", { style:"width:" + (partner.score === null ? 0 : Math.max(2, pct(partner.score, p.checklist_total))) + "%" })
             ])
           ])
-        ]),
-        tierCell(partner),
-        el("td", null, [el("div", { class:"cell-text", text:partner.practice || "—" })])
-      ];
+        ]), tierCell(partner));
+      }
       (p.attributes || []).forEach(function (a) {
         var value = (partner.answers || {})[a.key];
         // Nothing to show is nothing shown: a dash is the page talking about

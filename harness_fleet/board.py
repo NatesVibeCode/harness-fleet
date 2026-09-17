@@ -270,6 +270,30 @@ def _highlights(answers: dict[str, Any], limit: int = 4) -> list[str]:
     return out
 
 
+def lane_for_run(store: HarnessStore, run_id: str, runs_dir: str | Path | None = None) -> str:
+    """Which lane produced this run: the row's own record of it, then the report.
+
+    The board used to infer the lane from the *task* name — "partner-research"
+    starts with "partner", so partners were named right by luck — and the career
+    lane's preset is `triage`, so its rows were called "Records". The visit log
+    records the lane a node ran for, which is the fact itself rather than a
+    prefix that happens to match.
+    """
+    if run_id:
+        try:
+            with store.connect() as connection:
+                rows = connection.execute(
+                    "SELECT lane, COUNT(*) AS n FROM entity_events WHERE run_id=? AND lane!='' "
+                    "GROUP BY lane ORDER BY n DESC LIMIT 1",
+                    (run_id,),
+                ).fetchone()
+            if rows is not None and rows["lane"]:
+                return str(rows["lane"])
+        except Exception:  # a database without the log is a database without a lane
+            pass
+    return str(_lane_from_report(Path(runs_dir or "."), run_id) or "")
+
+
 def ledger_view(store: HarnessStore, *, limit: int = 200, trend: int = 15) -> dict[str, Any]:
     """The running list, as the page reads it: firms, counts, and who moved."""
     from .ledger import Ledger
@@ -401,7 +425,7 @@ def build_board_payload(
             "attempts_used": snapshot.get("attempts_used"),
             "input_path": snapshot.get("input_path"),
             "task": getattr(task, "name", None),
-            "lane": _lane_from_report(Path(runs_dir), snapshot.get("run_id")) if runs_dir else None,
+            "lane": lane_for_run(store, str(snapshot.get("run_id") or ""), runs_dir),
             "task_revision": snapshot.get("task_revision_id"),
             "instructions": getattr(task, "instructions", None),
         },
