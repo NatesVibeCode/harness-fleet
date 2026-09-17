@@ -558,3 +558,30 @@ def test_a_lane_with_no_ladder_still_walks_by_kind(monkeypatch):
     _records, report = enrich.enrich_entity("acme.com", kinds=("independent_validation",))
     assert "community" in called, "with no ladder, the kind's surfaces are read"
     assert "community" in report.surfaces
+
+
+def test_a_surface_the_sitemap_omits_is_still_probed(monkeypatch):
+    """A sitemap lists what a CMS generates, not the static pages.
+
+    `/about` was missing from the sitemap of every live domain probed
+    (infinitelambda, infracloud, corrdyn, slalom). Treating absence from the
+    sitemap as "that page is not there" left `about` unread on every domain —
+    the one page the size and location gates depend on — while `tune surface`
+    printed "Missing Surfaces (Will probe fallback paths)". The walker now does
+    what the tuner promises.
+    """
+    _offline(
+        monkeypatch,
+        sitemap=["https://acme.com/blog/post"],
+        pages={
+            "https://acme.com/blog/post": "A blog post.",
+            "https://acme.com/about": "Acme is a data consultancy of 120 people in London.",
+        },
+    )
+    records, report = enrich_entity(
+        "acme.com", kinds=["stack_delivery"], vendor_stories=False,
+        surface_order=["about", "blog"],
+    )
+    assert "about" in report.by_surface, "the sitemap omitted it, so the guess list must answer"
+    assert report.by_surface["about"] >= 1
+    assert any("Acme is a data consultancy" in getattr(r, "text", "") for r in records)

@@ -265,3 +265,32 @@ def test_consultancy_with_soft_product_markers_survives_kind_gate():
     )
     result = check_kind(integrator, allows="services", evidence=FETCHED)
     assert result.outcome == "pass" and "reads as a delivery firm" in result.reason
+
+
+def test_a_soft_directory_phrase_does_not_outvote_a_services_identity():
+    """Presence is not dominance — the directory rule needed the same treatment.
+
+    Live, `infinitelambda.com` — a data and AI consultancy with four primary
+    services terms — was eliminated as "a directory of companies" because its
+    pages contained the words "find a ". Every one of the partner lane's six
+    live eliminations was that false positive.
+    """
+    from harness_fleet.gates import read_kind
+
+    consultancy = (
+        "Infinite Lambda is a data and AI consultancy and an implementation partner. "
+        "Our advisory and consulting teams deliver data platform work for our clients. "
+        "Come and find a solution that fits your team."
+    )
+    assert read_kind(consultancy) == "services"
+
+    # A catalogue writes the hard vocabulary, and that still decides outright.
+    catalogue = (
+        "Directory of certified system integrators. Browse by industry. "
+        "Submit your listing. Claim this profile. Compare the best IT companies."
+    )
+    assert read_kind(catalogue) == "directory"
+
+    # Soft markers with nothing else to go on are still a directory.
+    bare_listing = "Find a company near you. Search for consultancies in your area."
+    assert read_kind(bare_listing) == "directory"

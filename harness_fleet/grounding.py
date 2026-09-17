@@ -251,26 +251,40 @@ def normalize_grounding(
                 # table and resolve inside it. Offsets stay optional because
                 # the span already fixes them; anything that does not match
                 # the cited span fails instead of searching the whole slice.
-                if not evidence_terms:
-                    return None, f"Item '{item.item_id}' cites candidate #{candidate.candidate_id} but the task exposes no evidence candidates."
-                spans = extract_candidates(slice_text, evidence_terms, candidate_top_n)
-                if not 0 <= candidate.candidate_id < len(spans):
-                    return None, f"Item '{item.item_id}' cites unknown candidate #{candidate.candidate_id} in slice '{candidate.slice_id}'."
-                resolved = _resolve_candidate_span(candidate.text, spans[candidate.candidate_id], slice_text)
-                if resolved is None:
-                    return None, (
-                        f"Item '{item.item_id}' quote does not match cited candidate "
-                        f"#{candidate.candidate_id} in slice '{candidate.slice_id}'; copy the span exactly."
-                    )
-                rel_start, rel_end, verbatim = resolved
-                quotes.append(QuoteRef(
-                    slice_id=candidate.slice_id,
-                    start=slice_start + rel_start,
-                    end=slice_start + rel_end,
-                    text=verbatim,
-                    supports=list(candidate.supports),
-                ))
-                continue
+                # The span table is an *optimization*, and `extract_candidates`
+                # says so: it returns [] when no evidence term appears, and "the
+                # caller then falls back to the legacy free-search quote path".
+                # It did not. A model that followed the contract — "cite
+                # candidate_id and copy the span text exactly" — was refused
+                # outright whenever that table came back empty, which is the
+                # common case for a short dossier, so *every* candidate failed
+                # grounding and no run could ever score above zero. An empty
+                # table is not evidence against the model; it is a reason to
+                # search the slice for the quote instead of indexing into it.
+                spans = (
+                    extract_candidates(slice_text, evidence_terms, candidate_top_n)
+                    if evidence_terms
+                    else []
+                )
+                if 0 <= candidate.candidate_id < len(spans):
+                    resolved = _resolve_candidate_span(candidate.text, spans[candidate.candidate_id], slice_text)
+                    if resolved is None:
+                        return None, (
+                            f"Item '{item.item_id}' quote does not match cited candidate "
+                            f"#{candidate.candidate_id} in slice '{candidate.slice_id}'; copy the span exactly."
+                        )
+                    rel_start, rel_end, verbatim = resolved
+                    quotes.append(QuoteRef(
+                        slice_id=candidate.slice_id,
+                        start=slice_start + rel_start,
+                        end=slice_start + rel_end,
+                        text=verbatim,
+                        supports=list(candidate.supports),
+                    ))
+                    continue
+                # Otherwise fall through to the free-search path below, which
+                # resolves the quote by exact match, normalized match, or reports
+                # a real ambiguity — the promise this branch used to break.
 
             if not offsets_valid:
                 # 1) Exact match

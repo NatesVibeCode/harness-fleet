@@ -3,7 +3,7 @@ import hashlib
 import json
 import time
 import uuid
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from datetime import datetime, timezone
 from itertools import chain
 from pathlib import Path
@@ -89,6 +89,11 @@ def _manifest_stream(
 DEFAULT_PROMPT_TIMEOUT_SEC = 180
 
 
+#: Routes that may answer one prompt concurrently. Above one, a slow or
+#: rate-limited model cannot hold up a model that already replied.
+DEFAULT_ROUTE_RACE = 3
+
+
 class LeaseLostError(RuntimeError):
     """Another worker owns this batch now; this worker should move on."""
 
@@ -106,6 +111,7 @@ class Engine:
         profile: Any | None = None,
         prompt_timeout_sec: int = DEFAULT_PROMPT_TIMEOUT_SEC,
         max_batch_chars: int | None = None,
+        route_race: int = DEFAULT_ROUTE_RACE,
     ):
         self.task = task
         self.store = store or (catalog.store if catalog else HarnessStore())
@@ -127,6 +133,76 @@ class Engine:
         # the route that actually verifies (see execute_batch success path).
         self.session_stickiness_tolerance = max(0.0, float(session_stickiness_tolerance))
         self.profile = profile
+        # How many routes answer the same prompt at once. One at a time is the
+        # slowest possible way to use a free ladder: every refusal costs a full
+        # round trip — a rate limit, a timeout, a 429 — and a free ladder is
+        # mostly refusals, so a batch spends its whole budget queueing behind
+        # routes that were never going to answer.
+        self.route_race = max(1, int(route_race))
+
+    def _hedge_transports(
+        self,
+        routes: Sequence[str],
+        *,
+        prompt: str,
+        system_prompt: str,
+        session_id: str | None,
+    ) -> dict[str, tuple[bool, Any, Any]]:
+        """Ask several routes at once and keep whatever comes back.
+
+        The racers are daemon threads on purpose. A route that is merely slow
+        must not hold up a route that already answered, and waiting for the
+        stragglers would put back exactly the serial cost this removes — so the
+        first answer returns and the rest are abandoned. Whatever they were
+        going to say is discarded, not awaited.
+
+        One route at a time is also unfair to the good routes: a run that tries
+        a rate-limited model first spends a full round trip learning nothing,
+        while the model that would have answered sat idle the whole time.
+        """
+        import queue
+        import threading
+
+        outbox: "queue.Queue[tuple[str, tuple[bool, Any, Any]]]" = queue.Queue()
+        routes_by_id = {r["id"]: r for r in self.catalog.data.get("routes", [])}
+
+        def racer(route_id: str) -> None:
+            try:
+                hint = (routes_by_id.get(route_id) or {}).get("provider")
+                provider = self.registry.resolve(hint)
+                result = provider.run_prompt(
+                    route_id=route_id,
+                    prompt=prompt,
+                    system_prompt=system_prompt,
+                    session_id=session_id,
+                    policy=self.policy,
+                    timeout_sec=self.prompt_timeout_sec,
+                )
+            except Exception as exc:  # a racer may not take the batch down
+                result = (False, None, ProviderReceipt(
+                    id=f"hedge-{route_id}", provider="unknown", requested_route=route_id,
+                    status="failed", error=str(exc), error_type="inference_error",
+                ))
+            outbox.put((route_id, result))
+
+        for route_id in routes:
+            threading.Thread(target=racer, args=(route_id,), daemon=True).start()
+
+        collected: dict[str, tuple[bool, Any, Any]] = {}
+        deadline = time.time() + self.prompt_timeout_sec + 5
+        while len(collected) < len(routes):
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                break
+            try:
+                route_id, result = outbox.get(timeout=remaining)
+            except queue.Empty:
+                break
+            collected[route_id] = result
+            if result and result[0]:
+                break
+        return collected
+
 
     def set_provider(self, name: str, provider) -> None:
         """Register (or override) the provider dispatched for a provider name."""
@@ -217,6 +293,23 @@ class Engine:
         routes_by_id = {r["id"]: r for r in self.catalog.data.get("routes", [])}
         batch_id = batch.get("batch_id", "b0")
 
+        # Ask the head of the ladder at once, then walk it. The walk below is
+        # unchanged — it still records every attempt, cools down every refusal and
+        # validates every answer — but the routes it walks have already replied,
+        # so a refusal costs no round trip and the first transport success is
+        # taken as soon as it lands.
+        hedged: dict[str, tuple[bool, Any, Any]] = {}
+        if self.route_race > 1 and len(ladder) > 1:
+            hedged = self._hedge_transports(
+                ladder[: self.route_race],
+                prompt=user_content,
+                system_prompt=self.task.render_instructions(),
+                session_id=session_id,
+            )
+            winner = next((rid for rid, res in hedged.items() if res and res[0]), None)
+            if winner:
+                ladder = [winner] + [r for r in ladder if r != winner]
+
         # Explicit zero means zero attempts; only None falls back to default.
         attempt_limit = self.max_attempts_per_batch if route_attempt_limit is None else route_attempt_limit
         for route_id in ladder[:attempt_limit]:
@@ -236,12 +329,16 @@ class Engine:
             }
 
             started_ts = time.time()
-            ok, response_text, raw_receipt = provider.run_prompt(
-                route_id=route_id,
-                prompt=user_content,
-                system_prompt=self.task.render_instructions(),
-                **prompt_kwargs,
-            )
+            if route_id in hedged:
+                # Already asked, concurrently, before this walk began.
+                ok, response_text, raw_receipt = hedged.pop(route_id)
+            else:
+                ok, response_text, raw_receipt = provider.run_prompt(
+                    route_id=route_id,
+                    prompt=user_content,
+                    system_prompt=self.task.render_instructions(),
+                    **prompt_kwargs,
+                )
             try:
                 receipt = coerce_receipt(raw_receipt)
             except ValidationError as exc:

@@ -109,3 +109,40 @@ def test_the_partner_profile_leads_with_the_ecosystem():
     ipp = IdealPartnerProfile(target_ecosystem="Kafka", required_adjacent_competencies=["dbt"])
     lane = _lane(queries=['"{tech}" consultancy'], query_terms={"tech": ["fallback"]})
     assert lane_queries(lane, ipp) == ['"Kafka" consultancy', '"dbt" consultancy']
+
+
+def test_the_authoring_file_is_read_every_run(tmp_path):
+    """Editing the profile must not be a no-op once a revision exists.
+
+    Reading the store first made an edit to `ideal_partner_profile.json` silent
+    the moment one revision was stored: an operator changes a size floor,
+    re-runs, and gets the old profile. The file is the authoring form; the store
+    is the record of it.
+    """
+    from harness_fleet.onboarding import load_onboarding_profile
+    from harness_fleet.partner import IdealPartnerProfile
+    from harness_fleet.store import HarnessStore
+
+    class _Lane:
+        onboarding_profile = "ideal_partner"
+
+    (tmp_path / "ideal_partner_profile.json").write_text(
+        '{"profile_name": "first", "target_ecosystem": "Kafka", "partner_size_min": 10}',
+        encoding="utf-8",
+    )
+    store = HarnessStore(str(tmp_path / "s.db"))
+    lane = _Lane()
+
+    first = load_onboarding_profile(tmp_path, lane, None, store)
+    assert first.partner_size_min == 10
+
+    # The operator edits the file. The next run must see the edit.
+    (tmp_path / "ideal_partner_profile.json").write_text(
+        '{"profile_name": "second", "target_ecosystem": "Kafka", "partner_size_min": 250}',
+        encoding="utf-8",
+    )
+    second = load_onboarding_profile(tmp_path, lane, None, store)
+    assert second.partner_size_min == 250
+    assert isinstance(second, IdealPartnerProfile)
+    # Both edits are still on the record.
+    assert store.active_profile_revision_id("ideal_partner")

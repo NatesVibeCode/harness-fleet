@@ -180,14 +180,22 @@ def load_onboarding_profile(
         return profile
     if not kind:
         return None
-    if store is not None:
-        active = store.load_profile(kind)
-        if active is not None:
-            return active
     from .profiles import authoring_file as kind_authoring_file
 
     authoring = kind_authoring_file(kind)
+    # The file is the authoring form, so it is read every time. Reading the store
+    # *first* made an edit to `ideal_partner_profile.json` a no-op the moment one
+    # revision existed, which is the trap the docstrings promise not to be: an
+    # operator changes a size floor, re-runs, and silently gets the old profile.
+    # Persisting what was read keeps the durable record — every edit becomes a
+    # revision — without letting the record overrule the person editing it.
     profile = load_document(root / authoring, kind) if authoring else None
-    if profile is not None and store is not None:
-        store.save_profile(profile, kind)
-    return profile
+    if profile is not None:
+        if store is not None:
+            store.save_profile(profile, kind)
+        return profile
+    # No authoring file here: fall back to whatever revision is active, so a run
+    # on a machine that only has the database still onboards.
+    if store is not None:
+        return store.load_profile(kind)
+    return None

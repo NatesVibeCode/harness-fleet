@@ -1092,12 +1092,26 @@ def enrich_entity(
         report.skipped.extend(sitemap_skipped)
         report.visited += 1  # the sitemap lookup itself
         if pages:
-            # A sitemap answered for every domain probed, so when one is found
-            # it is the authority: a page absent from it is a page that is not
-            # there, and probing the guess list anyway only buys 404s.
+            # A sitemap answered, so it is the authority for what it *lists*.
             for surface in first_party:
                 for url in pages.get(surface, [])[: max(1, per_surface)]:
                     fetch_into(url, surface)
+            # But a sitemap is what a CMS generates — posts, careers, stories —
+            # and it routinely omits the static pages. `/about` was missing from
+            # every live domain probed (infinitelambda, infracloud, corrdyn,
+            # slalom), and reading absence from the sitemap as "not there" left
+            # `about` unread everywhere, which is the page the size and location
+            # gates need. `tune surface` already promised the opposite in as many
+            # words — "Missing Surfaces (Will probe fallback paths)" — so the
+            # walker now does what the tuner says: a surface the sitemap did not
+            # cover is one to guess at, and the first path that answers stops the
+            # guessing.
+            for surface in first_party:
+                if pages.get(surface) or report.by_surface.get(surface):
+                    continue
+                for url in surface_urls(surface, domain, surfaces=plan):
+                    if fetch_into(url, surface):
+                        break
         else:
             # No sitemap. Crawl the site's own links first — a site that names
             # its pages is better evidence than a guess list — and fall back to

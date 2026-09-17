@@ -10,6 +10,7 @@ Usage:
     tools/lane_tune.py surface <domain|url> [--lane partner] [--probe]
     tools/lane_tune.py benchmark
     tools/lane_tune.py audit <database_or_workspace> [--json]
+    tools/lane_tune.py compare <before.db> <after.db> [--json]
 """
 from __future__ import annotations
 
@@ -25,10 +26,12 @@ if str(REPO) not in sys.path:
 
 from harness_fleet.tune import (
     audit_database,
+    compare_databases,
     diagnose_gates,
     diagnose_gates_batch,
     evaluate_surface,
     format_audit_report,
+    format_compare_report,
     format_batch_gate_report,
     format_benchmark_result,
     format_gate_report,
@@ -86,6 +89,14 @@ def build_parser() -> argparse.ArgumentParser:
     audit_cmd = sub.add_parser("audit", help="Audit a run database or workspace")
     audit_cmd.add_argument("database", help="Path to SQLite run database (e.g. fleet.db or workspace)")
     audit_cmd.add_argument("--json", action="store_true", help="Emit raw JSON report")
+
+    # 6. Before/after comparison
+    compare_cmd = sub.add_parser(
+        "compare", help="Two run databases, as a per-rung delta (change one thing, look)"
+    )
+    compare_cmd.add_argument("before", help="Run database from before the change")
+    compare_cmd.add_argument("after", help="Run database from after the change")
+    compare_cmd.add_argument("--json", action="store_true", help="Emit raw JSON report")
 
     return parser
 
@@ -180,6 +191,14 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(aud, indent=2))
         else:
             print(format_audit_report(aud))
+        return 0
+
+    elif args.subcommand == "compare":
+        diff = compare_databases(args.before, args.after)
+        if args.json:
+            print(json.dumps(diff, indent=2))
+        else:
+            print(format_compare_report(diff))
         return 0
 
     return 0

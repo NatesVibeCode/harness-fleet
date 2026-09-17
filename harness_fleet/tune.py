@@ -23,11 +23,13 @@ from .enrich import classify_page, load_surfaces, surface_urls
 from .gates import (
     DELIVERY_TERMS,
     DIRECTORY_TERMS,
+    HARD_DIRECTORY_TERMS,
     FETCHED,
     HARD_SOFTWARE_TERMS,
     PRIMARY_SERVICES_TERMS,
     SERVICES_TERMS,
     SNIPPET,
+    SOFT_DIRECTORY_TERMS,
     SOFTWARE_TERMS,
     VERTICAL_GROUPS,
     GateProfile,
@@ -62,6 +64,8 @@ class KindDiagnostic:
     services_matches: list[str] = field(default_factory=list)
     primary_services_matches: list[str] = field(default_factory=list)
     directory_matches: list[str] = field(default_factory=list)
+    hard_directory_matches: list[str] = field(default_factory=list)
+    soft_directory_matches: list[str] = field(default_factory=list)
     delivery_matches: list[str] = field(default_factory=list)
     dominance_explanation: str = ""
 
@@ -146,14 +150,26 @@ def diagnose_gates(
     serv_matches = matches_any(text, SERVICES_TERMS)
     prim_serv = matches_any(text, PRIMARY_SERVICES_TERMS)
     dir_matches = matches_any(text, DIRECTORY_TERMS)
+    hard_dir = matches_any(text, HARD_DIRECTORY_TERMS)
+    soft_dir = matches_any(text, SOFT_DIRECTORY_TERMS)
     del_matches = matches_any(text, DELIVERY_TERMS)
 
     kind_result = check_kind(text, allows=prof.allows, evidence=evidence)
     v_kind = read_kind(text)
 
     # Explain dominance rationale
-    if dir_matches:
-        dom = f"classified as directory due to directory terms: {dir_matches}"
+    if hard_dir:
+        dom = f"hard directory terms: {hard_dir}"
+    elif soft_dir and not prim_serv:
+        dom = (
+            f"soft directory terms {soft_dir} with no primary services identity, "
+            "so the prose decides it"
+        )
+    elif soft_dir:
+        dom = (
+            f"soft directory terms {soft_dir} do not decide it: "
+            f"primary services terms ({len(prim_serv)}) outrank them"
+        )
     elif hard_matches and not (len(prim_serv) >= 2 and len(serv_matches) > len(soft_matches)):
         dom = f"hard SaaS terms dominant: {hard_matches}"
     elif soft_matches and not prim_serv:
@@ -177,6 +193,8 @@ def diagnose_gates(
         services_matches=serv_matches,
         primary_services_matches=prim_serv,
         directory_matches=dir_matches,
+        hard_directory_matches=hard_dir,
+        soft_directory_matches=soft_dir,
         delivery_matches=del_matches,
         dominance_explanation=dom,
     )
@@ -362,6 +380,15 @@ class SimStep:
     reason: str
     gates: list[dict[str, str]]
     advances: bool
+    #: What this rung *asks* for, from the lane file.
+    declared_gates: list[str] = field(default_factory=list)
+    #: Which of those the profile actually made runnable. A gate the profile
+    #: states nothing for never runs — `vertical` with no target industries, or
+    #: `size` with no bounds — so a rung can declare a question and settle
+    #: nothing. That is the difference between a dead rung and a silent one, and
+    #: it was invisible: the rung reported the gates that ran, not the ones it
+    #: wanted, so `stories` looked idle rather than unasked.
+    live_gates: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -437,6 +464,8 @@ def simulate_candidate(
             reason=report.because(),
             gates=gates_summary,
             advances=adv,
+            declared_gates=list(rung.gates),
+            live_gates=[str(g.gate) for g in report.results],
         ))
 
         accumulated_surfaces.update(rung.surfaces)
@@ -545,6 +574,38 @@ def evaluate_surface(
 # 4. Run Quality Auditor
 # ---------------------------------------------------------------------------
 
+def _skip_kind(reason: str) -> str:
+    """Why a surface came back with nothing, in the three shapes it takes.
+
+    * ``not named`` — this rung's ladder does not read that surface, so it was
+      never tried. Not a failure of the source.
+    * ``dead path`` — the URL answered, and said 404/410, or there is no
+      sitemap. The path this install guesses is wrong for this site.
+    * ``nothing there`` — the pages were fetched and carried nothing about the
+      entity. The source is real and this candidate has nothing on it.
+
+    A reader tunes on the difference: "dead path" is a path list to fix,
+    "nothing there" is a source that does not carry what the lane wants, and
+    "not named" is a ladder to reorder.
+    """
+    text = str(reason or "").lower()
+    if "ladder does not name" in text:
+        return "not named"
+    if "http " in text or "no sitemap" in text or "timed out" in text or "refused" in text:
+        return "dead path"
+    return "nothing there"
+
+
+def _json_field(value: Any, fallback: Any) -> Any:
+    """A JSON column read defensively: a run database is not always this build."""
+    try:
+        parsed = json.loads(value or "")
+    except (TypeError, ValueError):
+        return fallback
+    return parsed if isinstance(parsed, type(fallback)) else fallback
+
+
+
 def audit_database(db: str | Path) -> dict[str, Any]:
     """Audit a run database: node progression, drop-offs, surface yield, scores."""
     db_path = Path(db)
@@ -599,9 +660,26 @@ def audit_database(db: str | Path) -> dict[str, Any]:
         nodes_by_lane: dict[str, dict[str, dict[str, Any]]] = defaultdict(lambda: defaultdict(lambda: {
             "rows": 0, "outcomes": defaultdict(int), "advanced": 0, "eliminated": 0,
             "scored": 0, "scores": [], "surfaces": defaultdict(int),
+            # Why, not just how many. A count of eliminations says a gate is
+            # busy; the reasons say whether it is right, and the skip kinds say
+            # whether a source is dead or merely empty for this population.
+            "eliminated_at": defaultdict(lambda: defaultdict(int)),
+            "unresolved_at": defaultdict(int),
+            "skips": defaultdict(lambda: defaultdict(int)),
         }))
 
-        for row in conn.execute("SELECT lane, node_id, rung, outcome, advances, score, surfaces FROM rung_rows"):
+        # Read the columns this database actually has. `rung_rows` has grown —
+        # `gates` and `skipped` were added after the first runs — and an audit is
+        # exactly the tool a person points at an old database. Selecting a fixed
+        # list made the report crash on every run written before the column
+        # existed, which is the opposite of what an audit is for.
+        present = {r["name"] for r in conn.execute("PRAGMA table_info(rung_rows)")}
+        wanted = ("lane", "node_id", "rung", "kind", "outcome", "advances", "score",
+                  "surfaces", "gates", "skipped", "item_id")
+        selected = ", ".join(
+            name if name in present else f"NULL AS {name}" for name in wanted
+        )
+        for row in conn.execute(f"SELECT {selected} FROM rung_rows"):
             lane = str(row["lane"] or "unknown")
             node = nodes_by_lane[lane][str(row["node_id"])]
             node["rows"] += 1
@@ -610,27 +688,61 @@ def audit_database(db: str | Path) -> dict[str, Any]:
                 node["eliminated"] += 1
             if row["advances"]:
                 node["advanced"] += 1
-            if row["score"]:
+            # A scored row is one a *score node* wrote, never one whose value
+            # happens to be truthy. `rung_rows.score` is `NOT NULL DEFAULT 0`, so
+            # the column cannot tell a scored zero from a row that was never
+            # scored — and `if row["score"]:` threw every zero away, reporting
+            # "Scored Entities: 0, Mean Score: 0.0" for a run that had scored
+            # every candidate and found none of them good. A zero is a
+            # measurement; a missing measurement is not a zero.
+            if str(row["kind"] or "") == "score":
                 node["scored"] += 1
                 try:
-                    node["scores"].append(float(row["score"]))
+                    node["scores"].append(float(row["score"] or 0.0))
                 except (ValueError, TypeError):
                     pass
-            try:
-                surfs = json.loads(row["surfaces"] or "{}")
-                if isinstance(surfs, dict):
-                    for s, count in surfs.items():
-                        node["surfaces"][s] += int(count or 0)
-            except Exception:
-                pass
+            for s, count in _json_field(row["surfaces"], {}).items():
+                try:
+                    node["surfaces"][s] += int(count or 0)
+                except (TypeError, ValueError):
+                    pass
+            for verdict in _json_field(row["gates"], []):
+                if not isinstance(verdict, dict):
+                    continue
+                gate = str(verdict.get("gate") or "")
+                outcome = str(verdict.get("outcome") or "")
+                reason = str(verdict.get("reason") or "").strip() or "(no reason)"
+                if not gate:
+                    continue
+                if outcome == "fail":
+                    node["eliminated_at"][gate][reason] += 1
+                elif outcome == "unknown":
+                    node["unresolved_at"][gate] += 1
+            for skip in _json_field(row["skipped"], []):
+                if not isinstance(skip, dict):
+                    continue
+                surface = str(skip.get("surface") or "")
+                if surface:
+                    node["skips"][surface][_skip_kind(str(skip.get("reason") or ""))] += 1
 
         for lane, nodes in nodes_by_lane.items():
             lane_summary: dict[str, Any] = {"nodes": []}
             total_scored = 0
             all_scores: list[float] = []
+            eliminated_at: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+            unresolved_at: dict[str, int] = defaultdict(int)
+            skips: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
             for node_id, n in sorted(nodes.items()):
                 total_scored += n["scored"]
                 all_scores.extend(n["scores"])
+                for gate, reasons in n["eliminated_at"].items():
+                    for reason, count in reasons.items():
+                        eliminated_at[gate][reason] += count
+                for gate, count in n["unresolved_at"].items():
+                    unresolved_at[gate] += count
+                for surface, kinds in n["skips"].items():
+                    for kind, count in kinds.items():
+                        skips[surface][kind] += count
                 lane_summary["nodes"].append({
                     "node": node_id,
                     "rows": n["rows"],
@@ -639,9 +751,15 @@ def audit_database(db: str | Path) -> dict[str, Any]:
                     "outcomes": dict(n["outcomes"]),
                     "surfaces": dict(n["surfaces"]),
                     "scores_recorded": n["scored"],
+                    "eliminated_at": {g: dict(r) for g, r in n["eliminated_at"].items()},
+                    "unresolved_at": dict(n["unresolved_at"]),
+                    "skips": {s: dict(k) for s, k in n["skips"].items()},
                 })
             lane_summary["total_scored"] = total_scored
             lane_summary["mean_score"] = (sum(all_scores) / len(all_scores)) if all_scores else 0.0
+            lane_summary["eliminated_at"] = {g: dict(r) for g, r in eliminated_at.items()}
+            lane_summary["unresolved_at"] = dict(unresolved_at)
+            lane_summary["skips"] = {s: dict(k) for s, k in skips.items()}
             out["lanes"][lane] = lane_summary
 
     return out
@@ -717,6 +835,55 @@ BENCHMARK_CORPUS: list[BenchmarkItem] = [
         "therapist",
         "irrelevant",
         "Individual counselling and psychotherapy for anxiety and depression. Free consultation. Insurance accepted.",
+    ),
+    # The cases the live audit actually surfaced. The corpus above is ten
+    # hand-written items reporting 100%, which cannot fail and therefore cannot
+    # detect a regression in the dominance rule — the one rule that decides most
+    # of a partner lane's population. Each of these is a real firm the rule was
+    # measured against, with the marker signature it actually carried.
+    BenchmarkItem(
+        "nebulaworks",
+        "services",
+        "Nebula Works is an AWS consultancy and professional services firm. Our advisory and "
+        "consulting teams implement cloud migrations for our clients. Our product line is a "
+        "managed platform, and we build and implement it end to end.",
+    ),
+    BenchmarkItem(
+        "upperedge",
+        "services",
+        "UpperEdge is a consultancy and advisory firm delivering managed services and "
+        "integration for our clients and our customers. See our SaaS advisory offer.",
+    ),
+    BenchmarkItem(
+        "oso",
+        "software",
+        "Oso is authorization as a service. Our platform implements access control, so you "
+        "migrate away from hand-rolled auth. We build the engine and deploy it for you.",
+    ),
+    BenchmarkItem(
+        "glassdoor_board",
+        "directory",
+        "Search for jobs by title, company or location. Browse by city. Find a job near you. "
+        "View profile and apply.",
+    ),
+    BenchmarkItem(
+        "builtin_board",
+        "directory",
+        "Directory of companies hiring now. Browse by industry and location. Submit your "
+        "listing to reach candidates. Compare the best employers.",
+    ),
+    BenchmarkItem(
+        "infinitelambda",
+        "services",
+        "Infinite Lambda is a data and AI consultancy and an implementation partner. "
+        "Our advisory and consulting teams deliver data platform work for our clients. "
+        "Come and find a solution that fits your team; we build and implement it.",
+    ),
+    BenchmarkItem(
+        "swooped_recruiting",
+        "software",
+        "Swooped is a recruiting platform. Our platform matches candidates with startups. "
+        "Sign up free and book a demo.",
     ),
 ]
 
@@ -903,6 +1070,18 @@ def format_sim_report(sim: SimReport) -> str:
         if s.gates:
             gate_strs = [f"{g['gate']}={g['outcome']}" for g in s.gates]
             lines.append(f"    Gates    : {', '.join(gate_strs)}")
+        if s.declared_gates:
+            declared = ", ".join(s.declared_gates)
+            lines.append(f"    Declared : {declared}")
+            silent = [g for g in s.declared_gates if g not in set(s.live_gates)]
+            if silent:
+                # Not a failure of the rung: the profile states nothing for the
+                # gate, so the lane puts no such question. Naming it stops a
+                # reader tuning a rung that is not being asked.
+                lines.append(
+                    f"    Silent   : {', '.join(silent)} "
+                    "(the profile states nothing for it, so it never runs)"
+                )
         lines.append(f"    Advances : {s.advances}")
     return "\n".join(lines)
 
@@ -945,6 +1124,107 @@ def format_batch_gate_report(report: BatchDiagnosticReport) -> str:
         failed = it.failed_gate or "-"
         lines.append(f"{it.entity[:23]:<24} {it.overall_verdict:<12} {failed:<12} {it.reason[:40]}")
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# 5. Before/after comparison
+# ---------------------------------------------------------------------------
+
+def compare_databases(before: str | Path, after: str | Path) -> dict[str, Any]:
+    """Two audits of the same ladder, as a per-rung delta.
+
+    The tuning loop is: change one thing, run the same population, look. Without
+    this the "look" is two reports side by side and a person reading numbers off
+    them — which is how the entity-keying fix was verified, by hand. A delta also
+    makes a *regression* visible: a rung that stopped reading, or read less.
+    """
+    b = audit_database(before)
+    a = audit_database(after)
+    out: dict[str, Any] = {
+        "before": str(before),
+        "after": str(after),
+        "before_rung_rows": b.get("rung_rows", 0),
+        "after_rung_rows": a.get("rung_rows", 0),
+        "lanes": {},
+    }
+    for lane in sorted(set(b.get("lanes", {})) | set(a.get("lanes", {}))):
+        before_nodes = {n["node"]: n for n in (b.get("lanes", {}).get(lane) or {}).get("nodes", [])}
+        after_nodes = {n["node"]: n for n in (a.get("lanes", {}).get(lane) or {}).get("nodes", [])}
+        nodes: list[dict[str, Any]] = []
+        for node in sorted(set(before_nodes) | set(after_nodes)):
+            was, is_now = before_nodes.get(node), after_nodes.get(node)
+            if was is None or is_now is None:
+                nodes.append({
+                    "node": node,
+                    "state": "added" if was is None else "removed",
+                    "rows": (is_now or was or {}).get("rows", 0),
+                })
+                continue
+            nodes.append({
+                "node": node,
+                "state": "changed",
+                "rows": is_now["rows"] - was["rows"],
+                "eliminated": is_now["eliminated"] - was["eliminated"],
+                "advanced": is_now["advanced"] - was["advanced"],
+                "read": sum(is_now.get("surfaces", {}).values()) - sum(was.get("surfaces", {}).values()),
+            })
+        # Surface deltas, so a source that started or stopped answering shows.
+        def surface_totals(doc: dict[str, Any]) -> dict[str, int]:
+            totals: dict[str, int] = defaultdict(int)
+            for n in (doc.get("lanes", {}).get(lane) or {}).get("nodes", []):
+                for surface, count in (n.get("surfaces") or {}).items():
+                    totals[surface] += int(count or 0)
+            return dict(totals)
+
+        was_surfaces, now_surfaces = surface_totals(b), surface_totals(a)
+        surfaces = {
+            surface: now_surfaces.get(surface, 0) - was_surfaces.get(surface, 0)
+            for surface in sorted(set(was_surfaces) | set(now_surfaces))
+        }
+        out["lanes"][lane] = {"nodes": nodes, "surfaces": surfaces}
+    return out
+
+
+def format_compare_report(diff: dict[str, Any]) -> str:
+    """Render a before/after delta for terminal display."""
+    lines = [
+        "=== Rung Comparison ===",
+        f"Before: {diff['before']} ({diff['before_rung_rows']} rung rows)",
+        f"After : {diff['after']} ({diff['after_rung_rows']} rung rows)",
+        "",
+    ]
+    lanes = diff.get("lanes") or {}
+    if not lanes:
+        lines.append("Neither database has lane execution data.")
+        return "\n".join(lines)
+
+    for lane_name, lane_data in sorted(lanes.items()):
+        lines.append(f"Lane: {lane_name.upper()}")
+        lines.append(f"  {'Node':<18} {'Rows':>7} {'Elim':>7} {'Adv':>7} {'Read':>7}  Note")
+        lines.append("  " + "-" * 62)
+        for n in lane_data.get("nodes", []):
+            if n.get("state") != "changed":
+                lines.append(f"  {n['node']:<18} {n.get('rows', 0):>7} {'':>7} {'':>7} {'':>7}  {n['state'].upper()}")
+                continue
+            def cell(key: str) -> str:
+                value = int(n.get(key, 0))
+                return f"{value:+d}" if value else "·"
+            note = ""
+            if n.get("rows", 0) == 0 and n.get("read", 0) > 0:
+                note = "reads more, same population"
+            lines.append(
+                f"  {n['node']:<18} {cell('rows'):>7} {cell('eliminated'):>7} "
+                f"{cell('advanced'):>7} {cell('read'):>7}  {note}"
+            )
+        surfaces = lane_data.get("surfaces") or {}
+        moved = {s: d for s, d in surfaces.items() if d}
+        if moved:
+            lines.append("  Surface records:")
+            for surface, delta in sorted(moved.items(), key=lambda kv: -abs(kv[1])):
+                lines.append(f"    {surface:14}: {delta:+d}")
+        lines.append("")
+    return "\n".join(lines).rstrip()
+
 
 
 def format_audit_report(aud: dict[str, Any]) -> str:
@@ -996,6 +1276,32 @@ def format_audit_report(aud: dict[str, Any]) -> str:
             lines.append("  Surface Yields:")
             for s, c in sorted(all_surfaces.items()):
                 lines.append(f"    - {s:15}: {c} page(s)")
+
+        # Why, not just how many. A gate with nine eliminations is doing work;
+        # whether it is doing the *right* work is only visible in the reasons,
+        # and a source that 404s needs a different fix from one that carries
+        # nothing. Both were previously only in the raw rows.
+        eliminated_at = lane_data.get("eliminated_at") or {}
+        if eliminated_at:
+            lines.append("  Why candidates were eliminated:")
+            for gate, reasons in sorted(eliminated_at.items(), key=lambda kv: -sum(kv[1].values())):
+                total = sum(reasons.values())
+                lines.append(f"    {gate} ({total}):")
+                for reason, count in sorted(reasons.items(), key=lambda kv: -kv[1])[:4]:
+                    lines.append(f"      {count:3}  {reason[:96]}")
+
+        unresolved_at = lane_data.get("unresolved_at") or {}
+        if unresolved_at:
+            lines.append("  Left unresolved (a page could settle it):")
+            for gate, count in sorted(unresolved_at.items(), key=lambda kv: -kv[1]):
+                lines.append(f"    {gate:12}: {count}")
+
+        skips = lane_data.get("skips") or {}
+        if skips:
+            lines.append("  Sources, by why they came back empty:")
+            for surface, kinds in sorted(skips.items(), key=lambda kv: -sum(kv[1].values())):
+                parts = ", ".join(f"{k} {v}" for k, v in sorted(kinds.items(), key=lambda kv: -kv[1]))
+                lines.append(f"    {surface:14}: {parts}")
         lines.append("")
 
     return "\n".join(lines).rstrip()

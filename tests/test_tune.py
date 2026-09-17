@@ -8,6 +8,7 @@ import pytest
 
 from harness_fleet.gates import FETCHED, SNIPPET
 from harness_fleet.tune import (
+    BENCHMARK_CORPUS,
     audit_database,
     diagnose_gates,
     diagnose_gates_batch,
@@ -126,12 +127,14 @@ def test_evaluate_surface_domain_fallback_paths():
 
 def test_synthetic_benchmark_suite():
     res = run_benchmark()
-    assert res.total == 10
+    # The corpus carries the firms the live audit measured, not ten hand-written
+    # items: a suite that cannot fail is not a regression signal.
+    assert res.total == len(BENCHMARK_CORPUS) >= 17
     assert res.accuracy == 1.0
     assert res.precision == 1.0
     assert res.recall == 1.0
-    assert res.matrix["TP"] == 4
-    assert res.matrix["TN"] == 6
+    assert res.matrix["TP"] == 7
+    assert res.matrix["TN"] == 10
     assert res.matrix["FP"] == 0
     assert res.matrix["FN"] == 0
     assert not res.failures
@@ -406,3 +409,255 @@ def test_the_simulator_uses_the_lanes_own_gates():
         lane_name="partner",
     )
     assert partner_sim.final_verdict == "eliminated"
+
+
+def test_a_captured_items_file_is_keyed_on_the_entity_not_a_page_slug(tmp_path):
+    """A discovery file's item id is a page slug; the checklist is about a firm.
+
+    Live, this was worth ten of eleven candidates. The id was used as the entity,
+    so the walk requested `https://acemq.com-apache-kafka-consulting-_-services/
+    services` — a host that does not exist — and five rungs all reported
+    "nothing". The ladder was reading almost no site and looked merely strict.
+    """
+    from harness_fleet.dag import carried_from_items
+
+    items = tmp_path / "captured.jsonl"
+    items.write_text(
+        "\n".join(
+            [
+                json.dumps({
+                    "item_id": "acemq.com-Apache-Kafka-Consulting-_-Services-_-Kafka-Experts",
+                    "text": "Kafka consulting. Our clients include banks.",
+                    "source_uri": "https://acemq.com/kafka/",
+                }),
+                # A second page of the same firm is the same candidate.
+                json.dumps({
+                    "item_id": "acemq.com-Kafka-Experts-Contact",
+                    "text": "Contact us for Kafka consulting.",
+                    "source_uri": "https://acemq.com/contact",
+                }),
+                json.dumps({
+                    "item_id": "mimacom.com-Apache-Kafka-Consulting-_-Mimacom",
+                    "text": "Apache Kafka consulting.",
+                    "source_uri": "https://www.mimacom.com/consulting/kafka",
+                }),
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    carried = carried_from_items(items, tmp_path)
+    assert [c.item_id for c in carried] == ["acemq.com", "mimacom.com"]
+    assert [c.candidate for c in carried] == ["acemq.com", "mimacom.com"]
+    assert carried[0].source_uri == "https://acemq.com/kafka/"
+    # No candidate is a host that cannot resolve.
+    assert all(" " not in c.item_id and "-_-" not in c.item_id for c in carried)
+
+
+def _seed_run_db(path, rows):
+    """A run database with the columns an audit reads, and nothing else."""
+    import sqlite3
+
+    con = sqlite3.connect(path)
+    con.executescript(
+        """
+        CREATE TABLE rung_rows (
+            dag_id TEXT, node_id TEXT, lane TEXT, rung TEXT, item_id TEXT,
+            outcome TEXT, advances INTEGER, score REAL, surfaces TEXT,
+            gates TEXT, skipped TEXT
+        );
+        """
+    )
+    con.executemany(
+        "INSERT INTO rung_rows VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        rows,
+    )
+    con.commit()
+    con.close()
+    return path
+
+
+def test_tune_audit_cli_names_why_candidates_died(tmp_path, capsys):
+    """The CLI must answer "why", not just "how many".
+
+    A count of eliminations says a gate is busy. Whether it is *right* is only in
+    the reasons, and whether a source is dead or merely empty is only in the skip
+    kinds — both of which a reader previously had to pull out of the raw rows.
+    """
+    from harness_fleet.cli import build_parser, cmd_tune
+
+    db = _seed_run_db(
+        tmp_path / "run.db",
+        [
+            ("d1", "g0-result", "partner", "result", "a.com", "eliminated", 0, 0.0, "{}",
+             json.dumps([{"gate": "kind", "outcome": "fail",
+                          "reason": "reads as a directory of companies"}]), "[]"),
+            ("d1", "r1-surface", "partner", "surface", "b.com", "nothing", 0, 0.0, "{}", "[]",
+             json.dumps([{"surface": "about", "reason": "HTTP 404 for https://b.com/about"},
+                         {"surface": "about", "reason": "visited, and nothing on this surface was about the entity"}])),
+        ],
+    )
+
+    args = build_parser().parse_args(["tune", "audit", str(db)])
+    cmd_tune(args)
+    out = capsys.readouterr().out
+    assert "does not exist" not in out
+    assert "Why candidates were eliminated" in out
+    assert "reads as a directory of companies" in out
+    assert "about" in out and "dead path 1" in out and "nothing there 1" in out
+
+
+def test_tune_sim_cli_reports_declared_and_silent_gates(capsys):
+    """A rung that asks a question the profile never makes runnable must say so.
+
+    `stories` declares `vertical`; with no target industries it settles nothing,
+    and the report of "the gates that ran" made it look idle rather than unasked.
+    """
+    from harness_fleet.cli import build_parser, cmd_tune
+
+    args = build_parser().parse_args([
+        "tune", "sim", "--lane", "partner", "--candidate", "northwind.example",
+        "--page", "We implement Apache Kafka for enterprise clients.",
+        "--stories", "Case study: we migrated a bank to Kafka.",
+    ])
+    cmd_tune(args)
+    out = capsys.readouterr().out
+    assert "Declared : vertical" in out
+    assert "Silent   : vertical" in out
+    assert "never runs" in out
+
+
+def test_tune_compare_cli_shows_the_delta(tmp_path, capsys):
+    """Change one thing, look: the delta is the loop, so it is one command."""
+    from harness_fleet.cli import build_parser, cmd_tune
+
+    before = _seed_run_db(
+        tmp_path / "before.db",
+        [("d1", "r1-surface", "partner", "surface", "a.com", "nothing", 11, 0.0, "{}", "[]", "[]")],
+    )
+    after = _seed_run_db(
+        tmp_path / "after.db",
+        [("d1", "r1-surface", "partner", "surface", "a.com", "read", 11, 0.0,
+          json.dumps({"careers": 18}), "[]", "[]")],
+    )
+
+    args = build_parser().parse_args(["tune", "compare", str(before), str(after)])
+    cmd_tune(args)
+    out = capsys.readouterr().out
+    assert "Rung Comparison" in out
+    assert "r1-surface" in out
+    assert "+18" in out
+    assert "careers" in out
+
+
+def test_the_benchmark_corpus_detects_a_dominance_regression():
+    """A corpus that cannot fail is not a signal.
+
+    Ten hand-written items reporting 100% could not detect a regression in the
+    dominance rule, which is the rule that decides most of a partner lane's
+    population. The corpus now carries the firms the live audit measured, and
+    this asserts it actually goes red when the rule is reverted.
+    """
+    from harness_fleet import gates
+
+    from harness_fleet.tune import BENCHMARK_CORPUS, run_benchmark
+
+    assert len(BENCHMARK_CORPUS) >= 16
+    assert run_benchmark().accuracy == 1.0
+
+    def old_precedence(text: str) -> str:
+        from harness_fleet.gates import (
+            DIRECTORY_TERMS, SERVICES_TERMS, SOFTWARE_TERMS, matches_any,
+        )
+
+        if matches_any(text, DIRECTORY_TERMS):
+            return "directory"
+        if matches_any(text, SOFTWARE_TERMS):
+            return "software"
+        if matches_any(text, SERVICES_TERMS):
+            return "services"
+        return ""
+
+    original = gates.read_kind
+    gates.read_kind = old_precedence
+    try:
+        regressed = run_benchmark()
+    finally:
+        gates.read_kind = original
+
+    assert regressed.accuracy < 1.0, "the corpus must fail when the dominance rule is reverted"
+    assert regressed.failures
+
+
+def test_a_sourceless_record_keeps_its_id_and_an_unattributable_one_is_dropped(tmp_path):
+    """The two reasons a record cannot be attributed are not the same fact.
+
+    A record with no URL could not be derived from anything, so the id it
+    carries is the best answer. A record *with* a URL that resolves to nobody is
+    a job board republishing an employer's posting — and resurrecting its slug is
+    how five of seven career candidates stayed boards after the resolver had
+    already concluded they were about nobody.
+    """
+    from harness_fleet.dag import carried_from_items
+
+    items = tmp_path / "captured.jsonl"
+    items.write_text(
+        "\n".join(
+            [
+                # No URL: keep the id it came with.
+                json.dumps({"item_id": "acme.co.uk", "text": "A data consultancy in London."}),
+                # A board with a URL that names no employer: dropped.
+                json.dumps({
+                    "item_id": "glassdoor.com-Enterprise-Sales-Jobs",
+                    "text": "Search jobs. Apply now.",
+                    "source_uri": "https://www.glassdoor.com/Job/enterprise-sales-jobs.htm",
+                }),
+                # A real employer's own posting: kept as the employer.
+                json.dumps({
+                    "item_id": "pearson.jobs-Enterprise-Sales-Director",
+                    "text": "Pearson is hiring an Enterprise Sales Director.",
+                    "source_uri": "https://www.pearson.jobs/job/sales-director",
+                }),
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    carried = carried_from_items(items, tmp_path)
+    assert [c.item_id for c in carried] == ["acme.co.uk", "pearson.jobs"]
+
+
+def test_a_scored_zero_is_a_score_not_a_missing_measurement(tmp_path):
+    """`rung_rows.score` is NOT NULL DEFAULT 0, so truthiness cannot date a row.
+
+    `if row["score"]:` threw every zero away and the audit reported "Scored
+    Entities: 0, Mean Score: 0.0" for a run that had scored every candidate and
+    found none of them good — the difference between "this lane found nothing"
+    and "this lane never looked". A scored row is one a *score node* wrote.
+    """
+    from harness_fleet.cli import build_parser, cmd_tune
+
+    db = _seed_run_db(
+        tmp_path / "zeros.db",
+        [
+            ("d1", "s-score", "partner", "", "a.com", "", 0, 0.0, "{}", "[]", "[]"),
+            ("d1", "s-score", "partner", "", "b.com", "", 0, 0.0, "{}", "[]", "[]"),
+            ("d1", "g0-result", "partner", "result", "a.com", "lead", 1, 0.0, "{}", "[]", "[]"),
+        ],
+    )
+    # `_seed_run_db` needs the kind column for the audit to read it.
+    import sqlite3
+
+    con = sqlite3.connect(db)
+    con.executescript("ALTER TABLE rung_rows ADD COLUMN kind TEXT")
+    con.execute("UPDATE rung_rows SET kind='score' WHERE node_id='s-score'")
+    con.execute("UPDATE rung_rows SET kind='gate' WHERE node_id='g0-result'")
+    con.commit()
+    con.close()
+
+    from harness_fleet.tune import audit_database
+
+    aud = audit_database(db)
+    partner = aud["lanes"]["partner"]
+    assert partner["total_scored"] == 2, "two candidates were scored zero, and that is a result"
+    assert partner["mean_score"] == 0.0

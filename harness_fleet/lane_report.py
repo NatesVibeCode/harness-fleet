@@ -111,6 +111,7 @@ def _yield_measurement(
 
     attempted: dict[str, int | None] = {}
     skipped: dict[str, int] = {}
+    skipped_reasons: dict[str, str] = {}
     sidecar = runs_dir / str(run_id) / "discovery_report.json"
     if sidecar.is_file():
         try:
@@ -134,6 +135,12 @@ def _yield_measurement(
             reason = str(entry.get("reason") or "").strip()
             if reason:
                 reasons.append(f"{source or 'source'}: {reason[:160]}")
+                # The note below keeps only the first five reasons, so a run
+                # that skipped six sources dropped the sixth source's reason
+                # entirely. The per-source row carries its own reason too, which
+                # is where a reader looks for one source's skip.
+                if source and source not in skipped_reasons:
+                    skipped_reasons[source] = reason[:160]
         if reasons:
             notes.append("skipped sources: " + "; ".join(reasons[:5]))
         retried = [entry for entry in (report.get("retried") or []) if isinstance(entry, dict)]
@@ -162,6 +169,7 @@ def _yield_measurement(
             captured=int(captured.get(source, 0)),
             attempted=attempted.get(source),
             skipped=int(skipped.get(source, 0)),
+            skip_reason=skipped_reasons.get(source, ""),
         ))
     return entries, notes
 
@@ -502,9 +510,12 @@ def report_lines(report: LaneReport) -> str:
     lines.append("  yield:")
     for source_entry in report.yield_by_source:
         attempted = "?" if source_entry.attempted is None else source_entry.attempted
+        skip = f"  skipped {source_entry.skipped}"
+        if source_entry.skip_reason:
+            skip += f" ({source_entry.skip_reason})"
         lines.append(
             f"    {source_entry.source:28} {source_entry.kind:8} captured {source_entry.captured:3}"
-            f"  attempted {attempted:>3}  skipped {source_entry.skipped}"
+            f"  attempted {attempted:>3}{skip}"
         )
     if not report.yield_by_source:
         lines.append("    (no captured records to attribute)")

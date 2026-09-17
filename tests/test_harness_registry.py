@@ -123,7 +123,7 @@ def test_refresh_from_harness_cursor_discovers_candidates(tmp_path, monkeypatch)
 
     monkeypatch.setattr(catalog_module.shutil, "which", lambda name: "/bin/cursor-agent")
 
-    def fake_run(argv, capture_output, text, timeout):
+    def fake_run(argv, capture_output, text, timeout, env=None):
         assert argv[:2] == ["cursor-agent", "models"]
         return _sp.CompletedProcess(argv, 0, stdout=json.dumps([{"id": "pro-1"}]), stderr="")
 
@@ -171,7 +171,7 @@ def test_harness_refresh_records_zero_cost_for_observed_zero_routes(tmp_path, mo
         }),
     ])
 
-    def fake_run(argv, capture_output, text, timeout):
+    def fake_run(argv, capture_output, text, timeout, env=None):
         return _sp.CompletedProcess(argv, 0, stdout=payload, stderr="")
 
     monkeypatch.setattr(catalog_module.subprocess, "run", fake_run)

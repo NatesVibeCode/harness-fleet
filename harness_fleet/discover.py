@@ -30,6 +30,7 @@ grounding-grade), ``profile`` (directory/ATS structured text, indicator),
 """
 from __future__ import annotations
 
+import atexit
 import csv
 import ipaddress
 import json
@@ -1008,13 +1009,19 @@ def require_playwright() -> None:
         ) from exc
 
 
-def _render_js_page(url: str, timeout: float = 30.0) -> tuple[str, str]:
-    """Render a JS-heavy page, returning ``(final_url, html)``.
+#: Playwright's sync API is bound to the thread that started it, and discovery
+#: fetches from a ThreadPoolExecutor, so the driver and browser are kept per
+#: worker thread and reused for every page that thread renders. Launching
+#: Chromium once per page was the whole cost of rendering: a run that renders a
+#: hundred low-yield pages paid a hundred cold starts.
+_js_local = threading.local()
 
-    ``final_url`` is the URL the browser settled on, which differs from the
-    requested URL whenever the page redirects. Callers that resolve relative
-    links must use it as the base.
-    """
+
+def _js_browser():
+    """This thread's shared ``(playwright, browser)``, launched on first use."""
+    state = getattr(_js_local, "state", None)
+    if state is not None:
+        return state
     try:
         from playwright.sync_api import sync_playwright
     except ImportError as exc:
@@ -1022,19 +1029,75 @@ def _render_js_page(url: str, timeout: float = 30.0) -> tuple[str, str]:
             f"playwright is not installed (pip install {branding.DIST_NAME}[js] "
             "&& playwright install chromium)"
         ) from exc
+    driver = None
     try:
-        with sync_playwright() as playwright:
-            browser = playwright.chromium.launch()
+        driver = sync_playwright().start()
+        browser = driver.chromium.launch()
+    except Exception:
+        # A failed start must not leave a half-built driver cached: the next
+        # call on this thread retries rather than reusing the wreckage.
+        if driver is not None:
             try:
-                page = browser.new_page(user_agent=USER_AGENT)
-                page.goto(url, timeout=int(timeout * 1000))
-                try:
-                    page.wait_for_load_state("networkidle", timeout=8000)
-                except Exception:
-                    pass
-                return page.url, page.content()
-            finally:
-                browser.close()
+                driver.stop()
+            except Exception:
+                pass
+        raise
+    state = (driver, browser)
+    _js_local.state = state
+    return state
+
+
+def close_js_browser() -> None:
+    """Close this thread's browser and Playwright driver, if it has one.
+
+    Registered with :mod:`atexit`; safe to call directly (and idempotent).
+    """
+    state = getattr(_js_local, "state", None)
+    if state is None:
+        return
+    driver, browser = state
+    try:
+        browser.close()
+    except Exception:
+        pass
+    try:
+        driver.stop()
+    except Exception:
+        pass
+    try:
+        del _js_local.state
+    except AttributeError:
+        pass
+
+
+atexit.register(close_js_browser)
+
+
+def _render_js_page(url: str, timeout: float = 30.0) -> tuple[str, str]:
+    """Render a JS-heavy page, returning ``(final_url, html)``.
+
+    ``final_url`` is the URL the browser settled on, which differs from the
+    requested URL whenever the page redirects. Callers that resolve relative
+    links must use it as the base.
+
+    The browser is this thread's shared instance (see :func:`_js_browser`);
+    each call still gets its own page.
+    """
+    try:
+        _, browser = _js_browser()
+        page = browser.new_page(user_agent=USER_AGENT)
+        try:
+            page.goto(url, timeout=int(timeout * 1000))
+            # networkidle resolves as soon as the network has been idle for
+            # ~500ms; 8000 is only its cap, so this is already verdict-driven
+            # and needs no fixed sleep or polling loop of our own.
+            try:
+                page.wait_for_load_state("networkidle", timeout=8000)
+            except Exception:
+                pass
+            return page.url, page.content()
+        finally:
+            page.close()
     except DiscoverError:
         raise
     except Exception as exc:
@@ -1044,6 +1107,14 @@ def _render_js_page(url: str, timeout: float = 30.0) -> tuple[str, str]:
 def _render_js(url: str, timeout: float = 30.0) -> str:
     """Render a JS-heavy page via Playwright (optional ``js`` extra). Experimental."""
     return _render_js_page(url, timeout=timeout)[1]
+
+
+#: An HTML page this thin is a shell: either it really is a stub, or the body is
+#: client-rendered and arrived after the HTTP GET. Below this many words the
+#: record is worth one browser render before it is trusted (see ``fetch_text``).
+AUTO_RENDER_MIN_WORDS = 80
+
+
 _BLOCKED_HOSTS = frozenset({"localhost", "metadata", "metadata.google.internal", "instance-data"})
 _BLOCKED_HOST_SUFFIXES = (".localhost", ".local", ".internal")
 
@@ -1438,6 +1509,11 @@ def _record_from_response(final_url: str, raw_header: str, raw: bytes, source_ur
         raise DiscoverError(f"no extractable text for {source_url}")
     title = _extract_title(html) or domain_of(final_url)
     metadata: dict[str, Any] = {"evidence": "fetched", **archive}
+    # The response's own content type is what tells a caller whether re-fetching
+    # the page through a browser could yield more (an HTML shell might hydrate;
+    # a PDF or plain-text body cannot). It is decided here and only here, so
+    # callers read it rather than re-deriving it from the header.
+    metadata["content_type"] = content_type or "text/html"
     # A partner page linking snowflake.com/partners is alliance evidence
     # without another fetch: the link targets ride on the record. The page's
     # own host is excluded — site navigation is not an alliance.
@@ -1540,8 +1616,16 @@ def fetch_text(
     max_bytes: int = MAX_BYTES,
     respect_robots: bool = True,
     render_js: bool = False,
+    auto_render: bool = True,
 ) -> RawRecord:
-    """GET a URL and parse it to a verbatim-text record. Raises DiscoverError."""
+    """GET a URL and parse it to a verbatim-text record. Raises DiscoverError.
+
+    With ``auto_render`` on, an HTML response whose text is thinner than
+    :data:`AUTO_RENDER_MIN_WORDS` is re-fetched once through the browser; the
+    longer of the two texts wins and the record says it was rendered. The
+    render is best-effort: no playwright, or any other render failure, leaves
+    the HTTP record exactly as it was.
+    """
     close = False
     if client is None:
         client = httpx.Client(timeout=timeout, follow_redirects=True, headers={"User-Agent": USER_AGENT})
@@ -1559,7 +1643,33 @@ def fetch_text(
                              item_id=record_id(url, title),
                              metadata={"evidence": "fetched", "rendered": "js", **_archive_metadata(url)})
         final_url, raw_header, raw = _http_get(url, client, timeout, respect_robots=False)
-        return _record_from_response(final_url, raw_header, raw[:max_bytes], url)
+        record = _record_from_response(final_url, raw_header, raw[:max_bytes], url)
+        if not auto_render or record.metadata.get("content_type") != "text/html":
+            return record
+        if len(record.text.split()) >= AUTO_RENDER_MIN_WORDS:
+            return record
+        # One render per URL at most: this is the only call site that renders a
+        # low-yield page, so "at most once" is the shape of the code, not a
+        # counter that could drift.
+        try:
+            rendered_html = _render_js(final_url, timeout=timeout)[:max_bytes]
+        except DiscoverError:
+            return record
+        rendered_text = extract_text(rendered_html)
+        if not rendered_text:
+            return record
+        # The browser's DOM is where the page's real links, description and
+        # JSON-LD live, so the rendered text is parsed back into a record and
+        # the shell's own framing (redirect target, archive, content type) is
+        # layered over it. Re-parsing costs no network call.
+        rendered = _record_from_response(record.source_uri, raw_header, rendered_html.encode(), url)
+        if len(rendered.text) <= len(record.text):
+            return record
+        metadata = {**record.metadata, **rendered.metadata}
+        metadata["rendered"] = "js-auto"
+        metadata["render_reason"] = "low_yield"
+        rendered.metadata = metadata
+        return rendered
     finally:
         if close:
             client.close()

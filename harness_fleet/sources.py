@@ -101,12 +101,35 @@ PLATFORM_HOSTS = (
     "stackoverflow.com",
 )
 
+#: Job boards and recruiting aggregators. A posting republished here is evidence
+#: *about* the employer that wrote it and never a candidate in its own right — and
+#: the career lane proved it: five of seven live candidates were boards
+#: (glassdoor, swooped, remoterocketship, builtin, roamjobs), so the lane asked
+#: Glassdoor for a hiring board of its own and got "unknown Greenhouse board
+#: 'glassdoor'" three times, while the bar it must clear (`delivery_hiring`) is
+#: carried only by a real employer's board. The employer the posting names is the
+#: entity; a board page that names nobody is about nobody.
+JOB_BOARD_HOSTS = (
+    "glassdoor.", "indeed.", "ziprecruiter.", "monster.com", "dice.com",
+    "builtin.com", "swooped.co", "remoterocketship.com", "roamjobs.com",
+    "wellfound.com", "otta.com", "workatastartup.com", "remoteok.com",
+    "weworkremotely.com", "flexjobs.com", "simplify.jobs", "jobright.ai",
+    "hiring.cafe", "smartrecruiters.com", "jobvite.com", "icims.com",
+    "recruitee.com", "bamboohr.com", "workable.com",
+    # Seen in the live career runs, each one surfacing as a "candidate" while
+    # the employer it republished went unfound.
+    "virtualvocations.com", "wearedevelopers.com", "simplyhired.com",
+    "careerjet.", "jooble.", "talent.com", "jobs.google.com", "jobgether.",
+    "remote.co", "workingnomads.", "jobrapido.",
+)
+
 # Hosts that *talk about* entities rather than being entities: directories,
 # registries, community platforms and job boards. A page on one of these is
 # evidence about an entity; the host itself is never the entity, so it must not
 # become an entity id and must not be counted as a domain a page names.
 SOURCE_HOSTS = (
-    REGISTRY_DOMAINS + REVIEW_DOMAINS + COMMUNITY_DOMAINS + ATS_DOMAINS + PLATFORM_HOSTS
+    REGISTRY_DOMAINS + REVIEW_DOMAINS + COMMUNITY_DOMAINS + ATS_DOMAINS
+    + PLATFORM_HOSTS + JOB_BOARD_HOSTS
 )
 LINKED_DOMAIN_RE = re.compile(
     r'https?://([a-z0-9][a-z0-9.\-]{2,80}?)(?=[/\s"\'<>)\]]|$)', re.IGNORECASE
@@ -413,6 +436,9 @@ def entity_key_for(source_uri: str, text: str = "", metadata: dict[str, Any] | N
         # system integrator. A vendor's own site is where the story *lives*; what
         # it names is the entity, and when it names nobody the page is about
         # nobody.
-        if any(marker in key for marker in (*PLATFORM_HOSTS, *REGISTRY_DOMAINS)):
+        if any(
+            marker in key
+            for marker in (*PLATFORM_HOSTS, *JOB_BOARD_HOSTS, *REGISTRY_DOMAINS)
+        ):
             return ""
     return key or "unknown_entity"

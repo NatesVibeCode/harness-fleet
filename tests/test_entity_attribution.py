@@ -169,3 +169,25 @@ def test_a_platform_vendor_is_never_the_entity():
         "https://www.snowflake.com/en/customers/acme-bank/",
         "Acme Bank moved its ledger to the platform. See https://acmebank.com/case-study",
     ) == "acmebank.com"
+
+
+def test_a_job_board_is_never_the_entity():
+    """A republished posting is evidence about the employer, not a candidate.
+
+    Five of seven live career candidates were job boards, so the lane asked
+    Glassdoor for a hiring board of its own and got "unknown Greenhouse board
+    'glassdoor'" — while the bar it must clear is carried only by a real
+    employer's board.
+    """
+    from harness_fleet.sources import entity_key_for, is_source_host
+
+    for board in ("glassdoor.com", "builtin.com", "swooped.co", "roamjobs.com"):
+        assert is_source_host(board)
+        # Nobody named with a domain of their own -> the page is about nobody.
+        assert entity_key_for(f"https://{board}/job/enterprise-sales-director", "Apply now.") == ""
+
+    # An employer's own posting still resolves to the employer.
+    assert (
+        entity_key_for("https://www.pearson.jobs/job/sales-director", "Pearson is hiring.")
+        == "pearson.jobs"
+    )

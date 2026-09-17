@@ -239,7 +239,15 @@ def report(db: str | Path) -> dict[str, Any]:
         "records": dict(records_surfaced),
         "empty": dict(empty_surfaces),
         "skips": {name: dict(kinds) for name, kinds in skip_kinds.items()},
-        "never_used": sorted(name for name in installed if name not in used_surfaces),
+        # A surface that was looked at and carried nothing is *used*: it left
+        # skip notes, which is exactly the evidence a reader tunes against.
+        # Counting only rows that produced records filed such a surface as both
+        # "looked and carried nothing" and "never read", and told the reader to
+        # stop trusting a source the run had in fact asked.
+        "never_used": sorted(
+            name for name in installed
+            if name not in used_surfaces and name not in skip_kinds
+        ),
         "always_empty": sorted(
             name for name, count in empty_surfaces.items()
             if count >= used_surfaces.get(name, 0)

@@ -299,3 +299,82 @@ def test_new_resume_session_does_not_reactivate_stored_paid_approval(tmp_path):
         assert "explicit --route approval" in str(exc)
     else:
         raise AssertionError("a stored paid approval was reused by a new session")
+
+
+class RacingStub:
+    """A provider that answers after a delay, so 'first answer wins' is testable."""
+
+    def __init__(self, delay, ok=True):
+        self.delay = delay
+        self.ok = ok
+        self.calls = 0
+
+    def run_prompt(self, route_id, prompt, system_prompt=None, timeout_sec=120, session_id=None, policy=None):
+        import time
+
+        self.calls += 1
+        time.sleep(self.delay)
+        receipt = {
+            "id": f"receipt-{route_id}", "session_id": session_id, "provider": "stub",
+            "requested_route": route_id, "status": "complete" if self.ok else "failed",
+            "cost": 0.0, "cost_status": "reported_zero",
+            "usage": {"total_tokens": 1}, "error": None if self.ok else "nope",
+            "duration_seconds": self.delay,
+        }
+        return self.ok, '{"items": []}', receipt
+
+
+def _race_engine(routes):
+    engine = Engine.__new__(Engine)
+    engine.prompt_timeout_sec = 5
+    engine.policy = None
+    engine.task = None
+    engine.catalog = type("C", (), {"data": {"routes": routes}})()
+    engine.registry = type("R", (), {"resolve": staticmethod(lambda hint: routes_by_provider[hint])})()
+    return engine
+
+
+def test_routes_are_asked_at_once_not_one_at_a_time():
+    """One model at a time is the slowest possible use of a free ladder.
+
+    Every refusal costs a full round trip — a rate limit, a timeout, a 429 — and
+    a free ladder is mostly refusals, so a batch queued behind routes that were
+    never going to answer. A slow route must not hold up a route that already
+    replied.
+    """
+    import time
+
+    global routes_by_provider
+    routes_by_provider = {
+        "slow": RacingStub(3.0),
+        "medium": RacingStub(1.0),
+        "fast": RacingStub(0.2),
+    }
+    engine = _race_engine([
+        {"id": "opencode/slow", "provider": "slow"},
+        {"id": "opencode/medium", "provider": "medium"},
+        {"id": "opencode/fast", "provider": "fast"},
+    ])
+
+    started = time.time()
+    answers = engine._hedge_transports(
+        ["opencode/slow", "opencode/medium", "opencode/fast"],
+        prompt="p", system_prompt="s", session_id=None,
+    )
+    elapsed = time.time() - started
+
+    assert elapsed < 1.5, f"waited for a straggler ({elapsed:.2f}s); the slow racer takes 3.0s"
+    assert answers["opencode/fast"][0] is True
+    assert "opencode/slow" not in answers, "a straggler's answer is abandoned, not awaited"
+
+
+def test_a_single_route_still_races_as_one(tmp_path):
+    """`route_race=1` is the old behaviour, and it must stay available."""
+    from harness_fleet.engine import DEFAULT_ROUTE_RACE
+
+    assert DEFAULT_ROUTE_RACE > 1, "asking one model at a time is the default nobody wants"
+    store = HarnessStore(str(tmp_path / "engine.db"))
+    assert Engine(task=TaskSpec(name="t", instructions="i"), store=store).route_race == DEFAULT_ROUTE_RACE
+    assert Engine(
+        task=TaskSpec(name="t", instructions="i"), store=store, route_race=1
+    ).route_race == 1

@@ -28,6 +28,13 @@ OPENCODE_SPEC = HarnessSpec(
     # and the CLI resolves them through the opencode login.
     discovery_argv=["models", "--verbose"],
     model_from_route=True,
+    # opencode opens its log under $XDG_DATA_HOME/opencode before it answers, and
+    # the sandbox denies that write, so discovery failed with FileSystem.open and
+    # the registry came back with only the packaged hints. It also keeps its
+    # login in that same directory: the stand-in HOME has to carry `auth.json`
+    # and the config, or the OpenRouter passthrough never appears.
+    writable_home=True,
+    carry_over=(".local/share/opencode/auth.json", ".config/opencode"),
 )
 
 
@@ -39,15 +46,24 @@ class LocalOpenCodeCLI:
     """Invoke OpenCode normally while applying a task-local no-tools config."""
 
     def run(self, task_config: dict, args: list[str], timeout_sec: int) -> tuple[int, str, str]:
-        with tempfile.TemporaryDirectory(prefix="harness-fleet-opencode-") as temp_dir:
-            Path(temp_dir, "opencode.json").write_text(json.dumps(task_config, indent=2))
-            completed = subprocess.run(
-                ["opencode", *args],
-                cwd=temp_dir,
-                capture_output=True,
-                text=True,
-                timeout=timeout_sec,
-            )
+        from .harness import per_call_home
+
+        # opencode opens its log before it reads a prompt, so without a writable
+        # HOME every call fails on the log write — which is what "opencode is out"
+        # actually was. Each call gets its own state directory, because several
+        # calls now answer one prompt at once and one shared SQLite file answers
+        # them all with "database is locked".
+        with per_call_home(OPENCODE_SPEC) as env:
+            with tempfile.TemporaryDirectory(prefix="harness-fleet-opencode-") as temp_dir:
+                Path(temp_dir, "opencode.json").write_text(json.dumps(task_config, indent=2))
+                completed = subprocess.run(
+                    ["opencode", *args],
+                    cwd=temp_dir,
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout_sec,
+                    env=env,
+                )
         return completed.returncode, completed.stdout, completed.stderr
 
 

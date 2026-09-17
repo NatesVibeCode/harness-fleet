@@ -9,22 +9,21 @@ so it is either unreachable or decoration. In the source tables a count is
 a *note* a row left behind, and one candidate can leave more than one: a
 surface with three guessed paths can report three dead ones.
 
-# `/tmp/live-probe/fleet.db`
+# `/tmp/live-audit/ladder6.db`
 
 ## partner
 
-Rungs declared: `result`, `surface`, `stories` · reached by a run: `result`, `score`, `surface`
-
-**Declared and never reached:** `stories`
+Rungs declared: `result`, `surface`, `stories` · reached by a run: `result`, `stories`, `surface`
 
 | node | runs | rows | outcomes | advanced | read | verdict | because |
 |---|---|---|---|---|---|---|---|
-| `c0-result` | 3 | 30 | lead 30 | 30 | 0 | **VALUE** | advanced 30 |
-| `g0-result` | 3 | 35 | eliminated 5, lead 30 | 30 | 0 | **VALUE** | eliminated 5, advanced 30 |
-| `g1-surface` | 3 | 30 | eliminated 12, lead 9, qualified 9 | 0 | 0 | **VALUE** | eliminated 12 |
-| `r1-surface` | 3 | 30 | nothing 4, read 26 | 30 | 68 | **VALUE** | advanced 30, read 68 record(s) |
-| `s-score` | 3 | 14 | - 14 | 0 | 0 | **VALUE** | 14 row(s), 1 scored above zero, mean 10.0 |
-| `x0-result` | 3 | 30 | complete 30 | 30 | 0 | **VALUE** | advanced 30 |
+| `c0-result` | 1 | 12 | lead 12 | 12 | 0 | **VALUE** | advanced 12 |
+| `g0-result` | 1 | 12 | lead 12 | 12 | 0 | **VALUE** | advanced 12 |
+| `g1-surface` | 1 | 12 | lead 2, qualified 10 | 12 | 0 | **VALUE** | advanced 12 |
+| `g2-stories` | 1 | 12 | lead 4, qualified 8 | 0 | 0 | **EMPTY** | 12 row(s) and none of them decided anything |
+| `r1-surface` | 1 | 12 | complete 1, read 11 | 12 | 56 | **VALUE** | advanced 12, read 56 record(s) |
+| `r2-stories` | 1 | 12 | complete 1, nothing 1, read 10 | 12 | 59 | **VALUE** | advanced 12, read 59 record(s) |
+| `x0-result` | 1 | 12 | complete 12 | 12 | 0 | **VALUE** | advanced 12 |
 
 Plan (what this lane *says* it reads):
 
@@ -36,47 +35,40 @@ Plan (what this lane *says* it reads):
 
 ## Sources
 
-Installed: 12 · read by some run: 3
+Installed: 12 · read by some run: 8
 
 | surface | records | rows with a record | looked and carried nothing | dead path or HTTP error | not read by that rung |
 |---|---|---|---|---|---|
-| `services` | 44 | 17 | 11 | 6 | 0 |
-| `home` | 23 | 22 | 8 | 0 | 0 |
-| `about` | 1 | 1 | 28 | 5 | 0 |
-| `case_studies` | 0 | 0 | 0 | 0 | 30 |
-| `blog` | 0 | 0 | 0 | 0 | 28 |
-| `sitemap` | 0 | 0 | 0 | 4 | 0 |
-| `first_party` | 0 | 0 | 1 | 0 | 0 |
-| `code` | 0 | 0 | 0 | 0 | 28 |
+| `blog` | 26 | 10 | 0 | 4 | 9 |
+| `careers` | 20 | 8 | 0 | 10 | 0 |
+| `case_studies` | 19 | 7 | 0 | 16 | 11 |
+| `services` | 12 | 8 | 0 | 12 | 11 |
+| `home` | 11 | 11 | 0 | 0 | 0 |
+| `news` | 10 | 4 | 0 | 21 | 0 |
+| `about` | 9 | 9 | 0 | 11 | 0 |
+| `partners` | 8 | 4 | 0 | 54 | 0 |
+| `code` | 0 | 0 | 0 | 0 | 19 |
+| `sitemap` | 0 | 0 | 1 | 2 | 0 |
 
 **Never read by any recorded run** — unreachable or decoration:
 
 - `ats`
-- `blog`
-- `careers`
-- `case_studies`
-- `code`
 - `community`
-- `news`
-- `partners`
 - `vendor_stories`
 
-# `/tmp/lanes-ui/ui.db`
+# `/tmp/live-audit/account_ladder3.db`
 
 ## account
 
-Rungs declared: `result`, `surface`, `stories` · reached by a run: `result`, `score`, `surface`
-
-**Declared and never reached:** `stories`
+Rungs declared: `result`, `surface` · reached by a run: `result`, `surface`
 
 | node | runs | rows | outcomes | advanced | read | verdict | because |
 |---|---|---|---|---|---|---|---|
-| `c0-result` | 1 | 2 | lead 2 | 2 | 0 | **VALUE** | advanced 2 |
-| `g0-result` | 2 | 4 | lead 4 | 2 | 0 | **VALUE** | advanced 2 |
-| `g1-surface` | 1 | 2 | lead 2 | 0 | 0 | **EMPTY** | 2 row(s) and none of them decided anything |
-| `r1-surface` | 1 | 2 | nothing 2 | 2 | 0 | **VALUE** | advanced 2 |
-| `s-score` | 2 | 4 | - 4 | 0 | 0 | **EMPTY** | 4 row(s), every one of them scored zero |
-| `x0-result` | 1 | 2 | complete 2 | 2 | 0 | **VALUE** | advanced 2 |
+| `c0-result` | 1 | 8 | eliminated 3, lead 5 | 5 | 0 | **VALUE** | eliminated 3, advanced 5 |
+| `g0-result` | 1 | 8 | lead 8 | 8 | 0 | **VALUE** | advanced 8 |
+| `g1-surface` | 1 | 5 | eliminated 2, lead 3 | 0 | 0 | **VALUE** | eliminated 2 |
+| `r1-surface` | 1 | 5 | complete 1, nothing 1, read 3 | 5 | 6 | **VALUE** | advanced 5, read 6 record(s) |
+| `x0-result` | 1 | 8 | nothing 2, resolved 6 | 8 | 0 | **VALUE** | advanced 8 |
 
 Plan (what this lane *says* it reads):
 
@@ -84,20 +76,44 @@ Plan (what this lane *says* it reads):
 |---|---|---|---|
 | result | `snippet` | size, location | — |
 | surface | `fetched` | size, location | `about`, `services`, `careers` |
-| stories | `fetched` | vertical | `case_studies`, `blog`, `news` |
+
+## Sources
+
+Installed: 12 · read by some run: 3
+
+| surface | records | rows with a record | looked and carried nothing | dead path or HTTP error | not read by that rung |
+|---|---|---|---|---|---|
+| `services` | 3 | 1 | 0 | 12 | 0 |
+| `about` | 2 | 2 | 1 | 8 | 0 |
+| `careers` | 1 | 1 | 0 | 11 | 0 |
+| `case_studies` | 0 | 0 | 0 | 0 | 4 |
+| `code` | 0 | 0 | 0 | 0 | 4 |
+| `first_party` | 0 | 0 | 3 | 0 | 0 |
+| `blog` | 0 | 0 | 0 | 0 | 4 |
+| `sitemap` | 0 | 0 | 1 | 0 | 0 |
+
+**Never read by any recorded run** — unreachable or decoration:
+
+- `ats`
+- `community`
+- `home`
+- `news`
+- `partners`
+- `vendor_stories`
+
+# `/tmp/live-audit/career_ladder2.db`
 
 ## career
 
-Rungs declared: `result`, `posting` · reached by a run: `posting`, `result`, `score`
+Rungs declared: `result`, `posting` · reached by a run: `posting`, `result`
 
 | node | runs | rows | outcomes | advanced | read | verdict | because |
 |---|---|---|---|---|---|---|---|
-| `c0-result` | 4 | 4 | lead 4 | 4 | 0 | **VALUE** | advanced 4 |
-| `g0-result` | 6 | 6 | lead 6 | 4 | 0 | **VALUE** | advanced 4 |
-| `g1-posting` | 4 | 4 | lead 4 | 0 | 0 | **EMPTY** | 4 row(s) and none of them decided anything |
-| `r1-posting` | 4 | 4 | complete 4 | 4 | 0 | **VALUE** | advanced 4 |
-| `s-score` | 3 | 3 | - 3 | 0 | 0 | **VALUE** | 3 row(s), 2 scored above zero, mean 100.0 |
-| `x0-result` | 4 | 4 | complete 4 | 4 | 0 | **VALUE** | advanced 4 |
+| `c0-result` | 1 | 3 | lead 3 | 3 | 0 | **VALUE** | advanced 3 |
+| `g0-result` | 1 | 3 | lead 3 | 3 | 0 | **VALUE** | advanced 3 |
+| `g1-posting` | 1 | 3 | eliminated 1, lead 2 | 0 | 0 | **VALUE** | eliminated 1 |
+| `r1-posting` | 1 | 3 | complete 1, read 2 | 3 | 6 | **VALUE** | advanced 3, read 6 record(s) |
+| `x0-result` | 1 | 3 | complete 3 | 3 | 0 | **VALUE** | advanced 3 |
 
 Plan (what this lane *says* it reads):
 
@@ -106,53 +122,21 @@ Plan (what this lane *says* it reads):
 | result | `snippet` | location | — |
 | posting | `fetched` | location | `careers`, `about`, `ats` |
 
-## partner
-
-Rungs declared: `result`, `surface`, `stories` · reached by a run: `result`, `score`, `stories`, `surface`
-
-| node | runs | rows | outcomes | advanced | read | verdict | because |
-|---|---|---|---|---|---|---|---|
-| `c0-result` | 2 | 2 | lead 2 | 2 | 0 | **VALUE** | advanced 2 |
-| `g0-result` | 2 | 4 | eliminated 2, lead 2 | 2 | 0 | **VALUE** | eliminated 2, advanced 2 |
-| `g1-surface` | 2 | 2 | lead 2 | 2 | 0 | **VALUE** | advanced 2 |
-| `g2-stories` | 2 | 2 | lead 2 | 0 | 0 | **EMPTY** | 2 row(s) and none of them decided anything |
-| `r1-surface` | 2 | 2 | nothing 2 | 2 | 0 | **VALUE** | advanced 2 |
-| `r2-stories` | 2 | 2 | nothing 2 | 2 | 0 | **VALUE** | advanced 2 |
-| `s-score` | 2 | 2 | - 2 | 0 | 0 | **EMPTY** | 2 row(s), every one of them scored zero |
-| `x0-result` | 2 | 2 | complete 2 | 2 | 0 | **VALUE** | advanced 2 |
-
-Plan (what this lane *says* it reads):
-
-| rung | evidence | gates | surfaces |
-|---|---|---|---|
-| result | `snippet` | kind, size, location | — |
-| surface | `fetched` | kind, size, location | `home`, `about`, `services`, `partners`, `careers` |
-| stories | `fetched` | vertical | `case_studies`, `partners`, `blog`, `news` |
-
 ## Sources
 
-Installed: 12 · read by some run: 0
+Installed: 12 · read by some run: 2
 
 | surface | records | rows with a record | looked and carried nothing | dead path or HTTP error | not read by that rung |
 |---|---|---|---|---|---|
-| `case_studies` | 0 | 0 | 4 | 0 | 4 |
-| `blog` | 0 | 0 | 4 | 0 | 4 |
-| `careers` | 0 | 0 | 8 | 0 | 0 |
-| `home` | 0 | 0 | 2 | 0 | 0 |
-| `sitemap` | 0 | 0 | 0 | 6 | 0 |
-| `partners` | 0 | 0 | 8 | 0 | 0 |
-| `first_party` | 0 | 0 | 6 | 0 | 0 |
-| `code` | 0 | 0 | 0 | 0 | 6 |
-| `about` | 0 | 0 | 8 | 0 | 0 |
-| `services` | 0 | 0 | 8 | 0 | 2 |
-| `news` | 0 | 0 | 4 | 0 | 0 |
+| `careers` | 3 | 1 | 0 | 3 | 0 |
+| `ats` | 3 | 1 | 5 | 0 | 0 |
+| `first_party` | 0 | 0 | 0 | 1 | 0 |
+| `sitemap` | 0 | 0 | 0 | 1 | 0 |
+| `about` | 0 | 0 | 0 | 6 | 0 |
 
 **Never read by any recorded run** — unreachable or decoration:
 
-- `about`
-- `ats`
 - `blog`
-- `careers`
 - `case_studies`
 - `code`
 - `community`

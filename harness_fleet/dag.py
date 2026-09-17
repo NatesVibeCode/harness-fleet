@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, Literal
@@ -61,6 +62,94 @@ from .rungs import (
 )
 from .store import HarnessStore
 from .task import create_task_from_preset, load_task_spec
+
+def carried_from_items(items_path: str | Path, root: Path) -> list[Any]:
+    """One carried candidate per entity in a captured-items file.
+
+    Both nodes that start from a file need the same reading of it, and both got
+    it wrong the same way: the entity was taken from the record's metadata, and
+    when that was absent the *item id* was used — which in a discovery file is a
+    page slug like ``acemq.com-Apache-Kafka-Consulting-_-Services``. The walk
+    then requested ``https://<slug>/services``, which resolves nowhere, and a
+    live run read one candidate in eleven while five rungs reported "nothing".
+
+    The entity is what the source is *about*: the attribution the record
+    carries, or the domain of its own URL. Pages of the same firm collapse to
+    the one candidate the funnel is actually deciding about.
+    """
+    path = Path(items_path)
+    if not path.is_file():
+        path = root / items_path
+    if not path.is_file():
+        raise DagError(f"'{items_path}' is not a file")
+    carried: list[Any] = []
+    seen: set[str] = set()
+    for item in load_input_items(path):
+        # No second fallback here. `_entity_for_item` has already decided, and it
+        # answers "" for a page about nobody — a job board republishing an
+        # employer's posting. Resurrecting the slug in the caller is what kept
+        # five of seven career candidates as boards after the resolver had
+        # already concluded they were about nobody.
+        entity = _entity_for_item(item).strip()
+        if not entity or entity in seen:
+            continue
+        seen.add(entity)
+        carried.append(_Carried(
+            item_id=entity,
+            candidate=entity,
+            text=record_text(item),
+            source_uri=str(getattr(item, "source_uri", "") or ""),
+        ))
+    return carried
+
+
+#: What an entity id may be. Matches ``InputItem.item_id`` — the ladder builds
+#: URLs and keys tables from it, so a value the input contract rejects must
+#: never get this far.
+ENTITY_ID = re.compile(r"^[A-Za-z0-9_.-]+$")
+
+
+def _entity_for_item(item: Any) -> str:
+    """The entity a captured item is about, canonicalised.
+
+    A discovery file's item id is often a page slug — the title of the result
+    that was found — and treating it as the entity built URLs like
+    ``https://acemq.com-apache-kafka-consulting-_-services-.../services``, which
+    resolve nowhere: a live walk read ten of eleven candidates as "nothing" and
+    the whole ladder looked empty. The entity is what the source is *about*: the
+    attribution the record carries, or the domain of its own URL.
+    """
+    from .sources import entity_key_for
+
+    metadata = getattr(item, "metadata", None)
+    item_id = str(getattr(item, "item_id", "") or "")
+    source_uri = str(getattr(item, "source_uri", "") or "")
+    derived = entity_key_for(
+        source_uri,
+        record_text(item),
+        metadata if isinstance(metadata, dict) else None,
+    )
+    if derived and not ENTITY_ID.fullmatch(derived):
+        # An attribution is not automatically an entity id. A posting's JSON-LD
+        # says `hiringOrganization: "HotelEngine, Inc. dba Engine"` — a display
+        # name, which the input contract forbids and no walk can address. Ask the
+        # URL instead, so the answer is a host or nothing.
+        derived = entity_key_for(source_uri, record_text(item), None)
+    if derived and derived != "unknown_entity" and ENTITY_ID.fullmatch(derived):
+        return derived
+    # Nothing was derived, and the two reasons are not the same fact.
+    #
+    # A record with *no URL* could not be derived from anything — `entity_key_for`
+    # answers "unknown_entity" for an empty source, and taking that at face value
+    # collapses every such record into one candidate. The id it already carries is
+    # the better answer, and was the old one.
+    #
+    # A record *with* a URL that derives to nothing is a page about nobody: a job
+    # board republishing an employer's posting, naming no employer. Resurrecting
+    # its slug as the entity is how five of seven career candidates became job
+    # boards, so this one is dropped.
+    return "" if source_uri else item_id
+
 
 
 class DagError(ValueError):
@@ -943,17 +1032,14 @@ def _execute_gate_node(
             items_path = root / node.from_items
         if not items_path.is_file():
             raise DagError(f"gate node '{node.id}' reads '{node.from_items}', which is not a file")
-        for item in load_input_items(items_path):
-            item_id = str(getattr(item, "item_id", "") or "")
-            metadata = getattr(item, "metadata", None)
-            entity = ""
-            if isinstance(metadata, dict):
-                entity = str(metadata.get("entity") or metadata.get("domain") or "")
-            candidate = entity.strip() or item_id
-            text = record_text(item)
-            texts[item_id] = text
-            carried.append(_Carried(item_id, candidate, text,
-                                    str(getattr(item, "source_uri", "") or "")))
+        # One row per entity, and the entity is the id. A discovery file very
+        # often carries several pages of the same firm, and its item id is a
+        # page slug; keying the ladder on the slug made every fetch a request for
+        # a host that does not exist. The walk reads the entity too, so leaving
+        # the slug in the id kept the URLs broken one layer further down.
+        for carried_item in carried_from_items(items_path, root):
+            texts[carried_item.item_id] = carried_item.text
+            carried.append(carried_item)
     elif node.from_run:
         saved_node = (state.get("nodes") or {}).get(node.from_run)
         run_id = str(
@@ -1103,17 +1189,7 @@ def _execute_retrieve_node(
             raise DagError(
                 f"retrieve node '{node.id}' reads '{node.from_items}', which is not a file"
             )
-        for item in load_input_items(items_path):
-            metadata = getattr(item, "metadata", None)
-            entity = ""
-            if isinstance(metadata, dict):
-                entity = str(metadata.get("entity") or metadata.get("domain") or "")
-            wanted.append(_Carried(
-                item_id=str(getattr(item, "item_id", "") or ""),
-                candidate=entity.strip() or str(getattr(item, "item_id", "") or ""),
-                text=record_text(item),
-                source_uri=str(getattr(item, "source_uri", "") or ""),
-            ))
+        wanted.extend(carried_from_items(items_path, root))
     else:
         source_state = (state.get("nodes") or {}).get(node.from_gate) or {}
         if not isinstance(source_state, dict) or not source_state:

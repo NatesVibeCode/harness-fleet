@@ -1006,6 +1006,7 @@ def test_js_render_success_path(monkeypatch, fake_http):
         def goto(self, url, timeout=None): self.url = url
         def wait_for_load_state(self, state, timeout=None): pass
         def content(self): return "<html><head><title>JS app</title></head><body><p>rendered text</p></body></html>"
+        def close(self): pass
 
     class FakeBrowser:
         def new_page(self, user_agent=None): return FakePage()
@@ -1018,6 +1019,11 @@ def test_js_render_success_path(monkeypatch, fake_http):
         chromium = FakeChromium()
         def __enter__(self): return self
         def __exit__(self, *a): return None
+        # The module keeps one driver + browser per thread alive across calls
+        # (``discover._js_browser``), so the fake needs the context-manager-free
+        # API the real one also offers.
+        def start(self): return self
+        def stop(self): pass
 
     pw = types.ModuleType("playwright")
     sync_api = types.ModuleType("playwright.sync_api")

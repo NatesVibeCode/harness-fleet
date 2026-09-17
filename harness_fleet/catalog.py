@@ -591,11 +591,14 @@ class RouteCatalog:
             return 0
         if not shutil.which(spec.binary):
             raise RuntimeError(f"{spec.binary} CLI not found in PATH")
+        from .providers.harness import discovery_env
+
         res = subprocess.run(
             [spec.binary, *spec.discovery_argv],
             capture_output=True,
             text=True,
             timeout=30,
+            env=discovery_env(spec),
         )
         if res.returncode != 0:
             raise RuntimeError(f"Failed to query {spec.binary} models: {res.stderr}")

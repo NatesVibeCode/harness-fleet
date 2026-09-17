@@ -15,6 +15,7 @@ Rules, with no exceptions:
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import shutil
 import subprocess
@@ -52,12 +53,88 @@ class HarnessSpec(ClosedModel):
     discovery_argv: list[str] | None = None
     model_from_route: bool = True
     call_workdir: bool = False
+    #: True when the CLI writes state *outside* the workspace before it can
+    #: answer. Under the file sandbox that write is denied and the command fails,
+    #: which is not a "no models" answer — it is a discovery that never ran.
+    #: opencode is the case: it opens ``$XDG_DATA_HOME/opencode/log/opencode.log``
+    #: first, so ``opencode models`` returned
+    #: ``Unknown: FileSystem.open(.../opencode.log)`` and the registry came back
+    #: empty while the same machine had 84 models reachable, seven of them
+    #: OpenRouter.
+    writable_home: bool = False
+    #: Paths, relative to HOME, to carry into that stand-in. It must be a
+    #: *carry*, not a bare temporary HOME: opencode keeps its login
+    #: (``auth.json``) in the same directory as the log it cannot open, so a
+    #: clean HOME answers — with seven models instead of eighty-four, and none of
+    #: the OpenRouter passthrough every failover depends on.
+    carry_over: tuple[str, ...] = ()
 
     @model_validator(mode="after")
     def _check_file_flag(self) -> HarnessSpec:
         if self.prompt_delivery == "file_flag" and not self.prompt_file_flag:
             raise ValueError("prompt_delivery='file_flag' requires prompt_file_flag")
         return self
+
+
+#: One stand-in HOME per harness per process. Building it is a copytree, and the
+#: inference path asks for the environment on every single call.
+_ENV_CACHE: dict[str, dict[str, str] | None] = {}
+
+
+def discovery_env(spec: HarnessSpec) -> dict[str, str] | None:
+    """The environment a harness CLI must run in, or None to inherit.
+
+    A CLI that writes state outside the workspace cannot answer under the file
+    sandbox, and the failure is easy to misread as "this provider has no models".
+    Pointing HOME at a writable stand-in fixes that — but only if the stand-in
+    carries the CLI's own credentials across, because the log it could not open
+    sits beside the login that makes the provider useful.
+
+    The **call** path needs this as much as discovery does. Discovery returning
+    routes is not enough: every `opencode run` died on the same
+    ``FileSystem.open(.../opencode.log)``, so a machine with twenty verified-free
+    OpenRouter routes reachable through opencode still failed every inference
+    with what reads like "opencode is out".
+    """
+    if spec.name not in _ENV_CACHE:
+        _ENV_CACHE[spec.name] = _build_env(spec)
+    return _ENV_CACHE[spec.name]
+
+
+def _build_env(spec: HarnessSpec) -> dict[str, str] | None:
+    if not spec.writable_home:
+        return None
+    import os
+    import shutil
+    import tempfile
+
+    real_home = Path(os.environ.get("HOME") or Path.home())
+    home = Path(tempfile.mkdtemp(prefix=f"harness-fleet-{spec.name}-home-"))
+    for relative in spec.carry_over:
+        source = real_home / relative
+        if not source.exists():
+            continue
+        destination = home / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            if source.is_dir():
+                # Databases and caches are large and are not credentials; the
+                # config and the auth file are what the CLI must recognise.
+                shutil.copytree(
+                    source, destination, symlinks=True, dirs_exist_ok=True,
+                    ignore=shutil.ignore_patterns("*.db", "*.db-wal", "*.db-shm"),
+                )
+            else:
+                shutil.copy2(source, destination)
+        except OSError:
+            continue
+    env = dict(os.environ)
+    env["HOME"] = str(home)
+    env["XDG_DATA_HOME"] = str(home / ".local" / "share")
+    env["XDG_STATE_HOME"] = str(home / ".local" / "state")
+    env["XDG_CACHE_HOME"] = str(home / ".cache")
+    env["XDG_CONFIG_HOME"] = str(home / ".config")
+    return env
 
 
 class HarnessRunner(Protocol):
@@ -71,18 +148,75 @@ class HarnessRunner(Protocol):
 class LocalHarnessCLI:
     """Default runner: ``subprocess.run`` with ``shell=False``."""
 
+    def __init__(self, spec: HarnessSpec | None = None) -> None:
+        #: The harness this runner dispatches for, when it needs state of its
+        #: own. None means an ordinary CLI that inherits the environment.
+        self.spec = spec
+
     def run(
         self, *, argv: list[str], stdin_text: str | None, timeout_sec: int
     ) -> tuple[int, str, str]:
-        completed = subprocess.run(
-            argv,
-            input=stdin_text,
-            capture_output=True,
-            text=True,
-            timeout=timeout_sec,
-            shell=False,
-        )
+        with per_call_home(self.spec) as env:
+            completed = subprocess.run(
+                argv,
+                input=stdin_text,
+                capture_output=True,
+                text=True,
+                timeout=timeout_sec,
+                shell=False,
+                env=env,
+            )
         return completed.returncode, completed.stdout, completed.stderr
+
+
+@contextlib.contextmanager
+def per_call_home(spec: HarnessSpec):
+    """A private HOME for the duration of one call, sharing the credentials.
+
+    The stand-in HOME from :func:`discovery_env` is one per harness per process,
+    which is right for a single discovery call and wrong for several calls
+    answering one prompt at once: opencode keeps its own SQLite state in that
+    directory, so concurrent racers contend on one database and fail with
+    ``database is locked`` — which is worse than slow, because it reads like the
+    provider refusing.
+
+    So each call gets its own state, and the login is *symlinked* in from the
+    credentialed base rather than copied: the credentials are shared, the
+    database is not.
+    """
+    if spec is None or not spec.writable_home:
+        yield None
+        return
+    import os
+    import shutil
+    import tempfile
+
+    base = discovery_env(spec)
+    home = Path(tempfile.mkdtemp(prefix=f"harness-fleet-{spec.name}-call-"))
+    try:
+        for relative in spec.carry_over:
+            source = Path(base["HOME"]) / relative if base else None
+            if source is None or not source.exists():
+                continue
+            destination = home / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                os.symlink(source, destination)
+            except OSError:
+                if source.is_dir():
+                    shutil.copytree(source, destination, symlinks=True, dirs_exist_ok=True,
+                                    ignore=shutil.ignore_patterns("*.db", "*.db-wal", "*.db-shm"))
+                else:
+                    shutil.copy2(source, destination)
+        env = dict(os.environ)
+        env["HOME"] = str(home)
+        env["XDG_DATA_HOME"] = str(home / ".local" / "share")
+        env["XDG_STATE_HOME"] = str(home / ".local" / "state")
+        env["XDG_CACHE_HOME"] = str(home / ".cache")
+        env["XDG_CONFIG_HOME"] = str(home / ".config")
+        yield env
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
 
 
 def extract_conservative_text(payload: Any) -> str | None:
@@ -229,7 +363,7 @@ class CLIHarnessProvider(BaseProvider):
 
     def __init__(self, spec: HarnessSpec, runner: HarnessRunner | None = None):
         self.spec = spec
-        self.runner = runner or LocalHarnessCLI()
+        self.runner = runner or LocalHarnessCLI(spec=self.spec)
 
     def _new_receipt(self, route_id: str, session_id: str | None) -> ProviderReceipt:
         # Total constructor: foreign callers may pass non-strings, and the

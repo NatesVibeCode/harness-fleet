@@ -163,7 +163,7 @@ def test_missing_binary_fails_closed_without_running():
 def test_local_runner_uses_shell_false(monkeypatch):
     captured = {}
 
-    def fake_run(argv, input, capture_output, text, timeout, shell):
+    def fake_run(argv, input, capture_output, text, timeout, shell, env=None):
         captured["shell"] = shell
         captured["argv"] = argv
         import subprocess as _sp
@@ -186,3 +186,48 @@ def test_conservative_parser_rejects_garbage():
     ok, text, receipt = parse_json_object_stdout('{"unrelated": 1}', receipt=receipt)
     assert ok is False and text is None
     assert receipt.error_type == "inference_error"
+
+
+def test_a_harness_that_cannot_write_its_state_gets_a_writable_home(tmp_path, monkeypatch):
+    """Discovery and inference both need it, and it must carry the login.
+
+    opencode opens `$XDG_DATA_HOME/opencode/log/opencode.log` before it answers,
+    and under the file sandbox that write is denied — so `opencode models` failed
+    with `FileSystem.open(.../opencode.log)` and the registry came back empty.
+    The same denial killed every `opencode run`. The machine had 84 models
+    reachable through that CLI, twenty of them verified-free OpenRouter routes,
+    and the fleet reported "no verified-free route" and "opencode is out".
+    """
+    from harness_fleet.providers.harness import HarnessSpec, discovery_env
+
+    plain = HarnessSpec(
+        name="plain", binary="true", prompt_delivery="argv_last", discovery_argv=["models"]
+    )
+    assert discovery_env(plain) is None, "a harness that needs no writable state inherits"
+
+    real_home = tmp_path / "real"
+    (real_home / ".local" / "share" / "opencode").mkdir(parents=True)
+    (real_home / ".local" / "share" / "opencode" / "auth.json").write_text('{"k":"v"}')
+    (real_home / ".config" / "opencode").mkdir(parents=True)
+    (real_home / ".config" / "opencode" / "config.json").write_text("{}")
+    monkeypatch.setenv("HOME", str(real_home))
+
+    spec = HarnessSpec(
+        name="opencode-test",
+        binary="true",
+        prompt_delivery="argv_last",
+        discovery_argv=["models"],
+        writable_home=True,
+        carry_over=(".local/share/opencode/auth.json", ".config/opencode"),
+    )
+    env = discovery_env(spec)
+    assert env is not None
+    assert env["HOME"] != str(real_home), "a writable stand-in, not the sandboxed home"
+    # The credential came across: without it the CLI answers with a fraction of
+    # its models and none of the passthrough routes.
+    carried = Path(env["HOME"]) / ".local" / "share" / "opencode" / "auth.json"
+    assert carried.read_text() == '{"k":"v"}'
+    assert (Path(env["HOME"]) / ".config" / "opencode" / "config.json").is_file()
+    assert env["XDG_DATA_HOME"].startswith(env["HOME"])
+    # One stand-in per harness per process, not one per call.
+    assert discovery_env(spec) is env

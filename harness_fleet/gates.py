@@ -59,11 +59,23 @@ SERVICES_TERMS = (
 #: back with every checklist item false and the reason: "describes a directory
 #: or search platform, not a delivery partner". It was right, and the pipeline
 #: had already decided the page was a company.
-DIRECTORY_TERMS = (
-    "search for", "by name, location", "list your company", "add your company",
-    "browse by", "directory of", "find a ", "find an ", "compare the best",
+#: Language only a catalogue of companies writes: it addresses a *visitor* and
+#: invites them to browse other firms. These are decisive.
+HARD_DIRECTORY_TERMS = (
+    "by name, location", "list your company", "add your company", "directory of",
     "submit your listing", "featured listings", "view profile", "claim this",
+    "compare the best",
 )
+
+#: Language ordinary prose also uses — "find a way to migrate", "search for the
+#: right partner". A consultancy writes these honestly, so they decide only when
+#: nothing else does.
+SOFT_DIRECTORY_TERMS = (
+    "search for", "browse by", "find a ", "find an ",
+)
+
+#: Every directory phrase, hard and soft, for the diagnostics that list matches.
+DIRECTORY_TERMS = HARD_DIRECTORY_TERMS + SOFT_DIRECTORY_TERMS
 
 #: The vocabulary of *technical delivery work*, which is what separates a firm a
 #: services lane can use from whoever else the search returned. Deliberately the
@@ -269,12 +281,21 @@ def read_kind(text: str) -> str:
     whose site mentions platform engineering, a client portal demo, or an
     accelerator is a delivery firm, not a product company.
     """
-    if matches_any(text, DIRECTORY_TERMS):
+    # The directory question needs the same treatment the product markers got.
+    # A single soft phrase used to decide it outright: `infinitelambda.com` —
+    # Infinite Lambda, a data and AI consultancy with four primary services
+    # terms — was eliminated as "a directory of companies" because its pages
+    # contained "find a ". Presence is not dominance here either: a catalogue
+    # writes hard markers and nothing else, while a consultancy writes prose.
+    if matches_any(text, HARD_DIRECTORY_TERMS):
         return "directory"
 
     software_matches = matches_any(text, SOFTWARE_TERMS)
     services_matches = matches_any(text, SERVICES_TERMS)
     primary_services = matches_any(text, PRIMARY_SERVICES_TERMS)
+
+    if matches_any(text, SOFT_DIRECTORY_TERMS) and not primary_services:
+        return "directory"
 
     if software_matches:
         hard_software = matches_any(text, HARD_SOFTWARE_TERMS)

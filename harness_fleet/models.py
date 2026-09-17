@@ -1313,6 +1313,7 @@ class LaneYield(ClosedModel):
     captured: int = 0
     attempted: int | None = None
     skipped: int = 0
+    skip_reason: str = ""
 
 
 class LaneCoverage(ClosedModel):
