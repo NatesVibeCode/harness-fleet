@@ -323,9 +323,10 @@ def test_research_delivers_a_quota_through_the_command(tmp_path, monkeypatch, ca
     # The resolve node asks a search engine for the address; there is no network
     # in a test, and a real timeout per round is what makes this slow.
     monkeypatch.setattr("harness_fleet.discover.web_search", lambda *a, **k: [])
-    monkeypatch.setattr(cli, "_evidence_readout", lambda *a, **k: {
-        "items": {}, "kind_totals": {}, "tier_capped": {}, "contradictions": {}, "text_missing": [],
-    })
+    # Deliberately not stubbing the evidence readout: it reads the deliverable's
+    # input through the same loader everything else uses, and stubbing it hid a
+    # file whose content did not match its own name.
+
 
     args = _research_args(tmp_path, want=2, min_score=0.0, rounds=3, output="delivered.csv")
     cli.cmd_research(args)
@@ -349,6 +350,15 @@ def test_research_delivers_a_quota_through_the_command(tmp_path, monkeypatch, ca
     rows = read_csv(deliverable)
     assert [row["entity"] for row in rows] == ["firm1.example", "firm2.example"]
     assert list(rows[0])[:3] == ["entity", "score", "tier"]
+
+    # And the run's own input file is readable by the loader that reads it.
+    from harness_fleet.input_data import load_input_items
+
+    shipped = load_input_items(
+        tmp_path / "delivered.csv", id_column="item_id", text_column="text",
+        uri_column="source_uri",
+    )
+    assert shipped, "the dossiers the campaign judged are in the file the run names"
 
 
 # --------------------------------------------------------------------------

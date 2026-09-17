@@ -2531,8 +2531,14 @@ def cmd_research(args: argparse.Namespace) -> dict[str, Any]:
     input_path = workspace / output
     input_path.parent.mkdir(parents=True, exist_ok=True)
     if judged_input.is_file():
-        shutil.copyfile(judged_input, input_path)
-        dossier_count = int((scored_node or {}).get("dossiers") or 0)
+        # The node's dossiers are the ones the campaign judged, and they are
+        # JSONL. The deliverable is a CSV at a path that says so, and every
+        # reader of it parses CSV — copying the bytes across made the file's
+        # content disagree with its own name, and the next step died on a column
+        # called '{"$schema": ...'. Same content, written in the promised form.
+        judged = load_input_items(judged_input)
+        export_bundled_csv(judged, input_path)
+        dossier_count = len(judged)
     else:
         assert dossiers is not None
         export_bundled_csv(dossiers, input_path)
