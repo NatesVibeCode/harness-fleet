@@ -1504,12 +1504,22 @@ def _execute_score_node(
     # call that knows which routes will answer, not to the task's identity.
     node_batch_chars = 48_000
     name = node.task or lane.preset
+    # Built from the *current* preset every time, and registered — which is
+    # idempotent because a revision id is the digest of the spec, so an
+    # unchanged preset returns the revision already stored and a changed one
+    # registers a new revision.
+    #
+    # Resolving an already-registered task first was a trap: a revision is
+    # immutable on purpose, so editing a preset changed nothing for new runs.
+    # A schema that required a field it did not declare was fixed, the fix went
+    # into the file, and every run kept using the broken revision from the first
+    # registration — the lane scored nobody and the reason was three layers from
+    # where anyone would look.
     try:
-        task = _resolve_dag_task(name, store, root)
-    except KeyError:
-        # A preset is enough for a first run: the task is registered here, which
-        # is what the command used to do before the scoring stage was a node.
         task = create_task_from_preset(name, preset_name=name)
+    except ValueError:
+        task = _resolve_dag_task(name, store, root)
+    else:
         store.register_task(task)
     run_id = node.run_id or f"{dag_id}-{node.id}"
     dossiers_path = dag_dir / node.id / "dossiers.jsonl"

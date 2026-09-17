@@ -224,6 +224,19 @@ PRESETS: dict[str, dict[str, Any]] = {
                 "type": "string",
                 "description": "One sentence on why this role is worth pursuing, tied only to cited evidence.",
             },
+            # Required but undeclared, which with additionalProperties: false
+            # is a schema that forbids the field it demands: every batch failed
+            # validation and the lane scored nobody. The partner preset declares
+            # both of these; this one has to as well.
+            "reasoning": {
+                "type": "string",
+                "description": "Short explanation grounded in the cited quotes, naming the evidence behind the checklist and the fit.",
+            },
+            "fit_tier": {
+                "type": "string",
+                "enum": ["tier_1", "tier_2", "tier_3", "unfit"],
+                "description": "Derived by the pipeline from the score. Never send this.",
+            },
             "answers": {
                 "type": "object",
                 "description": "Structured attributes. Use an empty list or empty string when the posting does not state it — never guess.",
