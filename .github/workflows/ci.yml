@@ -32,7 +32,7 @@ jobs:
         run: python -m pip install "ruff==0.16.7" && python -m ruff check harness_fleet/ tests/
       - name: Mypy baseline gate (no strict)
         run: python -m pip install "mypy==2.3.1" && python -m mypy harness_fleet/
-      - name: Check shared route-policy contract
-        run: python scripts/check_harness_drift.py --self
+      - name: Check shared route-policy and handoff contracts
+        run: python scripts/check_harness_drift.py --self --handoff-contract tests/fixtures/handoff-contracts.json
       - name: Verify clean installed wheel
         run: python scripts/check_wheel.py --distribution harness-fleet

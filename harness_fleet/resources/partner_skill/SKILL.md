@@ -13,7 +13,7 @@ confidence, export, then `lane report` to see what it produced). This file only
 carries what is specific to the `partner` lane:
 
 - **Lane config:** `lanes/partner.json` — seeds, queries, sources, filters.
-- **Preset:** `partner-research` · **Bar:** `tier_1` · **Output:** top 25.
+- **Preset:** `partner-research` · **Bar:** `tier_2` · **Output:** top 25.
 - **Looks for:** net-new systems integrators, found directly — never harvested
   from a vendor's site. The run qualifies each candidate layer by layer on its
   own pages, then scores which software tools it implements, in which

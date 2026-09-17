@@ -16,9 +16,9 @@ file, not a different tool:
 
 | Lane | What it is for | Preset | Bar |
 | --- | --- | --- | --- |
-| `account` | target accounts for a technical ICP | `account-research` | tier_2 |
-| `career` | enterprise sales/ops roles, remote, by title | `triage` | tier_3 |
-| `partner` | implementation partners from vendor stories | `partner-research` | tier_1 |
+| `account` | target accounts for a technical ICP | `account-research` | tier_3 |
+| `career` | enterprise sales/ops roles, remote, by title | `triage` | `delivery_hiring` |
+| `partner` | net-new systems integrators and consultancies, found directly | `partner-research` | tier_2 |
 
 ## Two stages: find, then go and look
 
@@ -35,7 +35,7 @@ run has two stages:
 2. **The walk** — for each entity still short of the lane's bar, visit the
    surfaces that carry the missing kinds: its sitemap (which answers for every
    domain tested and names the real case-study URLs), its case studies and
-   services pages, its hiring board through its JSON API, the vendor stories
+   services pages, its hiring board through its JSON API, and its case studies
    that name it, and the communities discussing it. `--no-enrich` stops after
    stage 1.
 

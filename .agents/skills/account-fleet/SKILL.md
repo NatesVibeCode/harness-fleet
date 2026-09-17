@@ -15,9 +15,11 @@ carries what is specific to the `account` lane:
 - **Lane config:** `lanes/account.json` — seeds, queries, sources, filters.
 - **Preset:** `account-research` · **Bar:** the tier ladder, floor `tier_3` (a record clearing tier_3, tier_2 or tier_1 has met it) · **Output:** top 25.
 - **Looks for:** companies doing the work, and companies hiring for it.
-- **Volume:** `stories: 60` in the lane file — candidates come from the customer
-  stories vendors publish about their customers, as well as from the lane's
-  queries.
+- **Volume:** the lane's queries only (`stories: 0`) — candidates come from
+  search, not from sweeping software vendors' customer-story indexes. Those
+  indexes name the vendors' buyers, not the firms doing the work, so bulk
+  gathering them is the partner lane's source, not this lane's. A customer
+  story a query finds still scores like any other page.
 - **The walk:** each account short of the bar is visited on its own surfaces
   (sitemap, case studies, services, blog, GitHub org, community) for the
   evidence it is missing, and only for that.

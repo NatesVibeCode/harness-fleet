@@ -81,6 +81,8 @@ harness_fleet = [
     "resources/partner_skill/references/*.md",
     "resources/examples/account_research/*.json",
     "resources/examples/account_research/*.csv",
+    "resources/examples/career_screening/*.json",
+    "resources/examples/career_screening/*.csv",
     "resources/studio/*.html",
     "resources/board/*.html",
 ]

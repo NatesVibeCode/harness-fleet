@@ -182,3 +182,90 @@ def test_every_documented_lane_name_resolves_or_is_a_placeholder():
         assert "lanes/<name>.json" in (REPO / "README.md").read_text(encoding="utf8"), (
             "an unnamed lane is only runnable if the docs say where to drop one"
         )
+
+
+#: Every copy of the lane documentation a reader can land in. The README is
+#: guarded above; these are the skills, which ship inside the package and in the
+#: agent skill directories, and which said `tier_1` for a lane that floors at
+#: `tier_2` long after the lane moved.
+SKILL_LANE_DOCS = (
+    "skills/harness-fleet/SKILL.md",
+    ".agents/skills/harness-fleet/SKILL.md",
+    "harness_fleet/resources/harness_skill/SKILL.md",
+)
+SKILL_BAR_DOCS = {
+    "partner": (
+        "skills/partner-fleet/SKILL.md",
+        ".agents/skills/partner-fleet/SKILL.md",
+        "harness_fleet/resources/partner_skill/SKILL.md",
+    ),
+}
+
+
+def _skill_lane_rows(text: str) -> dict[str, tuple[str, str]]:
+    rows: dict[str, tuple[str, str]] = {}
+    for line in text.splitlines():
+        if not line.startswith("| `"):
+            continue
+        cells = [cell.strip() for cell in line.strip("|").split("|")]
+        if len(cells) != 4:
+            continue
+        name = cells[0].strip("`")
+        if name in {"account", "career", "partner"}:
+            rows[name] = (cells[2].strip("`"), cells[3])
+    return rows
+
+
+def test_the_lane_tables_in_the_skills_match_the_lanes_that_ship():
+    """The same table, in three more places, guarded the same way.
+
+    A skill is the first thing a session reads, and it carries the lane table
+    verbatim. Nothing compared those tables to the lanes, so partner's floor was
+    documented as `tier_1` in all three copies while the lane said `tier_2`, and
+    account's as `tier_2` while its lane says `tier_3` — both in the direction of
+    a reader judging correct output as failing the lane's own bar.
+    """
+    shipped = lane_module.shipped_lanes()
+    checked = 0
+    for relative in SKILL_LANE_DOCS:
+        path = REPO / relative
+        assert path.is_file(), f"{relative} is part of the shipped surface"
+        rows = _skill_lane_rows(path.read_text(encoding="utf8"))
+        assert rows, f"{relative} carries the lane table"
+        for name, (preset, bar) in rows.items():
+            lane = shipped[name]
+            assert preset == lane.preset, f"{relative}: {name} preset {preset!r}"
+            if lane.tier is None:
+                # Career gates on evidence rather than the tier ladder, so its
+                # row names the evidence instead of a floor.
+                for kind in lane.require_kinds:
+                    assert kind in bar, f"{relative}: {name} omits {kind!r}"
+                checked += 1
+                continue
+            assert lane.tier in bar, f"{relative}: {name} omits the real floor {lane.tier!r}"
+            for other in {"tier_1", "tier_2", "tier_3"} - {lane.tier}:
+                assert other not in bar, (
+                    f"{relative}: {name} names {other} but the lane floors at {lane.tier}"
+                )
+            checked += 1
+    assert checked >= 9, "three copies of a three-lane table"
+
+
+def test_every_skill_bar_line_matches_its_lane():
+    """`Bar:` in a lane skill is a claim about that lane, so it is checked."""
+    shipped = lane_module.shipped_lanes()
+    for name, relatives in SKILL_BAR_DOCS.items():
+        lane = shipped[name]
+        for relative in relatives:
+            path = REPO / relative
+            assert path.is_file(), f"{relative} is part of the shipped surface"
+            text = path.read_text(encoding="utf8")
+            line = next(
+                (ln for ln in text.splitlines() if ln.startswith("- **Preset:**")), ""
+            )
+            assert line, f"{relative} states the lane's preset and bar"
+            assert f"`{lane.preset}`" in line, f"{relative}: preset is {lane.preset!r}"
+            if lane.tier:
+                assert f"`{lane.tier}`" in line, f"{relative}: bar is {lane.tier!r}"
+                for other in {"tier_1", "tier_2", "tier_3"} - {lane.tier}:
+                    assert other not in line, f"{relative}: bar names {other}"

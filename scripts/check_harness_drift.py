@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib
+import json
 import re
 import subprocess
 import sys
@@ -165,6 +167,116 @@ def _run_contract(repo: Path) -> bool:
     return True
 
 
+HANDOFF_PROVIDERS = {
+    "antigravity": "AntigravityProvider",
+    "claude": "ClaudeProvider",
+    "codex": "CodexProvider",
+    "cursor": "CursorProvider",
+    "grok": "GrokProvider",
+    "muse": "MuseProvider",
+    "opencode": "OpenCodeProvider",
+}
+HANDOFF_SPEC_FIELDS = (
+    "binary", "prompt_delivery", "prompt_file_flag", "parser",
+    "model_from_route", "discovery_argv", "call_workdir", "task_config_strategy",
+)
+HANDOFF_PLACEHOLDERS = ("<prompt>", "<model>", "<workspace>", "<prompt-file>", "<workdir>")
+
+
+def _unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON key: {key}")
+        result[key] = value
+    return result
+
+
+def _reject_constant(value: str) -> None:
+    raise ValueError(f"invalid JSON constant: {value}")
+
+
+def _check_handoff_contract(path: Path) -> bool:
+    try:
+        contract = json.loads(
+            path.read_text(encoding="utf-8"),
+            object_pairs_hook=_unique_object,
+            parse_constant=_reject_constant,
+        )
+        if not isinstance(contract, dict):
+            raise ValueError("contract must be an object")
+        if type(contract.get("version")) is not int or contract["version"] != 1:
+            raise ValueError("contract version must be 1")
+        placeholders = contract.get("placeholders")
+        if (
+            not isinstance(placeholders, list)
+            or not all(isinstance(item, str) for item in placeholders)
+            or len(placeholders) != len(HANDOFF_PLACEHOLDERS)
+            or set(placeholders) != set(HANDOFF_PLACEHOLDERS)
+        ):
+            raise ValueError("invalid contract placeholders")
+        harnesses = contract.get("harnesses")
+        if not isinstance(harnesses, dict) or set(harnesses) != set(HANDOFF_PROVIDERS):
+            raise ValueError("contract must contain exactly the seven supported harnesses")
+        for name, class_name in HANDOFF_PROVIDERS.items():
+            entry = harnesses[name]
+            if not isinstance(entry, dict):
+                raise ValueError(f"{name}: contract must be an object")
+            module = importlib.import_module(f"harness_fleet.providers.{name}")
+            provider = getattr(module, class_name)()
+            if provider.spec.name != name:
+                raise ValueError(f"{name}: spec name differs")
+            for field in HANDOFF_SPEC_FIELDS:
+                actual = getattr(provider.spec, field)
+                if field not in entry:
+                    raise ValueError(f"{name}.{field}: missing field")
+                expected = entry[field]
+                if type(expected) is not type(actual) or expected != actual:
+                    raise ValueError(f"{name}.{field}: contract differs from HarnessSpec")
+            template = entry.get("oneshot_argv")
+            if not isinstance(template, list) or not template or not all(
+                isinstance(part, str) for part in template
+            ):
+                raise ValueError(f"{name}.oneshot_argv: expected nonempty list[str]")
+            for values in (
+                HANDOFF_PLACEHOLDERS,
+                ("contract prompt 'quoted'\nsecond line", "vendor/contract-model",
+                 "/contract workspace", "/contract work/prompt file.txt", "/contract work"),
+            ):
+                replacements = dict(zip(HANDOFF_PLACEHOLDERS, values, strict=True))
+                expected_argv = [
+                    re.sub(r"<[^<>]+>", lambda match, replacements=replacements: replacements[match[0]], part)
+                    for part in template
+                ]
+                actual_argv = provider.build_argv(
+                    model=values[1], prompt=values[0], prompt_file=values[3],
+                    workspace=Path(values[2]), workdir=Path(values[4]),
+                )
+                if type(actual_argv) is not list or actual_argv != expected_argv:
+                    raise ValueError(f"{name}.oneshot_argv: build_argv differs from contract")
+    except (OSError, UnicodeError, ValueError, TypeError, KeyError, AttributeError, ImportError, RuntimeError) as exc:
+        print(f"FAIL   handoff contract: {path}: {exc}")
+        return False
+    print(f"PASS   handoff contract: {path}")
+    return True
+
+
+def _run_handoff_contract(repo: Path, path: Path) -> bool:
+    result = subprocess.run(
+        [
+            sys.executable, "-c",
+            "import runpy, sys; sys.path.insert(0, sys.argv[1]); "
+            "checker = runpy.run_path(sys.argv[2]); "
+            "raise SystemExit(0 if checker['_check_handoff_contract']("
+            "checker['Path'](sys.argv[3])) else 1)",
+            str(repo), str(Path(__file__).resolve()), str(path),
+        ],
+        cwd=repo,
+        check=False,
+    )
+    return result.returncode == 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -184,6 +296,12 @@ def main() -> int:
         action="store_true",
         help="Compare exact files without running the contract test",
     )
+    parser.add_argument(
+        "--handoff-contract",
+        type=Path,
+        metavar="PATH",
+        help="Check HarnessSpec and pure argv against this explicit handoff JSON contract",
+    )
     args = parser.parse_args()
 
     repos = [path.expanduser().resolve() for path in (args.repos or [])]
@@ -193,6 +311,10 @@ def main() -> int:
         parser.error("no Git repositories found; pass --repo or run inside a checkout")
 
     ok = True
+    if args.handoff_contract is not None:
+        path = args.handoff_contract.expanduser().resolve()
+        for repo in repos:
+            ok = _run_handoff_contract(repo, path) and ok
     if len(repos) > 1:
         ok = _check_exact_files(repos) and ok
     if not args.no_tests:
