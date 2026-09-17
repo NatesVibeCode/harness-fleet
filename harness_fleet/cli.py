@@ -2051,6 +2051,21 @@ def _lane_items(items: list[Any], lane: Any) -> tuple[list[Any], int]:
 
 
 
+def is_directory_host(entity_key: str) -> bool:
+    """Whether this candidate *is* a directory rather than a company in one.
+
+    A directory profile names the company it is about, so its key is that
+    company's domain and this says no. A catalogue of companies keys as itself,
+    and this says yes — which is the difference between a source and a subject.
+    """
+    from .sources import classify_source_category
+
+    key = str(entity_key or "").strip()
+    if not key or "." not in key:
+        return False
+    return classify_source_category(f"https://{key}") == "b2b_directory_audit"
+
+
 def merge_candidates(items: list[Any]) -> tuple[list[Any], int]:
     """One item per company: what several queries found about a firm is one firm.
 
@@ -2395,6 +2410,7 @@ def cmd_research(args: argparse.Namespace) -> dict[str, Any]:
     # counted, with the reason.
     keyed = []
     unnamed = 0
+    directory = 0
     for item in items:
         metadata = item.metadata or {}
         if metadata.get("attribution"):
@@ -2408,7 +2424,21 @@ def cmd_research(args: argparse.Namespace) -> dict[str, Any]:
         if not key:
             unnamed += 1
             continue
+        # A directory is not a firm. `integratorguide.com` scored zero on every
+        # checklist item on a live run and the model was right: the page is a
+        # catalogue of *other* companies, so the row it produced described
+        # nobody. The lane's population rule already disqualifies directories
+        # and aggregators; this is that rule reaching the candidate set.
+        if is_directory_host(key):
+            directory += 1
+            continue
         keyed.append(item.model_copy(update={"item_id": key}))
+    if directory:
+        print(
+            f"Dropped {directory} candidate(s) that are directories, not firms: a "
+            "listing of companies is evidence about none of them."
+        )
+        report["dropped_directory"] = directory
     if unnamed:
         print(
             f"Dropped {unnamed} source(s) that name no company: a page on a platform "

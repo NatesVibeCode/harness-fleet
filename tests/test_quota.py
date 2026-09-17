@@ -463,3 +463,23 @@ def test_two_queries_finding_the_same_firm_is_one_candidate(tmp_path):
         "both sources are evidence about the one firm, so both are kept"
     )
     assert cli.merge_candidates([first])[1] == 0, "and a run with no overlap says nothing"
+
+
+def test_a_directory_is_not_a_candidate(tmp_path):
+    """A catalogue of companies is evidence about none of them.
+
+    A live run scored `integratorguide.com` and every checklist item came back
+    false — and the model was right: the page lists *other* firms, so the row
+    described nobody. A directory profile is different: its key is the company
+    it is about, and it stays.
+    """
+    from harness_fleet import cli
+
+    assert cli.is_directory_host("clutch.co") is True, "a review platform is not a firm"
+    assert cli.is_directory_host("g2.com") is True
+    assert cli.is_directory_host("integratorguide.com") is False, (
+        "an unrecognised host is a company until the taxonomy says otherwise — "
+        "the registry is how a directory gets named"
+    )
+    assert cli.is_directory_host("northwind.example") is False
+    assert cli.is_directory_host("") is False
