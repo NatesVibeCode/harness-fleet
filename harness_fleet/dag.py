@@ -1015,8 +1015,6 @@ def _execute_gate_node(
                     source_uri=str(row.get("source_uri") or ""),
                 )
             )
-    if node.from_gate and node.evidence:
-        evidence = node.evidence
 
     rows, reports = gate_rows(
         carried,

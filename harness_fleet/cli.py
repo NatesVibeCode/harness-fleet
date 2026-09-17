@@ -2060,24 +2060,16 @@ def funnel_population(
     node itself says.
     """
     from .models import InputItem
+    from .rungs import RungTables, population
 
     nodes = state.get("nodes") or {}
     gates = [node.id for node in spec.nodes if getattr(node, "kind", "") == "gate"]
     retrieves = [node.id for node in spec.nodes if getattr(node, "kind", "") == "retrieve"]
-    from .rungs import RungTables
-
     tables = RungTables(store)
     dag_id = str(state.get("dag_id") or "")
-    alive: set[str] = set()
-    eliminated: set[str] = set()
-    for node_id in gates:
-        for row in tables.rows(dag_id, node_id):
-            item_id = str(row.get("item_id") or "")
-            if row.get("outcome") == "eliminated":
-                eliminated.add(item_id)
-            else:
-                alive.add(item_id)
-    alive -= eliminated
+    # One rule, one implementation: the same call the scoring node makes, so the
+    # population a command reports and the population a node scores cannot drift.
+    alive = population(tables, dag_id, gates)
     if not gates:
         for node_id in retrieves:
             alive |= {str(item) for item in (nodes.get(node_id) or {}).get("ids") or []}
