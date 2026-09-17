@@ -378,3 +378,26 @@ def test_mcp_sources_tools_drive_the_taxonomy(tmp_path):
     refused = responses[3]["result"]
     assert refused.get("isError") is True, "an unknown category must be refused"
     assert "unknown category" in json.dumps(refused)
+
+
+def test_the_mcp_history_uses_the_same_reader_as_the_cli(tmp_path):
+    """Two surfaces, one trajectory: the engine's rows and the ledger's, both."""
+    from harness_fleet.ledger import Ledger
+    from harness_fleet.store import HarnessStore
+
+    db = tmp_path / "state.db"
+    store = HarnessStore(db)
+    # A score only the engine recorded, and one only a node recorded.
+    store.record_score_history("direct-run", "acme.example", "acme.example", 55.0)
+    Ledger(store).record(
+        [{"item_id": "acme.example", "candidate": "acme.example", "outcome": "",
+          "gates": [], "score": 91.0, "tier": "tier_2"}],
+        dag_id="run-2", node_id="s-score", at="2020-01-01T00:00:00+00:00",
+    )
+
+    # The reader both surfaces call.
+    scores = [row["score"] for row in Ledger(store).scores("acme.example")]
+    assert scores == [91.0, 55.0], "the trajectory is both records, oldest first"
+    # And the raw store query still sees only the engine's half, which is why
+    # nothing but the engine's own bookkeeping should read it.
+    assert [row["score"] for row in store.get_entity_history("acme.example")] == [55.0]

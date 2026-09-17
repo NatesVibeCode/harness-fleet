@@ -468,12 +468,29 @@ def create_mcp_server(workspace_root: str | Path, db_path: str | Path | None = N
     def harness_fleet_history(
         entity: Annotated[str, Field(description="Entity key (InputItem metadata.entity, else the item_id)")],
     ) -> EntityHistoryReport:
-        """Show an entity's score trajectory across rescore rounds, oldest first."""
+        """Show an entity's score trajectory, oldest first.
+
+        Read through the ledger, the same reader the CLI uses: the engine prices
+        every campaign into score_history while the ledger records what each
+        node decided, and a trajectory has to be both. Reading one table here
+        meant this tool and `harness-fleet history` could disagree about a firm.
+        """
+        from .ledger import Ledger
         from .models import ScoreHistoryRound
 
+        rows = Ledger(store).scores(entity)
         return EntityHistoryReport(
             entity=entity,
-            rounds=[ScoreHistoryRound.model_validate(row) for row in store.get_entity_history(entity)],
+            rounds=[
+                ScoreHistoryRound.model_validate({
+                    "run_id": row.get("run_id") or "",
+                    "item_id": entity,
+                    "entity": entity,
+                    "score": float(row.get("score") or 0.0),
+                    "created_at": str(row.get("at") or ""),
+                })
+                for row in rows
+            ],
         )
 
     @server.tool(structured_output=True)

@@ -673,3 +673,27 @@ def test_the_report_and_the_node_agree_on_who_is_standing(tmp_path):
     assert listed["vendor.io"]["outcome"] == "eliminated"
     assert listed["acme.co.uk"]["outcome"] != "eliminated"
     assert "kind" in listed["vendor.io"]["gates_open"] or listed["vendor.io"]["because"]
+
+
+def test_the_tier_cap_is_given_the_uri_it_was_gathered_from(monkeypatch):
+    """Where a page came from is part of what it supports.
+
+    An unsectioned dossier is classified by its uri — a case study page carries
+    stack_delivery that the same words on a homepage do not — so a cap computed
+    without it tells an operator to go and gather a kind the run already has.
+    """
+    import harness_fleet.dag as dag_module
+    import harness_fleet.evidence as evidence_module
+
+    seen: list[tuple[str, str]] = []
+    real = evidence_module.coverage
+
+    def spy(text, uri=""):
+        seen.append((text, uri))
+        return real(text, uri)
+
+    monkeypatch.setattr(evidence_module, "coverage", spy)
+    tier = dag_module._capped_tier("tier_2", "Acme delivered a Kafka migration.", "https://acme.example/case-study")
+
+    assert seen == [("Acme delivered a Kafka migration.", "https://acme.example/case-study")]
+    assert tier == "tier_3", "and the answer is still the tier the evidence supports"

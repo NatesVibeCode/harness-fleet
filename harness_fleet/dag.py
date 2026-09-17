@@ -1310,6 +1310,22 @@ def _execute_resolve_node(
     }
 
 
+def _capped_tier(ceiling: str, text: str, uri: str = "") -> str:
+    """The tier the gathered evidence supports, for one entity.
+
+    The uri is part of the evidence: an unsectioned dossier is classified by
+    where it came from (a case study page, a hiring board), and the kinds that
+    classification yields are what a tier is capped against. Dropping it here
+    told an operator to go and gather a kind the run already had.
+    """
+    if not ceiling:
+        return ""
+    from .evidence import coverage, enforce_tier
+
+    capped, _missing = enforce_tier(ceiling, coverage(text, uri))
+    return str(capped or "")
+
+
 def _score_rows(
     records: Sequence[Any], keys: dict[str, str], tiers: dict[str, str]
 ) -> list[dict[str, Any]]:
@@ -1364,7 +1380,6 @@ def _execute_score_node(
 ) -> dict[str, Any]:
     """Judge the population the ladder left, and record what came back."""
     from .bundler import bundle_records
-    from .evidence import coverage, enforce_tier
 
     lane = _lane_for(node.lane, root)
     tables = RungTables(store)
@@ -1463,17 +1478,16 @@ def _execute_score_node(
     ceiling = lane.tier or ""
     keys = {str(dossier.item_id): str(dossier.item_id) for dossier in dossiers}
     text_by_id = {str(dossier.item_id): str(dossier.text or "") for dossier in dossiers}
+    uri_by_id = {str(dossier.item_id): str(dossier.source_uri or "") for dossier in dossiers}
     tiers: dict[str, str] = {}
     for record in records:
         item_id = str(record.item_id)
-        if not ceiling:
-            tiers[item_id] = ""
-            continue
         # A tier is a claim about evidence, so it is capped at what the gathered
-        # pages actually support rather than taken from the model's word.
-        kinds = coverage(text_by_id.get(item_id, ""), "")
-        capped, _missing = enforce_tier(ceiling, kinds)
-        tiers[item_id] = str(capped or "")
+        # pages actually support rather than taken from the model's word — and
+        # where each page came from is part of what it supports.
+        tiers[item_id] = _capped_tier(
+            ceiling, text_by_id.get(item_id, ""), uri_by_id.get(item_id, "")
+        )
     rows = _score_rows(records, keys, tiers)
     attempt = tables.write(dag_id, node.id, rows, kind="score", lane=node.lane)
     Ledger(store).record(
