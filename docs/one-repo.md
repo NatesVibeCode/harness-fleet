@@ -92,7 +92,7 @@ repo turned out to buy nothing the archive does not.
 | --- | --- |
 | Lanes ship with the tool | **done** — `account`, `career`, `partner` as package data, selectable through `harness_fleet_lanes` and `lane` on `harness_fleet_run` |
 | account-fleet absorbed | **done** — it had nothing unique but its own database; repository archived |
-| career-fleet absorbed | **done** — `career_fleet/`, its skill (3 copies), examples and 9 test files moved in; `career-fleet` declared as a second entry point so the commands its docs describe exist; repository archived |
+| career-fleet absorbed | **done** — the `career` lane, its skill and the Ideal Employer Profile live in `harness_fleet`. The standalone package, its own store, its four company-screening lanes, its CRM board and its second entry point are gone: nothing called the lanes, and a second surface kept alive only by its own tests is not an absorbed one. |
 | Docs guard | **strengthened** — it reads this distribution's console scripts and checks each surface's documented commands with that surface's own parser |
 | Career's data | **stayed out** — databases, profile and target files are refused by `test_shipped_lanes.py` |
 | One skill (S7) | **done** — the `harness-fleet` skill is the single procedure and now carries the lanes table; each product skill opens by declaring its lane (`This is the `career` lane`) and defers the workflow to it, keeping only what is lane-specific |

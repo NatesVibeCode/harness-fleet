@@ -8,7 +8,7 @@ The sample postings are a deliberate mix: two are strong fits with a named probl
 
 ---
 
-## What's in This Folder
+## Files in This Directory
 
 | File | What it is |
 | --- | --- |
@@ -19,38 +19,45 @@ The sample postings are a deliberate mix: two are strong fits with a named probl
 
 ## Try It With the Samples
 
-No accounts, no API keys, no cost — it uses a built-in fake model that returns predictable answers:
+No accounts, no API keys, no cost — the built-in demo route answers deterministically:
 
 ```bash
-python -m harness_fleet.cli quickstart --demo --run-id demo-01
+harness-fleet quickstart --demo --run-id demo-01
 ```
 
-Open `runs/demo-01/clean_packet.csv` afterwards to see the scored, quote-backed rows. (This runs the shared engine that Career Fleet is built on, which is why the command is longer than the usual ones below.)
+That scores the tool's own sample data. To score *these* postings instead, point a run at them:
+
+```bash
+harness-fleet run examples/career_screening/task.json \
+  --input examples/career_screening/sample_employers.csv \
+  --run-id careers-01
+```
+
+Either way the scored, quote-backed rows land in `runs/<run-id>/clean_packet.csv`.
 
 ---
 
-## Screen Real Companies
+## Score Real Postings
 
-Everyday Career Fleet commands, in the order you'd normally run them:
+Career is a lane of `harness-fleet`, not a second tool: one CLI, one procedure.
 
 ```bash
-career-fleet init                                  # create the database and your profile
-career-fleet profile                               # see or edit what you're looking for
-career-fleet discover --source yc --target W24 --max 30   # Lane 1: gather companies
-career-fleet triage                                # Lane 2: rule out dealbreakers
-career-fleet recon                                 # Lanes 3-4: technical and culture read
-career-fleet list --status qualified               # see what survived
-career-fleet dossier --company stripe --show-source # one company, with its evidence
-career-fleet export                                # qualified companies to JSON
-career-fleet board --open                          # browse it all in a web page
+harness-fleet init career-research --preset career-research   # start from the lane's preset
+harness-fleet research --lane career                          # discover, bundle, score, export
+harness-fleet lane report careers-01 --lane career            # what one run concluded, row by row
+harness-fleet export careers-01 \
+  --format csv \
+  --sort-by score \
+  --desc \
+  --top 5 \
+  --rank \
+  --output ranked_employers.csv
 ```
-
-`career-fleet board` opens a local web page — the easiest way to look at results if you'd rather not read JSON.
 
 ---
 
 ## Where to Go Next
 
-- **Just want it to work?** Restart Claude Desktop (or Cursor) and ask it to screen employers for you — the bundled `career-fleet` skill walks the assistant through these same steps.
-- **Tune the questions:** edit `profile.json` (what you want) and the five questions above; the score follows automatically.
+- **Just want it to work?** Restart Claude Desktop (or Cursor) and ask it to screen employers for you — the bundled career lane skill walks the assistant through these same steps.
+- **Tune the questions:** the five questions live in `task.json`; what you are looking for lives in your profile (`harness-fleet profile`), and the score follows automatically.
 - **Full walkthrough:** see `skills/career-fleet/SKILL.md`.

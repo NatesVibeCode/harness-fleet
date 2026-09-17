@@ -1,9 +1,14 @@
-"""Typed Ideal Company Profile used by account-fleet onboarding."""
+"""The typed profile contracts the shared engine onboards.
+
+One document per lane family: the Ideal Company Profile an account run
+searches for, and the Ideal Employer Profile a career run does. The partner
+contract lives beside them in ``partner.py``.
+"""
 from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
@@ -146,3 +151,177 @@ class IdealCompanyProfile(BaseModel):
             f"Anchor logos: {', '.join(self.anchor_logos) or 'None specified'}\n"
             f"Scoring rubric: {json.dumps(self.calibrated_scoring_rubric, ensure_ascii=False, sort_keys=True)}"
         )
+
+
+class Dealbreakers(BaseModel):
+    """Hard limits an employer profile states, every one of them optional.
+
+    A dealbreaker is a claim about the *employer*, not about the role, and an
+    unset field leaves its test off rather than inventing a bound.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    max_headcount: int | None = Field(
+        default=None,
+        ge=1,
+        description="Optional maximum company headcount. Leave unset to avoid assuming a size preference.",
+    )
+    require_verified_headcount: bool = Field(
+        default=False,
+        description=(
+            "When true, an unknown or non-numeric headcount disqualifies a company; "
+            "leave false when sources such as ATS boards do not publish headcount."
+        ),
+    )
+    policy: Literal["remote_only", "remote_or_hybrid", "any"] = Field(
+        default="any",
+        description=(
+            "Optional workplace policy. 'any' is the neutral default; choose "
+            "remote_only or remote_or_hybrid only when the user requests it."
+        ),
+    )
+    disallowed_locations: list[str] = Field(
+        default_factory=list,
+        description="Mandatory in-office locations that trigger disqualification.",
+    )
+    reject_thin_wrappers: bool = Field(
+        default=False,
+        description="Reject shallow AI wrappers with no proprietary state, wedge, or moat.",
+    )
+    reject_pure_quota: bool = Field(
+        default=False,
+        description="Reject pure cold outbound bag-carrying or narrow execution silos.",
+    )
+    min_timezone_overlap_hours: float = Field(
+        default=4.0,
+        ge=0.0,
+        le=8.0,
+        description="Minimum domestic/regional timezone overlap required for effective sync.",
+    )
+    candidate_timezone: str | None = Field(
+        default=None,
+        description="Optional IANA timezone for the candidate, used with timezone metadata from a posting.",
+    )
+
+
+class IdealEmployerProfile(BaseModel):
+    """The durable IEP contract for career research.
+
+    This is the `career` lane's onboarding document. It was the one live piece of
+    the retired ``career_fleet`` distribution: the lane declares
+    ``onboarding_profile: ideal_employer`` and the registry resolves this class,
+    so the four company-screening lanes and their own store could go while this
+    stayed.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    #: The store's kind for this document. Without it a saved IEP fell back to
+    #: "ideal_company" and filed an employer profile under the account kind,
+    #: which is how two different onboardings ended up sharing one active slot.
+    profile_kind: ClassVar[str] = "ideal_employer"
+    authoring_file: ClassVar[str] = "profile.json"
+
+    profile_name: str = Field(
+        default="My Career Fit Profile",
+        description="Descriptive name for the candidate or role target.",
+    )
+    version: str = Field(default="1.0.0", description="Profile specification version.")
+    wedge_capabilities: list[str] = Field(
+        default_factory=list,
+        description="Core high-leverage capabilities the candidate deploys.",
+    )
+    required_stack: list[str] = Field(
+        default_factory=list,
+        description="Core technical stack or infrastructure required in the target company.",
+    )
+    negative_stack: list[str] = Field(
+        default_factory=list,
+        description="Technologies indicating legacy bloat or misaligned engineering culture.",
+    )
+    dealbreakers: Dealbreakers = Field(
+        default_factory=Dealbreakers,
+        description="Hard dealbreakers that disqualify companies immediately.",
+    )
+    hiring_catalysts: list[str] = Field(
+        default_factory=list,
+        description="Catalyst events that create urgent leadership budget and mandate.",
+    )
+    target_leadership: list[str] = Field(
+        default_factory=list,
+        description="Leadership traits and counterpart profiles.",
+    )
+    anchor_companies: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Exemplar companies retained as context for calibration and external "
+            "evaluation; not a direct deterministic score."
+        ),
+    )
+    #: Firmographics the gates run on. A lane ships no thresholds, so this is
+    #: where the operator states theirs; an unset field leaves its gate off
+    #: rather than inventing a bound.
+    size_min: int = Field(default=0, ge=0, description="Employer headcount floor; 0 leaves it unbounded.")
+    size_max: int = Field(default=0, ge=0, description="Employer headcount ceiling; 0 leaves it unbounded.")
+    target_territories: list[str] = Field(
+        default_factory=list, description="Where the employer must be (e.g. United Kingdom)."
+    )
+    target_industries: list[str] = Field(
+        default_factory=list, description="Industries the employer must be in (e.g. fintech)."
+    )
+    #: The role family this search is for — "enterprise sales", "sales operations".
+    #: The one axis the IEP could not state before, which left the career lane's
+    #: seed (the role it is looking for) with nowhere in the onboarding to come
+    #: from.
+    target_roles: list[str] = Field(
+        default_factory=list,
+        description="Role families to search for (e.g. enterprise sales, sales operations).",
+    )
+
+    @classmethod
+    def load(cls, path: Path | str) -> IdealEmployerProfile:
+        profile_path = Path(path).expanduser()
+        if not profile_path.exists():
+            raise FileNotFoundError(f"Ideal Employer Profile not found at: {profile_path}")
+        return cls.model_validate(json.loads(profile_path.read_text(encoding="utf-8")))
+
+    def save(self, path: Path | str) -> None:
+        profile_path = Path(path).expanduser()
+        profile_path.parent.mkdir(parents=True, exist_ok=True)
+        profile_path.write_text(self.model_dump_json(indent=2), encoding="utf-8")
+
+    def funnel_profile(self) -> dict[str, Any]:
+        """The firmographics the gate engine runs on, in the shape it reads.
+
+        An employer is never asked the partner question — "is this a delivery
+        firm?" — because a product company employs people too, so this lane asks
+        nothing of the kind. The ceiling falls back to the dealbreaker this
+        profile already states, so an author who filled that in gets the gate.
+        """
+        return {
+            "allows": "any",
+            "size_min": self.size_min,
+            "size_max": self.size_max or self.dealbreakers.max_headcount or 0,
+            "locations": tuple(self.target_territories),
+            "verticals": tuple(self.target_industries),
+        }
+
+    def query_terms(self) -> dict[str, list[str]]:
+        """The values this IEP supplies to the lane's query templates.
+
+        The role family leads: a career lane's question is the job it is looking
+        for, and everything else — the stack, the industry — narrows that search
+        rather than replacing it.
+
+        ``anchor_companies`` is deliberately absent. Exemplars calibrate a
+        judgement about a population; they are not members to go and find, and a
+        company name as a query returns that company's own site rather than the
+        kind of employer this profile describes.
+        """
+        return {
+            "role": list(self.target_roles),
+            "tech": list(self.required_stack),
+            "vertical": list(self.target_industries),
+            "pain": list(self.hiring_catalysts),
+        }

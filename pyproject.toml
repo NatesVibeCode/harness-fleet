@@ -61,13 +61,9 @@ js = [
 harness-fleet = "harness_fleet.cli:main"
 
 [tool.setuptools.packages.find]
-include = ["harness_fleet*", "career_fleet*"]
+include = ["harness_fleet*"]
 
 [tool.setuptools.package-data]
-career_fleet = [
-    "resources/skill/career-fleet/*.md",
-    "resources/skill/career-fleet/references/*.md",
-]
 harness_fleet = [
     "migrations/*.sql",
     "resources/lanes/*.json",
@@ -79,6 +75,8 @@ harness_fleet = [
     "resources/account_skill/references/*.md",
     "resources/partner_skill/*.md",
     "resources/partner_skill/references/*.md",
+    "resources/career_skill/*.md",
+    "resources/career_skill/references/*.md",
     "resources/examples/account_research/*.json",
     "resources/examples/account_research/*.csv",
     "resources/examples/career_screening/*.json",

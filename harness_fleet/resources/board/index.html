@@ -124,6 +124,13 @@
   tbody tr.row:hover .sticky-col { background:var(--surface-2); }
   tbody tr.row[aria-selected=true] .sticky-col { background:var(--accent-soft); }
   .cell-name { font-weight:600; letter-spacing:-.01em; }
+  /* A name that opens the dossier is a button, so it is reachable and operable by
+     keyboard like anything else. It keeps no chrome until it is hovered or focused. */
+  button.cell-name { background:none; border:0; padding:0; font:inherit; font-weight:600; letter-spacing:-.01em; color:inherit; text-align:left; cursor:pointer; }
+  button.cell-name:hover { text-decoration:underline; }
+  button.cell-name:focus-visible { outline:2px solid var(--accent-line); outline-offset:2px; border-radius:3px; }
+  thead th .th-sort { background:none; border:0; padding:0; font:inherit; font-weight:650; color:inherit; letter-spacing:.02em; cursor:pointer; }
+  thead th .th-sort:focus-visible { outline:2px solid var(--accent-line); outline-offset:2px; border-radius:3px; }
   .cell-sub { font-size:11.5px; color:var(--muted); margin-top:2px; }
   .cell-text { max-width:280px; color:var(--text-2); }
   .num { font-variant-numeric:tabular-nums; }
@@ -249,10 +256,12 @@
   .card-tags { display:flex; flex-wrap:wrap; gap:5px; margin-top:8px; }
 
   /* ---------- drawer ---------- */
-  .drawer-backdrop { position:fixed; inset:0; background:rgba(16,24,40,.28); opacity:0; pointer-events:none; transition:opacity .16s ease; z-index:40; }
-  .drawer-backdrop.open { opacity:1; pointer-events:auto; }
-  .drawer { position:fixed; top:0; right:0; height:100vh; width:min(660px,94vw); background:var(--surface); border-left:1px solid var(--border); box-shadow:var(--shadow-lg); transform:translateX(101%); transition:transform .19s ease; z-index:41; display:flex; flex-direction:column; }
-  .drawer.open { transform:none; }
+  /* A modal <dialog> owns the parts of a drawer that are easy to get wrong: it
+     traps focus, restores it on close, closes on Esc, and sits in the top layer.
+     The page styles the surface and the backdrop and implements none of that. */
+  .drawer { position:fixed; inset:0 0 0 auto; margin:0; padding:0; width:min(660px,94vw); max-width:100%; height:100vh; height:100dvh; max-height:100%; background:var(--surface); color:var(--text); border:0; border-left:1px solid var(--border); box-shadow:var(--shadow-lg); display:flex; flex-direction:column; overscroll-behavior:contain; }
+  .drawer:not([open]) { display:none; }
+  .drawer::backdrop { background:rgba(16,24,40,.28); }
   .drawer-head { padding:16px 18px; border-bottom:1px solid var(--border); display:flex; align-items:flex-start; gap:14px; }
   .drawer-title { font-size:17px; font-weight:660; letter-spacing:-.015em; margin:0 0 4px; }
   .iconbtn { border:1px solid var(--border); background:var(--surface); border-radius:var(--radius-sm); width:30px; height:30px; display:grid; place-items:center; color:var(--text-2); flex:none; }
@@ -316,6 +325,11 @@
     <nav class="nav" id="nav" role="tablist" aria-label="Views"></nav>
 
     <div class="panel">
+      <div class="panel-head"><span class="panel-title">What the rows differ on</span></div>
+      <div class="panel-body" id="highlightBody"></div>
+    </div>
+
+    <div class="panel">
       <div class="panel-head"><span class="panel-title">Evidence key</span></div>
       <div class="panel-body" style="font-size:12.5px;color:var(--text-2)">
         Every claim here is backed by a quote verified character-exact against the fetched source.
@@ -327,10 +341,9 @@
   <main id="main"><div class="state">Loading run…</div></main>
 </div>
 
-<div class="drawer-backdrop" id="backdrop"></div>
-<aside class="drawer" id="drawer" aria-hidden="true" aria-label="Partner detail">
+<dialog class="drawer" id="drawer" closedby="any" aria-labelledby="drawerTitle">
   <div id="drawerContent" style="display:flex;flex-direction:column;height:100%"></div>
-</aside>
+</dialog>
 
 <script>
 (function () {
@@ -482,15 +495,16 @@
     if (!host) return;
     clear(host);
     if (!p) return;
+    var facets = p.facets || {};
     var interesting = (p.attributes || []).filter(function (a) {
-      return Object.keys(p.facets[a.key] || {}).length > 1;
+      return Object.keys(facets[a.key] || {}).length > 1;
     });
     if (!interesting.length) {
       host.appendChild(el("div", { class:"empty-value", text:"No attribute has more than one value in this run yet." }));
       return;
     }
     interesting.slice(0, 8).forEach(function (a) {
-      var facet = p.facets[a.key] || {};
+      var facet = facets[a.key] || {};
       var values = Object.keys(facet).sort(function (x, y) { return facet[y] - facet[x]; });
       host.appendChild(el("div", { class:"field" }, [
         el("div", { class:"field-label", text:a.label }),
@@ -547,13 +561,15 @@
     var sorted = STATE.sort.key === key;
     return el("th", {
       class:"sortable " + (extraClass || ""), scope:"col",
-      "aria-sort": sorted ? (STATE.sort.dir === 1 ? "ascending" : "descending") : "none",
+      "aria-sort": sorted ? (STATE.sort.dir === 1 ? "ascending" : "descending") : "none"
+    }, [el("button", {
+      type:"button", class:"th-sort",
       onclick: function () {
         if (STATE.sort.key === key) STATE.sort.dir = -STATE.sort.dir;
         else { STATE.sort.key = key; STATE.sort.dir = key === "score" ? -1 : 1; }
         renderTable();
       }
-    }, [label + " ", el("span", { class:"arrow", text: sorted ? (STATE.sort.dir === 1 ? "▲" : "▼") : "↕" })]);
+    }, [label + " ", el("span", { class:"arrow", "aria-hidden":"true", text: sorted ? (STATE.sort.dir === 1 ? "▲" : "▼") : "↕" })])]);
   }
 
   function renderPartners() {
@@ -627,7 +643,8 @@
     rows.forEach(function (partner) {
       var cells = [
         el("td", { class:"sticky-col" }, [
-          el("div", { class:"cell-name", text: partner.name || partner.id }),
+          el("button", { type:"button", class:"cell-name", text: partner.name || partner.id,
+                         onclick: function (e) { e.stopPropagation(); openDrawer(partner.id); } }),
           el("div", { class:"cell-sub", text: (partner.quotes || []).length + " quote(s) · " + ((partner.provenance || {}).route || "no route") }),
           (partner.highlights || []).length
             ? el("div", { class:"callout" }, partner.highlights.map(function (text) {
@@ -677,7 +694,7 @@
         lone ? el("div", { class:"cell-sub", style:"color:var(--warn)", text:lone + " claim(s) stand alone" }) : null
       ]));
       body.appendChild(el("tr", {
-        class:"row", "aria-selected": STATE.selected === partner.id,
+        class:"row", "data-id": partner.id, "aria-selected": STATE.selected === partner.id,
         onclick: function () { openDrawer(partner.id); }
       }, cells));
     });
@@ -742,7 +759,8 @@
           });
 
           var cardTopChildren = [
-            el("span", { class:"cell-name", text:partner.name || partner.id }),
+            el("button", { type:"button", class:"cell-name", text:partner.name || partner.id,
+                           onclick: function (e) { e.stopPropagation(); openDrawer(partner.id); } }),
             el("span", { class:"spacer" }),
             ev.tier_capped ? el("span", { class:"tag mini", style:"border-color:var(--warn-line);color:var(--warn);font-weight:700", text:"capped", title:(ev.tier_reasons || []).join("; ") }) : null,
             scorePill
@@ -762,7 +780,7 @@
           ]);
 
           column.appendChild(el("div", {
-            class:"card", "aria-selected": STATE.selected === partner.id,
+            class:"card", "data-id": partner.id, "aria-selected": STATE.selected === partner.id,
             onclick: function () { openDrawer(partner.id); }
           }, [
             el("div", { class:"card-top" }, cardTopChildren),
@@ -868,7 +886,7 @@
       el("div", { class:"panel-head" }, [el("span", { class:"panel-title", text:"Attributes captured" }),
         el("span", { class:"spacer" }), el("span", { class:"section-sub", text:"filled / " + recordNoun().many.toLowerCase() + " · distinct values" })]),
       el("div", { class:"list" }, (p.attributes || []).map(function (a) {
-        var facet = p.facets[a.key] || {};
+        var facet = (p.facets || {})[a.key] || {};
         var values = Object.keys(facet).sort(function (x, y) { return facet[y] - facet[x]; });
         var filled = (p.partners || []).filter(function (x) { return !isEmptyValue((x.answers || {})[a.key]); }).length;
         var fillText = filled + "/" + p.stats.records + (filled ? "" : " — nothing stated");
@@ -1063,7 +1081,7 @@
 
     host.appendChild(el("div", { class:"drawer-head" }, [
       el("div", { style:"flex:1;min-width:0" }, [
-        el("h3", { class:"drawer-title", text:drawerHeading }),
+        el("h3", { class:"drawer-title", id:"drawerTitle", text:drawerHeading }),
         el("div", { style:"display:flex;align-items:center;gap:8px;flex-wrap:wrap" }, [
           el("span", { class:tierTagClass((partner.evidence || {}).tier_capped && (partner.evidence || {}).tier_supported ? partner.evidence.tier_supported : partner.tier), text:TIER_LABEL[(partner.evidence || {}).tier_capped && (partner.evidence || {}).tier_supported ? partner.evidence.tier_supported : partner.tier] || partner.tier || "unscored" }),
           ((partner.evidence || {}).tier_capped ? el("span", { class:"tag mini", style:"border-color:var(--warn-line);color:var(--warn)", text:"evidence-capped" }) : null),
@@ -1242,17 +1260,25 @@
 
     host.appendChild(body);
     host.appendChild(el("div", { class:"drawer-foot", text:"Read-only view · close with Esc" }));
-    document.getElementById("drawer").classList.add("open");
-    document.getElementById("drawer").setAttribute("aria-hidden", "false");
-    document.getElementById("backdrop").classList.add("open");
-    renderTable();
+    var drawer = document.getElementById("drawer");
+    if (!drawer.open) drawer.showModal();
+    markSelection(partner.id);
   }
+  /* State follows the dialog rather than the other way round: Esc, a backdrop click
+     and the close button all end in the same `close` event, so exactly one place
+     remembers that nothing is selected. Focus restoration is the platform's job. */
   function closeDrawer() {
-    STATE.selected = null;
-    document.getElementById("drawer").classList.remove("open");
-    document.getElementById("drawer").setAttribute("aria-hidden", "true");
-    document.getElementById("backdrop").classList.remove("open");
-    renderTable();
+    var drawer = document.getElementById("drawer");
+    if (drawer.open) drawer.close();
+  }
+  /* Selection is an attribute on a row that is already on the page, not a reason
+     to rebuild the table: rebuilding replaces the control the browser is restoring
+     focus to, and focus falls to the body instead of the row that opened it. */
+  function markSelection(id) {
+    Array.prototype.forEach.call(document.querySelectorAll("[data-id]"), function (node) {
+      var on = id !== null && node.getAttribute("data-id") === id;
+      node.setAttribute("aria-selected", on ? "true" : "false");
+    });
   }
 
   /* ---------------- render ---------------- */
@@ -1381,8 +1407,12 @@
     });
   }
 
-  document.getElementById("backdrop").addEventListener("click", closeDrawer);
-  document.addEventListener("keydown", function (e) { if (e.key === "Escape") closeDrawer(); });
+  /* Esc, focus containment and focus restoration come from the modal dialog itself.
+     A click on the backdrop targets the dialog element, and `closedby` makes that
+     dismiss native where it is supported; the handler covers browsers without it. */
+  var drawerEl = document.getElementById("drawer");
+  drawerEl.addEventListener("click", function (e) { if (e.target === drawerEl) closeDrawer(); });
+  drawerEl.addEventListener("close", function () { STATE.selected = null; markSelection(null); });
 
   if (window.__INITIAL_BOARD_DATA__) {
     STATE.payload = window.__INITIAL_BOARD_DATA__;

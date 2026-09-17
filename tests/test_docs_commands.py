@@ -33,8 +33,8 @@ def _shipped_binaries() -> set[str]:
 
 
 SHIPPED_BINARIES = _shipped_binaries()
-#: True only where this CLI does not provide the engine commands
-#: (career-fleet ships the engine skill but not the engine CLI).
+#: True only where this CLI does not provide the engine commands the skill
+#: documents. One distribution ships one CLI, so this is false.
 ENGINE_CLI_IS_SEPARATE = False
 FLEET_BINARIES = ("harness-fleet", "account-fleet", "career-fleet", "free-fleet")
 FENCE_RE = re.compile(r"```([a-zA-Z]*)\n(.*?)```", re.S)
@@ -48,7 +48,9 @@ DOC_GLOBS = (
     "SECURITY.md",
     "skills/**/*.md",
     "harness_fleet/resources/**/*.md",
-    "career_fleet/resources/**/*.md",
+    # The examples carried commands nothing parsed, which is how a whole dead CLI
+    # stayed documented after the tool it described had gone.
+    "examples/**/*.md",
 )
 #: A command from another product is allowed only where the doc is that other
 #: product's own skill, or where it is explicitly the old CLI in a migration
@@ -70,44 +72,6 @@ FOREIGN_ALLOWED = {
 
 def _parser(binary: str = "") -> argparse.ArgumentParser:
     """The parser for a surface this repo ships."""
-    if binary == "career-fleet" and (REPO / "career_fleet").is_dir():
-        from career_fleet import cli as career_cli
-
-        captured: dict[str, argparse.ArgumentParser] = {}
-        real = argparse.ArgumentParser.parse_args
-
-        def spy(self, *args, **kwargs):
-            captured["parser"] = self
-            raise SystemExit(0)
-
-        argparse.ArgumentParser.parse_args = spy  # type: ignore[method-assign]
-        try:
-            career_cli.main()
-        except SystemExit:
-            pass
-        finally:
-            argparse.ArgumentParser.parse_args = real  # type: ignore[method-assign]
-        return captured["parser"]
-
-    if OWN_BINARY == "career-fleet":
-        from career_fleet import cli as career_cli
-
-        captured: dict[str, argparse.ArgumentParser] = {}
-        real = argparse.ArgumentParser.parse_args
-
-        def spy(self, *args, **kwargs):
-            captured["parser"] = self
-            raise SystemExit(0)
-
-        argparse.ArgumentParser.parse_args = spy  # type: ignore[method-assign]
-        try:
-            career_cli.main()
-        except SystemExit:
-            pass
-        finally:
-            argparse.ArgumentParser.parse_args = real  # type: ignore[method-assign]
-        return captured["parser"]
-
     from harness_fleet.cli import build_parser
 
     return build_parser()
