@@ -397,11 +397,15 @@ def simulate_candidate(
     if not lane:
         raise ValueError(f"unknown lane '{lane_name}' (available: {list(shipped_lanes())})")
 
-    merged_profile = lane.model_dump()
+    # The gate engine reads a *flat* profile, and `lane.model_dump()` nests the
+    # gate fields one level down under `funnel`. Handing it the dump meant
+    # `allows` was never seen, every lane defaulted to the partner question
+    # (`services`), and a lane that asks no kind question at all eliminated
+    # candidates with "nothing reads as a delivery firm". The lane's own gates
+    # are the starting point; an override profile wins on the keys it states.
+    merged_profile: dict[str, Any] = dict(lane.funnel.gate_profile())
     if profile:
         merged_profile.update(profile)
-        if "funnel" in merged_profile and isinstance(merged_profile["funnel"], dict):
-            merged_profile["funnel"].update(profile)
 
     rungs = lane.funnel.rungs() if lane.funnel else []
     steps: list[SimStep] = []
