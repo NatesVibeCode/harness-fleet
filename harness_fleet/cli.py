@@ -2066,6 +2066,13 @@ def is_directory_host(entity_key: str) -> bool:
     return classify_source_category(f"https://{key}") == "b2b_directory_audit"
 
 
+def reads_as_directory(text: str) -> bool:
+    """Whether this page's own words describe a listing of companies."""
+    from .gates import read_kind
+
+    return read_kind(text or "") == "directory"
+
+
 def merge_candidates(items: list[Any]) -> tuple[list[Any], int]:
     """One item per company: what several queries found about a firm is one firm.
 
@@ -2429,7 +2436,11 @@ def cmd_research(args: argparse.Namespace) -> dict[str, Any]:
         # catalogue of *other* companies, so the row it produced described
         # nobody. The lane's population rule already disqualifies directories
         # and aggregators; this is that rule reaching the candidate set.
-        if is_directory_host(key):
+        # Named directories, and ones nobody has named yet but whose own words
+        # say what they are. The host rule cannot see an unknown platform; the
+        # text can, and the model read it correctly on a live run before the
+        # pipeline kept the page as a firm and scored it zero.
+        if is_directory_host(key) or reads_as_directory(item.text or ""):
             directory += 1
             continue
         keyed.append(item.model_copy(update={"item_id": key}))

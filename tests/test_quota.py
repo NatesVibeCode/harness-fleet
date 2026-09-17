@@ -483,3 +483,10 @@ def test_a_directory_is_not_a_candidate(tmp_path):
     )
     assert cli.is_directory_host("northwind.example") is False
     assert cli.is_directory_host("") is False
+
+    # And the ones nobody has named yet: the page's own words say what it is.
+    live = ("Search for automation and control system integrators by name, location, "
+            "industries served, areas served")
+    assert cli.reads_as_directory(live) is True, "the page a live run scored zero on"
+    assert cli.reads_as_directory("Northwind Consulting is a systems integrator.") is False
+    assert cli.reads_as_directory("") is False

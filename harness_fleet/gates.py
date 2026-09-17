@@ -53,6 +53,18 @@ SERVICES_TERMS = (
     "advisory", "we build", "we implement", "our clients", "our customers",
     "staff augmentation", "solution provider", "services firm",
 )
+#: What a catalogue of companies says about itself. A directory is not a firm,
+#: and the difference is in its own words: it invites *you* to search its
+#: listings. A live run scored one — `integratorguide.com` — and the model came
+#: back with every checklist item false and the reason: "describes a directory
+#: or search platform, not a delivery partner". It was right, and the pipeline
+#: had already decided the page was a company.
+DIRECTORY_TERMS = (
+    "search for", "by name, location", "list your company", "add your company",
+    "browse by", "directory of", "find a ", "find an ", "compare the best",
+    "submit your listing", "featured listings", "view profile", "claim this",
+)
+
 SOFTWARE_TERMS = (
     "our platform", "our product", "book a demo", "request a demo", "free trial",
     "pricing plans", "per seat", "saas", "sign up free", "start your free trial",
@@ -239,6 +251,8 @@ def read_kind(text: str) -> str:
     both is a product company that also talks about its customers — which is
     every product company.
     """
+    if matches_any(text, DIRECTORY_TERMS):
+        return "directory"
     software = bool(matches_any(text, SOFTWARE_TERMS))
     if software:
         return "software"
