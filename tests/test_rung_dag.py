@@ -201,12 +201,20 @@ def test_an_eliminated_candidate_is_not_owed_the_next_rung():
         results=[_verdict("kind", "pass"), _verdict("vertical", "unknown")],
     )
     settled = FunnelReport(candidate="qualified.com", results=[_verdict("kind", "pass")])
+    settled_on_a_page = FunnelReport(
+        candidate="read.com", results=[_verdict("kind", "pass")], fetched=True,
+    )
 
     rung = LadderRung(name="stories", evidence=FETCHED, gates=["vertical"])
     assert not advances_to(killed, rung)
-    # A qualified candidate has nothing left to buy: walking it spends a visit
-    # on a question that is already answered.
-    assert not advances_to(settled, rung)
+    # A candidate that has *read* the page and qualified has nothing left to
+    # buy: walking it spends a visit on a question that is already answered.
+    assert not advances_to(settled_on_a_page, rung)
+    # But a candidate qualified on a search result is still owed the page. Every
+    # cheap gate can pass on a snippet while carrying none of the evidence the
+    # run's bar demands — only a page can — and the career lane delivered
+    # nothing at all until this was true: no visit, no evidence, nobody scored.
+    assert advances_to(settled, rung)
     # The lead is owed the rung whose gates settle what is still open.
     assert advances_to(lead, rung)
     assert not advances_to(lead, None)

@@ -20,7 +20,7 @@ items that fail those filters are dropped and counted rather than ranked.
 
 - **Lane config:** `lanes/career.json` — edit it (or drop one in
   `<workspace>/lanes/career.json`) to change queries, sources or filters.
-- **Preset:** `triage` · **Bar:** `require_kinds: ["delivery_hiring"]` — a role
+- **Preset:** `career-research` · **Bar:** `require_kinds: ["delivery_hiring"]` — a role
   counts only when its page is an actual requisition, not a list of them · **Output:** top 50.
 - **Evidence:** quotes are character-exact and verified against the source, and
   a claim only scores when its quote states the thing being claimed.

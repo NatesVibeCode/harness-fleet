@@ -17,7 +17,7 @@ file, not a different tool:
 | Lane | What it is for | Preset | Bar |
 | --- | --- | --- | --- |
 | `account` | target accounts for a technical ICP | `account-research` | tier_3 |
-| `career` | enterprise sales/ops roles, remote, by title | `triage` | `delivery_hiring` |
+| `career` | enterprise sales/ops roles, remote, by title | `career-research` | `delivery_hiring` |
 | `partner` | net-new systems integrators and consultancies, found directly | `partner-research` | tier_2 |
 
 ## Two stages: find, then go and look

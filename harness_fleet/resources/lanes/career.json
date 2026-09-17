@@ -1,6 +1,6 @@
 {
   "name": "career",
-  "description": "Enterprise sales and operations roles, remote. The lane states what it wants; which boards carry it is learned, not listed.",
+  "description": "Enterprise sales and sales-ops roles, scored on what the posting can prove",
   "seeds": [
     "enterprise software"
   ],
@@ -24,13 +24,13 @@
     "apprentice"
   ],
   "remote": true,
-  "preset": "triage",
+  "preset": "career-research",
   "tier": null,
   "require_kinds": [
     "delivery_hiring"
   ],
   "top": 50,
-  "revision": 6,
+  "revision": 7,
   "funnel": {
     "allows": "any",
     "ladder": [

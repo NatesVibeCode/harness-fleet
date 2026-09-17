@@ -79,6 +79,47 @@ ACCOUNT_HALF_LIVES = {
 # sources the sourcing plan actually reaches — the partner's own site, their ATS
 # board, vendor registries, review directories, and communities — and each one
 # bears on whether this partner can generate revenue with us.
+
+#: A role posting is judged on what a posting can prove: the function and its
+#: ownership, whether the employer is in the operator's space, and whether the
+#: requisition is real and current. The career lane had no checklist at all, so
+#: a run ranked on nothing and the board showed it a column of dashes — a list,
+#: not a deliverable.
+CAREER_CHECKLIST = {
+    "q1_target_function": 15,
+    "q2_quota_ownership": 10,
+    "q3_seniority": 10,
+    "q4_remote_or_territory": 10,
+    "q5_comp_published": 10,
+    "q6_relevant_stack": 10,
+    "q7_enterprise_buyers": 10,
+    "q8_team_scope": 5,
+    "q9_live_requisition": 10,
+    "q10_recency": 10,
+}
+CAREER_CHECKLIST_DESCRIPTIONS = {
+    "q1_target_function": "True only when the posting's own words put the role in the target function (enterprise or commercial sales, sales operations), not an adjacent one.",
+    "q2_quota_ownership": "True only when the posting states ownership of a quota, territory, book of business, or named accounts.",
+    "q3_seniority": "True only when the posting's title or scope is senior: Director, VP, Head of, Principal, or lead of a function.",
+    "q4_remote_or_territory": "True only when the posting states remote work or a location inside the territory the profile names.",
+    "q5_comp_published": "True only when a base range, OTE, or commission structure is published.",
+    "q6_relevant_stack": "True only when the employer's product or stack is in the operator's space (data, cloud, infrastructure, or a named technology).",
+    "q7_enterprise_buyers": "True only when the posting evidences enterprise or mid-market selling: deal size, ACV, or named customers.",
+    "q8_team_scope": "True only when the posting carries team scope: managing people, or being the first sales hire who will build one.",
+    "q9_live_requisition": "True only when the requisition is live on the employer's own board (an ATS page), not a mirror or an aggregator.",
+    "q10_recency": "True only when the posting shows a date inside the recency window the task declares.",
+}
+CAREER_EVIDENCE_TERMS = [
+    "quota", "territory", "ote", "commission", "remote", "enterprise", "pipeline",
+    "book of business", "arr", "acv", "account executive", "sales operations",
+]
+CAREER_HALF_LIVES = {
+    "q10_recency": 21,      # a posting is stale within weeks of going up
+    "q9_live_requisition": 30,
+    "q3_seniority": 180,
+    "q6_relevant_stack": 365,
+}
+
 PARTNER_CHECKLIST = {
     "q1_billable_delivery": 15,
     "q2_stack_delivery": 15,
@@ -164,6 +205,44 @@ PRESETS: dict[str, dict[str, Any]] = {
             },
         },
         "required": ["summary", "entities"],
+    },
+    "career-research": {
+        "instructions": "Decide whether this role is worth pursuing: answer the 10-question posting checklist, name the function the role owns, state why it fits, and cite verbatim evidence from the posting. Return only item_id, claims and quotes: never send score, fit_tier or passed, because the pipeline derives all three and rejects any answer that carries them.",
+        "checklist": CAREER_CHECKLIST,
+        "evidence_terms": CAREER_EVIDENCE_TERMS,
+        "recency_half_lives": CAREER_HALF_LIVES,
+        "properties": {
+            "checklist": _checklist_property(CAREER_CHECKLIST, CAREER_CHECKLIST_DESCRIPTIONS),
+            "score": _computed_score_property(
+                "Role fit: 85-100 the function, its ownership and the employer's space are all evidenced on a live requisition (Tier 1), 70-84 most of it with a gap (Tier 2), 50-69 plausible but thin (Tier 3), 0-49 adjacent function, no ownership, or nothing but a mirror of the posting."
+            ),
+            "role_focus": {
+                "type": "string",
+                "description": "What the role owns, named as the posting names it (territory, segment, function, or team).",
+            },
+            "fit_hypothesis": {
+                "type": "string",
+                "description": "One sentence on why this role is worth pursuing, tied only to cited evidence.",
+            },
+            "answers": {
+                "type": "object",
+                "description": "Structured attributes. Use an empty list or empty string when the posting does not state it — never guess.",
+                "properties": {
+                    "employer": {"type": "string", "description": "The employer as the posting names it."},
+                    "function": {"type": "string", "description": "The sales function the role sits in."},
+                    "seniority": {"type": "string", "description": "The level the posting states."},
+                    "territory": {"type": "string", "description": "Territory or remote scope."},
+                    "compensation": {"type": "string", "description": "Published base, OTE or commission."},
+                    "stack": {"type": "array", "items": {"type": "string"}, "description": "Technology the employer sells or runs."},
+                    "buyers": {"type": "array", "items": {"type": "string"}, "description": "Named customers or the buyer segment."},
+                    "requisition_url": {"type": "string", "description": "The live posting URL on the employer's own board."},
+                    "posted_at": {"type": "string", "description": "When the posting went up, as stated."},
+                },
+                "required": ["employer", "function", "seniority", "territory", "compensation", "stack", "buyers", "requisition_url", "posted_at"],
+                "additionalProperties": False,
+            },
+        },
+        "required": ["checklist", "role_focus", "fit_hypothesis", "answers", "reasoning"],
     },
     "triage": {
         "instructions": "Assign a supported triage priority and explain why.",

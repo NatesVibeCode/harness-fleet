@@ -265,7 +265,8 @@ def test_presets_cover_each_named_bulk_job():
         "score",
         "summarize",
         "triage",
-    }
+        "career-research",
+}
 
 
 def test_routes_add_and_list_cli(tmp_path, capsys):

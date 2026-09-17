@@ -72,7 +72,7 @@ def test_the_career_lane_is_the_role_search_it_claims_to_be():
     career = lane_module.shipped_lanes()["career"]
     assert "enterprise sales" in career.title_include
     assert career.remote is True
-    assert career.preset == "triage"
+    assert career.preset == "career-research"
 
 
 def test_no_private_data_is_tracked_in_the_public_repo():

@@ -26,6 +26,7 @@ from typing import Any
 
 from .gates import (
     DEFAULT_LADDER,
+    FETCHED,
     SNIPPET,
     FunnelReport,
     GateProfile,
@@ -540,10 +541,18 @@ def advances_to(report: FunnelReport, rung: LadderRung | None) -> bool:
     happens when the rung above it was not the one the walk was standing on.
 
     An eliminated candidate is never owed anything, and a qualified one has
-    nothing left to buy: walking it would spend a page visit on a question that
-    is already answered.
+    nothing left to buy — *unless* the rung above reads evidence this report
+    does not have. That is the one case the old rule got wrong: a search result
+    can pass every cheap gate a lane puts to it, and still carry none of the
+    evidence the run's bar demands, because only a page can. The career lane
+    delivered nothing at all that way — a snippet-qualified posting earned no
+    visit, the ladder stopped, and the scoring stage was handed an empty room.
     """
-    if report.eliminated or report.qualified or rung is None:
+    if report.eliminated or rung is None:
+        return False
+    if rung.evidence == FETCHED and not report.fetched:
+        return True
+    if report.qualified:
         return False
     if report.earned and report.earned == rung.name:
         return True

@@ -129,11 +129,11 @@ lanes in.
     answers: none defined - this preset returns claims only
 
 ══════════════════════════════════════════════════════════════════════════════
-  CAREER LANE - Enterprise sales and operations roles, remote. The lane states what it wants; which boards carry it is learned, not listed.
+  CAREER LANE - Enterprise sales and sales-ops roles, scored on what the posting can prove
 ══════════════════════════════════════════════════════════════════════════════
   population gate : allows='any'   (asks no kind question)
   bar             : none + require_kinds=['delivery_hiring']
-  scored with     : triage    output: top 50
+  scored with     : career-research    output: top 50
   volume          : 4 queries, no story indexes
 
   +-- ENTRY ----------------------------------------------------------+
@@ -202,9 +202,10 @@ lanes in.
   BAR . require_kinds needs: delivery_hiring
     OK  delivery_hiring          carried by ats   <- rung reads: ats
 
-  FIELDS THE ROW CARRIES . preset triage
-    claims: priority, reason
-    answers: none defined - this preset returns claims only
+  FIELDS THE ROW CARRIES . preset career-research
+    claims: checklist, score, role_focus, fit_hypothesis
+    answers (9): employer, function, seniority, territory, compensation, stack, buyers, requisition_url, posted_at
+             required by the preset: yes
 
 ══════════════════════════════════════════════════════════════════════════════
   PARTNER LANE - Net-new systems integrators and consultancies, found directly and qualified layer by layer

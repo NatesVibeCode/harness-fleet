@@ -420,7 +420,7 @@ mechanism. Three ship in the package:
 | --- | --- | --- | --- |
 | `account` | Which accounts are doing the work (and hiring for it) | `account-research` | the tier ladder, floor `tier_3` |
 | `partner` | Which implementation partners can generate revenue with us | `partner-research` | the tier ladder, floor `tier_2` |
-| `career` | Which employers are hiring for this kind of role | `triage` | `delivery_hiring` |
+| `career` | Which employers are hiring for this kind of role | `career-research` | `delivery_hiring` |
 
 ```jsonc
 {
@@ -542,7 +542,7 @@ Free routes are used by default. A paid route approved in an earlier session mus
 | `routes add` | Register an explicit custom or local model route (`--free`, `--input-cost`) |
 | `cooldowns` | Inspect active rate-limit route cooldowns or clear them (`--clear`, `--route`) |
 | `tasks` | List registered task definitions |
-| `init` | Create a typed task from a preset (`score`, `filter`, `account-research`, `triage`, `classify`, `extract`, `summarize`) |
+| `init` | Create a typed task from a preset (`score`, `filter`, `account-research`, `career-research`, `triage`, `classify`, `extract`, `summarize`) |
 | `profile` | Manage the typed Ideal Company Profile (`--init`, `--path`, `--force`) that research presets score against |
 | `init --from-example` | Infer a draft `claims_schema` from a labeled CSV (`--from-example labels.csv --label-column label`) |
 | `validate` | Check task schema and input formatting without inference (`--only-ids`) |
