@@ -1497,8 +1497,15 @@ def cmd_db_stats(args: argparse.Namespace) -> None:
     tables = RungTables(store)
     stats = tables.stats()
     ledger = Ledger(store)
-    stats["entity_state"] = len(ledger.entities(limit=1_000_000))
+    ledger_counts = ledger.counts()
+    stats["entity_state"] = ledger_counts.get("entities", 0)
     stats["entity_events"] = ledger.history_count()
+    # The engine's own trajectory grows with every campaign, so a store report
+    # that left it out would understate what is being held.
+    with store.connect() as connection:
+        stats["score_history"] = int(
+            connection.execute("SELECT COUNT(*) AS n FROM score_history").fetchone()["n"]
+        )
     stats["bytes"] = Path(store.path).stat().st_size if Path(store.path).is_file() else 0
     _emit(
         stats,
@@ -1510,13 +1517,21 @@ def cmd_db_stats(args: argparse.Namespace) -> None:
 
 
 def cmd_db_prune(args: argparse.Namespace) -> None:
-    """Drop rung tables older than the newest attempts, keeping the answer."""
+    """Drop older rung attempts and old event log rows, keeping the answers."""
+    from .ledger import Ledger
     from .rungs import RungTables
 
-    removed = RungTables(_store(args)).prune(
-        keep_attempts=int(getattr(args, "keep_attempts", 1) or 1),
-        dag_id=getattr(args, "dag_id", None),
+    store = _store(args)
+    removed: dict[str, int] = dict(
+        RungTables(store).prune(
+            keep_attempts=int(getattr(args, "keep_attempts", 1) or 1),
+            dag_id=getattr(args, "dag_id", None),
+        )
     )
+    keep_events = int(getattr(args, "keep_events", 0) or 0)
+    before = str(getattr(args, "events_before", "") or "")
+    if keep_events or before:
+        removed["events"] = Ledger(store).prune(keep_per_entity=keep_events, before=before)
     _emit(
         removed,
         getattr(args, "json", False),
@@ -3190,6 +3205,10 @@ def build_parser() -> argparse.ArgumentParser:
     prune.add_argument("--keep-attempts", type=int, default=1,
                        help="Attempts to keep per node (default 1)")
     prune.add_argument("--dag-id", help="Only this graph")
+    prune.add_argument("--keep-events", type=int, default=0,
+                       help="Keep only the newest N visits per firm (0 leaves the log alone)")
+    prune.add_argument("--events-before", default="",
+                       help="Drop visits recorded before this ISO date")
     _common(prune, database=True)
 
     test = commands.add_parser("test", help="Run one real inference batch")

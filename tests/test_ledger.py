@@ -486,3 +486,43 @@ def test_db_stats_and_prune_are_commands(tmp_path, capsys):
     assert removed["rows"] == 1
     cli.cmd_db_stats(Namespace(**args))
     assert json.loads(capsys.readouterr().out)["attempts"] == 1
+
+
+def test_pruning_the_log_never_touches_the_belief(tmp_path):
+    """The state row is what is believed; the events are how it got there."""
+    store = _store(tmp_path)
+    ledger = Ledger(store)
+    for month in ("01", "02", "03"):
+        ledger.record([_row("acme.co.uk", "lead", score=float(month))],
+                      dag_id=f"run-{month}", node_id="s-score",
+                      at=f"2026-{month}-01T00:00:00+00:00")
+    assert ledger.history_count() == 3
+
+    assert ledger.prune(keep_per_entity=1) == 2
+    assert ledger.history_count() == 1
+    remaining = ledger.history("acme.co.uk")
+    assert remaining[0]["at"].startswith("2026-03"), "the newest visit is the one kept"
+    # And the answer is untouched: still scored, still the newest number.
+    listed = ledger.entities()[0]
+    assert listed["score"] == 3.0 and listed["sightings"] == 3
+
+    # A date works too, and the two can be combined.
+    for month in ("04", "05"):
+        ledger.record([_row("acme.co.uk", "lead")],
+                      dag_id=f"run-{month}", node_id="s-score",
+                      at=f"2026-{month}-01T00:00:00+00:00")
+    assert ledger.prune(before="2026-05-01T00:00:00+00:00") == 2
+    assert [row["at"][:7] for row in ledger.history("acme.co.uk")] == ["2026-05"]
+
+
+def test_db_stats_counts_the_engine_trajectory_too(tmp_path, capsys):
+    from argparse import Namespace
+
+    from harness_fleet import cli
+
+    store = _store(tmp_path)
+    store.record_score_history("run-1", "acme.co.uk", "acme.co.uk", 61.0)
+    cli.cmd_db_stats(Namespace(db=str(tmp_path / "t.db"), json=True))
+    stats = json.loads(capsys.readouterr().out)
+    assert stats["score_history"] == 1, "the engine's own table is held too"
+    assert stats["entity_state"] == 0 and stats["bytes"] > 0

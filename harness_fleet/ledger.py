@@ -354,6 +354,37 @@ class Ledger:
             out.append(row)
         return out
 
+    def prune(self, *, keep_per_entity: int = 0, before: str = "") -> int:
+        """Drop old events, keeping the state row — the belief is not the log.
+
+        ``entity_state`` is what is currently believed and is never touched here.
+        The events are how it got there: an audit trail, and a trail nobody trims
+        is a database that only grows. Keep the newest N per entity, or
+        everything from a date onwards, or both.
+        """
+        deleted = 0
+        with self.store.connect() as connection:
+            if keep_per_entity > 0:
+                cursor = connection.execute(
+                    f"""
+                    DELETE FROM {EVENTS_TABLE} WHERE event_id IN (
+                        SELECT event_id FROM (
+                            SELECT event_id, ROW_NUMBER() OVER (
+                                PARTITION BY entity ORDER BY at DESC, event_id DESC
+                            ) AS rank FROM {EVENTS_TABLE}
+                        ) WHERE rank > ?
+                    )
+                    """,
+                    (int(keep_per_entity),),
+                )
+                deleted += int(cursor.rowcount or 0)
+            if before:
+                cursor = connection.execute(
+                    f"DELETE FROM {EVENTS_TABLE} WHERE at < ?", (before,)
+                )
+                deleted += int(cursor.rowcount or 0)
+        return deleted
+
     def history_count(self) -> int:
         """How many visits the record holds, for a store nobody prunes by hand."""
         with self.store.connect() as connection:
