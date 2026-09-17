@@ -490,3 +490,28 @@ def test_a_directory_is_not_a_candidate(tmp_path):
     assert cli.reads_as_directory(live) is True, "the page a live run scored zero on"
     assert cli.reads_as_directory("Northwind Consulting is a systems integrator.") is False
     assert cli.reads_as_directory("") is False
+
+
+def test_the_score_comes_from_the_checklist_not_the_workers_arithmetic():
+    """A live model answered one checklist item true and wrote `score: 0`.
+
+    The checklist is the scoring model — its points are what calibration fits —
+    so the number is computed from it, and a supplied one never overrides it.
+    Trusting the worker's arithmetic made every scored record of a live run look
+    like a zero, including records whose own checklist said otherwise.
+    """
+    from harness_fleet.task import create_task_from_preset
+
+    task = create_task_from_preset("partner-research", preset_name="partner-research")
+    checklist = {name: name == "q1_billable_delivery" for name in task.checklist}
+
+    derived = task.with_derived_claims({"checklist": checklist, "score": 0})
+    assert derived["score"] == task.checklist["q1_billable_delivery"] == 15, (
+        "the checklist decides the number, and the worker's zero is ignored"
+    )
+
+    # And the rest of the checklist still moves it.
+    all_true = {name: True for name in task.checklist}
+    assert task.with_derived_claims({"checklist": all_true})["score"] == sum(
+        task.checklist.values()
+    )

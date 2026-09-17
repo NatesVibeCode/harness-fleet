@@ -531,12 +531,20 @@ class TaskSpec(ClosedModel):
         claims: dict[str, JsonValue],
         strengths: dict[str, float] | None = None,
     ) -> dict[str, JsonValue]:
-        """Fill computed score, fit_tier, and passed claims the worker omitted.
+        """Derive score, fit_tier and passed from the checklist.
 
-        The worker answers the checklist; calibration stays in code. Fields
-        the worker did supply are never overwritten (validate_claims rejects
-        mismatches instead). Raises ValueError for non-numeric supplied
-        scores that derivation depends on.
+        The worker answers the checklist; **calibration stays in code**. That
+        sentence was only half true: the score was derived when the worker
+        omitted it and trusted when it supplied one, so a model that answered
+        one checklist item true and wrote `score: 0` beside it had its
+        arithmetic believed. A live run did exactly that.
+
+        A checklist *is* the scoring model — its points are what calibration
+        fits — so the score is computed from it whenever the task has one, and
+        a supplied number never overrides it. `validate_claims` still rejects
+        fields the worker and the code disagree about where it can check them.
+        Raises ValueError for non-numeric supplied scores that derivation
+        depends on.
         """
         if not isinstance(claims, dict):
             raise ValueError("claims must be an object")
@@ -546,7 +554,6 @@ class TaskSpec(ClosedModel):
             self.checklist is not None
             and isinstance(derived.get("checklist"), dict)
             and "score" in props
-            and "score" not in derived
         ):
             derived["score"] = self.derive_checklist_score(derived["checklist"], strengths)  # type: ignore[arg-type]
         if "score" in derived and "fit_tier" in props and "fit_tier" not in derived:
