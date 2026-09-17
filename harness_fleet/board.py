@@ -211,6 +211,65 @@ def _load_evidence(runs_dir: Path | str | None, run_id: str | None) -> dict[str,
     return loaded if isinstance(loaded, dict) else {}
 
 
+#: What is worth saying about a row at a glance, in the order a person cares.
+#: The gates have already decided the row belongs; this answers "what is
+#: interesting about this one", which is a different question from "does it
+#: match", and the one a reader has when the filtering is settled.
+HIGHLIGHT_KEYS: tuple[str, ...] = (
+    "client_logos",
+    "case_study_outcome",
+    "vendor_alliances",
+    "hiring_signals",
+    "engineering_output",
+    "growth_signals",
+    "commercial_terms",
+    "industry_verticals",
+    "service_model",
+)
+
+#: Labels too long to sit on a row are the ones a reader can open the drawer for.
+HIGHLIGHT_LABELS: dict[str, str] = {
+    "client_logos": "clients",
+    "case_study_outcome": "outcome",
+    "vendor_alliances": "alliances",
+    "hiring_signals": "hiring",
+    "engineering_output": "engineering",
+    "growth_signals": "growth",
+    "commercial_terms": "terms",
+    "industry_verticals": "verticals",
+    "service_model": "model",
+}
+
+
+def _highlights(answers: dict[str, Any], limit: int = 4) -> list[str]:
+    """The few things worth calling out about one row, and nothing else.
+
+    Ordered by how much a person would want to know: who they did it for, what
+    they achieved, who they are allied with, then the softer signals. Empty
+    answers are not called out — a highlight that says "none" is noise wearing
+    the clothes of information.
+    """
+    out: list[str] = []
+    for key in HIGHLIGHT_KEYS:
+        value = answers.get(key)
+        if isinstance(value, list):
+            shown = [str(entry) for entry in value if str(entry).strip()][:3]
+            if not shown:
+                continue
+            text = ", ".join(shown)
+            if len(value) > 3:
+                text += f" +{len(value) - 3}"
+        elif isinstance(value, str) and value.strip():
+            text = value.strip()
+        else:
+            continue
+        label = HIGHLIGHT_LABELS.get(key, key.replace("_", " "))
+        out.append(f"{label}: {text[:80]}")
+        if len(out) >= limit:
+            break
+    return out
+
+
 def ledger_view(store: HarnessStore, *, limit: int = 200, trend: int = 15) -> dict[str, Any]:
     """The running list, as the page reads it: firms, counts, and who moved."""
     from .ledger import Ledger
@@ -292,6 +351,7 @@ def build_board_payload(
             "score": score,
             "tier": claims.get("fit_tier"),
             "tier_supported": evidence_item.get("tier_supported") or "",
+            "highlights": _highlights(answers if isinstance(answers, dict) else {}),
             "tier_capped": bool(evidence_item.get("tier_capped")),
             "checklist": {item: bool(raw_checklist.get(item)) for item in checklist_points},
             "checklist_points": checklist_points,
@@ -376,7 +436,17 @@ def build_board_payload(
         ],
         "checklist_total": checklist_total,
         "tiers": [{"tier": tier, "min_score": threshold} for threshold, tier in TIER_BY_SCORE],
-        "attributes": answers_spec,
+        # Only the attributes this run's rows actually carry. A column of dashes
+        # is the page telling a reader what it does not know, which is not what
+        # they came for — the field is still in the drawer for anyone who wants
+        # the schema, but the table shows the data.
+        "attributes": [
+            spec for spec in answers_spec
+            if any(
+                (partner.get("answers") or {}).get(spec["key"]) not in (None, "", [], {})
+                for partner in partners
+            )
+        ],
         "claim_fields": [spec for spec in generic_spec if spec["key"] not in ("answers", "checklist")],
         "facets": facets,
         "partners": partners,

@@ -76,6 +76,9 @@
   .chips { display:flex; flex-wrap:wrap; gap:6px; }
   .chip { display:inline-flex; align-items:center; gap:6px; padding:3px 9px; border-radius:999px; border:1px solid var(--border-strong); background:var(--surface); font-size:12px; font-weight:550; color:var(--text-2); }
   .chip .n { color:var(--muted); font-variant-numeric:tabular-nums; font-size:11px; }
+  .tag-soft { display:inline-flex; align-items:center; gap:6px; padding:3px 9px; border-radius:999px; background:var(--surface-3); border:1px solid var(--border); font-size:12px; color:var(--text-2); }
+  .callout { display:flex; flex-wrap:wrap; gap:5px; margin-top:5px; }
+  .callout .tag-soft { font-size:11.5px; padding:2px 7px; }
   .chip[aria-pressed=true] { background:var(--accent); border-color:var(--accent); color:#fff; }
   .chip[aria-pressed=true] .n { color:rgba(255,255,255,.75); }
   .linkbtn { background:none; border:0; padding:0; color:var(--accent); font-size:12px; font-weight:600; }
@@ -251,12 +254,6 @@
     <nav class="nav" id="nav" role="tablist" aria-label="Views"></nav>
 
     <div class="panel">
-      <div class="panel-head"><span class="panel-title">Filters</span><span class="spacer"></span>
-        <button class="linkbtn" id="clearFilters" hidden>Clear</button></div>
-      <div class="panel-body" id="filterBody"></div>
-    </div>
-
-    <div class="panel">
       <div class="panel-head"><span class="panel-title">Evidence key</span></div>
       <div class="panel-body" style="font-size:12.5px;color:var(--text-2)">
         Every claim here is backed by a quote verified character-exact against the fetched source.
@@ -276,7 +273,10 @@
 <script>
 (function () {
   "use strict";
-  var STATE = { payload:null, runs:[], view:"partners", query:"", tiers:new Set(), facets:{}, sort:{key:"score", dir:-1}, selected:null };
+  /* No facet or tier state: the filtering is the profile's and it has already
+     happened. `query` is a lookup — you know which firm you are looking for —
+     not a filter choice. */
+  var STATE = { payload:null, runs:[], view:"partners", query:"", sort:{key:"score", dir:-1}, selected:null };
 
   var TIER_COLOR = { tier_1:"var(--ok)", tier_2:"var(--info)", tier_3:"var(--warn)", unfit:"var(--bad)" };
 
@@ -352,28 +352,21 @@
   }
 
   /* ---------------- filters ---------------- */
+  /* The filtering already happened: the profile and the lane's gates ran before
+     the search, and a row here is what survived them. So the only thing worth
+     offering is *finding* a row — and the interesting attributes are called out
+     on the row itself rather than turned into a second place to filter. */
   function partnerMatches(p) {
-    if (STATE.tiers.size && !STATE.tiers.has(p.tier)) return false;
     var q = STATE.query.trim().toLowerCase();
-    if (q) {
-      var hay = [p.id, p.name, p.practice, p.reasoning, JSON.stringify(p.answers || {})].join(" ").toLowerCase();
-      if (hay.indexOf(q) === -1) return false;
-    }
-    for (var key in STATE.facets) {
-      var want = STATE.facets[key];
-      if (!want || !want.size) continue;
-      var v = (p.answers || {})[key];
-      var vals = Array.isArray(v) ? v : (v === null || v === undefined || v === "" ? [] : [v]);
-      if (!vals.some(function (x) { return want.has(String(x)); })) return false;
-    }
-    return true;
+    if (!q) return true;
+    var hay = [
+      p.id, p.name, p.practice, p.reasoning, p.tier, p.tier_supported,
+      (p.highlights || []).join(" "), JSON.stringify(p.answers || {}),
+    ].join(" ").toLowerCase();
+    return hay.indexOf(q) !== -1;
   }
   function visiblePartners() { return (STATE.payload.partners || []).filter(partnerMatches); }
-  function activeFilterCount() {
-    var n = STATE.tiers.size + (STATE.query.trim() ? 1 : 0);
-    Object.keys(STATE.facets).forEach(function (k) { n += STATE.facets[k].size; });
-    return n;
-  }
+  function activeFilterCount() { return STATE.query.trim() ? 1 : 0; }
   function toggleSet(set, value) { if (set.has(value)) set.delete(value); else set.add(value); }
 
   /* ---------------- views ---------------- */
@@ -406,42 +399,33 @@
     });
   }
 
-  function renderFilters() {
-    var body = document.getElementById("filterBody"), p = STATE.payload;
-    clear(body);
-    document.getElementById("clearFilters").hidden = activeFilterCount() === 0;
+  /* What this run's rows actually differ on. The filtering is the profile's job
+     and it already ran; this says which attributes came back with more than one
+     value, so a reader knows what the rows are telling them apart by. */
+  function renderHighlights() {
+    var host = document.getElementById("highlightBody"), p = STATE.payload;
+    if (!host) return;
+    clear(host);
     if (!p) return;
-
-    var tierField = el("div", { class:"field" }, [el("div", { class:"field-label", text:"Fit tier" })]);
-    var tierChips = el("div", { class:"chips" });
-    (p.tiers || []).forEach(function (t) {
-      var n = (p.partners || []).filter(function (x) { return x.tier === t.tier; }).length;
-      tierChips.appendChild(el("button", {
-        class:"chip", type:"button", "aria-pressed": STATE.tiers.has(t.tier),
-        onclick: function () { toggleSet(STATE.tiers, t.tier); render(); }
-      }, [el("span", { class:"swatch", style:"background:" + (TIER_COLOR[t.tier] || "var(--muted)") }), TIER_LABEL[t.tier] || t.tier, el("span", { class:"n", text:n })]));
-    });
-    tierField.appendChild(tierChips);
-    body.appendChild(tierField);
-
-    var interesting = (p.attributes || []).filter(function (a) { return Object.keys(p.facets[a.key] || {}).length > 1; });
-    interesting.slice(0, 6).forEach(function (a) {
-      var field = el("div", { class:"field" }, [el("div", { class:"field-label", text:a.label })]);
-      var chips = el("div", { class:"chips" });
-      var facet = p.facets[a.key];
-      var chosen = STATE.facets[a.key] || (STATE.facets[a.key] = new Set());
-      Object.keys(facet).sort(function (x, y) { return facet[y] - facet[x]; }).slice(0, 8).forEach(function (value) {
-        chips.appendChild(el("button", {
-          class:"chip", type:"button", "aria-pressed": chosen.has(value), title:value,
-          onclick: function () { toggleSet(chosen, value); render(); }
-        }, [el("span", { text:value.length > 24 ? value.slice(0, 23) + "…" : value }), el("span", { class:"n", text:facet[value] })]));
-      });
-      field.appendChild(chips);
-      body.appendChild(field);
+    var interesting = (p.attributes || []).filter(function (a) {
+      return Object.keys(p.facets[a.key] || {}).length > 1;
     });
     if (!interesting.length) {
-      body.appendChild(el("div", { class:"empty-value", text:"No attribute has more than one value in this run yet." }));
+      host.appendChild(el("div", { class:"empty-value", text:"No attribute has more than one value in this run yet." }));
+      return;
     }
+    interesting.slice(0, 8).forEach(function (a) {
+      var facet = p.facets[a.key] || {};
+      var values = Object.keys(facet).sort(function (x, y) { return facet[y] - facet[x]; });
+      host.appendChild(el("div", { class:"field" }, [
+        el("div", { class:"field-label", text:a.label }),
+        el("div", { class:"chips" }, values.slice(0, 6).map(function (value) {
+          return el("span", { class:"tag-soft", title:value,
+                              text:(value.length > 26 ? value.slice(0, 25) + "…" : value)
+                                   + (facet[value] > 1 ? " " + facet[value] : "") });
+        }))
+      ]));
+    });
   }
 
   function statCard(k, v, sub) {
@@ -503,7 +487,6 @@
     search.addEventListener("input", function () {
       STATE.query = search.value;
       renderNav();
-      document.getElementById("clearFilters").hidden = activeFilterCount() === 0;
       renderTable();
     });
     main.appendChild(el("section", { class:"section" }, [
@@ -533,8 +516,8 @@
     if (!rows.length) {
       host.appendChild(el("div", { class:"table-wrap" }, [
         el("div", { class:"state" }, [
-          el("strong", { text:"No " + recordNoun().one.toLowerCase() + " matches these filters" }),
-          el("span", { text:"Clear a filter or widen the search to see the rest of the run." })
+          el("strong", { text:"No " + recordNoun().one.toLowerCase() + " matches that search" }),
+          el("span", { text:"Clear the search to see the rest of the run." })
         ])
       ]));
       return;
@@ -555,7 +538,12 @@
       var cells = [
         el("td", { class:"sticky-col" }, [
           el("div", { class:"cell-name", text: partner.name || partner.id }),
-          el("div", { class:"cell-sub", text: (partner.quotes || []).length + " quote(s) · " + ((partner.provenance || {}).route || "no route") })
+          el("div", { class:"cell-sub", text: (partner.quotes || []).length + " quote(s) · " + ((partner.provenance || {}).route || "no route") }),
+          (partner.highlights || []).length
+            ? el("div", { class:"callout" }, partner.highlights.map(function (text) {
+                return el("span", { class:"tag-soft", text:text, title:text });
+              }))
+            : null
         ]),
         el("td", null, [
           el("div", { class:"score-cell" }, [
@@ -572,7 +560,9 @@
       ];
       (p.attributes || []).forEach(function (a) {
         var value = (partner.answers || {})[a.key];
-        if (isEmptyValue(value)) cells.push(el("td", null, [el("span", { class:"empty-value", text:"—" })]));
+        // Nothing to show is nothing shown: a dash is the page talking about
+        // its own gaps when the reader asked about the firm.
+        if (isEmptyValue(value)) cells.push(el("td", null, []));
         else if (Array.isArray(value)) {
           cells.push(el("td", null, [el("div", { class:"chips" },
             value.slice(0, 3).map(function (v) { return el("span", { class:"tag soft mini", text:String(v).slice(0, 44) }); })
@@ -1077,7 +1067,7 @@
     var main = document.getElementById("main");
     clear(main);
     renderNav();
-    renderFilters();
+    renderHighlights();
     if (!STATE.payload) { main.appendChild(el("div", { class:"state", text:"Loading run…" })); return; }
     renderHeader();
     if (STATE.view === "partners") renderPartners();
@@ -1188,12 +1178,6 @@
 
   document.getElementById("backdrop").addEventListener("click", closeDrawer);
   document.addEventListener("keydown", function (e) { if (e.key === "Escape") closeDrawer(); });
-  document.getElementById("clearFilters").addEventListener("click", function () {
-    STATE.tiers.clear();
-    STATE.facets = {};
-    STATE.query = "";
-    render();
-  });
 
   var initial = new URLSearchParams(location.search).get("run");
   fetch("/api/runs").then(function (r) { return r.json(); }).then(function (body) {
