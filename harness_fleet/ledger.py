@@ -74,9 +74,6 @@ CREATE TABLE IF NOT EXISTS {EVENTS_TABLE} (
     run_id TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS {EVENTS_TABLE}_entity ON {EVENTS_TABLE} (entity, at);
-CREATE VIEW IF NOT EXISTS entity_score_history AS
-    SELECT entity, at, score, tier, run_id, node_id
-    FROM {EVENTS_TABLE} WHERE score > 0 ORDER BY entity, at;
 """
 
 #: What a node says when it went and looked, rather than when it judged. These
@@ -276,18 +273,46 @@ class Ledger:
     def scores(self, entity: str, limit: int = 100) -> list[dict[str, Any]]:
         """Every number this entity has been given, oldest first.
 
-        State holds the latest score, which answers "how good is this firm". It
-        cannot answer "is this firm getting better", and that is a different
-        question with a different use: a score that moved means something in the
-        world changed, or the lane did.
+        Two writers record a score and this is the one reader for both, because
+        they are complementary rather than duplicate: the engine prices every
+        campaign it runs into ``score_history``, and this ledger records what
+        every node decided. A score must not be invisible depending on which
+        door it came through, so the trajectory is the union of the two.
+
+        State holds the latest number, which answers "how good is this firm".
+        This answers "is it getting better" — a different question with a
+        different use, because a score that moved means the world changed or the
+        lane did.
         """
+        rows = self._score_rows("WHERE entity=?", (entity,), limit=limit)
+        return rows
+
+    def _score_rows(
+        self, where: str, params: tuple[Any, ...], *, limit: int = 100
+    ) -> list[dict[str, Any]]:
+        """The score trajectory, from both records, oldest first."""
+        tier = "'' AS tier" if not self._has_table("entity_events") else "tier"
         with self.store.connect() as connection:
             found = connection.execute(
-                "SELECT at, score, tier, run_id, node_id FROM entity_score_history "
-                "WHERE entity=? ORDER BY at LIMIT ?",
-                (entity, int(limit)),
+                f"""
+                SELECT at, score, tier, run_id, node_id FROM (
+                    SELECT created_at AS at, score, '' AS tier, run_id, '' AS node_id
+                    FROM score_history {where}
+                    UNION ALL
+                    SELECT at, score, {tier}, run_id, node_id
+                    FROM {EVENTS_TABLE} {where} AND score > 0
+                ) ORDER BY at LIMIT ?
+                """,
+                (*params, *params, int(limit)),
             ).fetchall()
         return [dict(row) for row in found]
+
+    def _has_table(self, name: str) -> bool:
+        with self.store.connect() as connection:
+            found = connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)
+            ).fetchone()
+        return found is not None
 
     def movers(self, limit: int = 25, minimum_delta: float = 0.0) -> list[dict[str, Any]]:
         """Who moved, and by how much: the last two numbers each entity got.
@@ -298,16 +323,20 @@ class Ledger:
         with self.store.connect() as connection:
             found = connection.execute(
                 """
-                WITH ranked AS (
-                    SELECT entity, at, score, tier, run_id,
+                WITH scored AS (
+                    SELECT entity, created_at AS at, score, run_id FROM score_history
+                    UNION ALL
+                    SELECT entity, at, score, run_id FROM entity_events WHERE score > 0
+                ),
+                ranked AS (
+                    SELECT entity, at, score, run_id,
                            ROW_NUMBER() OVER (PARTITION BY entity ORDER BY at DESC) AS rank
-                    FROM entity_score_history
+                    FROM scored
                 ),
                 pair AS (
                     SELECT now.entity AS entity,
                            now.score AS score,
                            was.score AS previous,
-                           now.tier AS tier,
                            now.at AS at,
                            now.run_id AS run_id
                     FROM ranked now JOIN ranked was

@@ -912,18 +912,29 @@ def cmd_rescore(args: argparse.Namespace) -> None:
 
 
 def cmd_history(args: argparse.Namespace) -> None:
+    """One entity's score trajectory — the same numbers `ledger` reports.
+
+    The trajectory has two writers (the engine prices every campaign, the ledger
+    records every node) and this reads both through the ledger, so the two
+    commands cannot disagree about a firm's history.
+    """
+    from .ledger import Ledger
+
     store = _store(args)
-    rows = store.get_entity_history(args.entity)
+    rounds = Ledger(store).scores(args.entity)
     if args.json:
-        _emit({"entity": args.entity, "rounds": rows}, True, "")
+        _emit({"entity": args.entity, "rounds": rounds}, True, "")
         return
-    if not rows:
+    if not rounds:
         print(f"No score history for entity '{args.entity}'.")
         return
-    print(f"Score trajectory for '{args.entity}' ({len(rows)} rounds):")
-    for row in rows:
-        parent = f" (child of {row['parent_run_id']})" if row.get("parent_run_id") else ""
-        print(f"  {row['created_at']}  run={row['run_id']} item={row['item_id']} score={row['score']}{parent}")
+    print(f"Score trajectory for '{args.entity}' ({len(rounds)} rounds):")
+    for row in rounds:
+        where = row.get("node_id") or "run"
+        print(
+            f"  {row['at']}  {where}={row['run_id']}  score={row['score']}"
+            + (f"  tier={row['tier']}" if row.get("tier") else "")
+        )
 
 
 def cmd_calibrate(args: argparse.Namespace) -> None:

@@ -387,3 +387,42 @@ def test_scoring_nobody_says_so_instead_of_running_a_campaign(tmp_path, monkeypa
     assert "eliminated every candidate" in scored["skipped"]
     assert calls == [], "no campaign is built for a population of nobody"
     assert RungTables(_store(tmp_path)).rows("f1", "s-score") == []
+
+
+def test_one_trajectory_from_both_records(tmp_path):
+    """The engine prices campaigns; the ledger records nodes. One reader, both."""
+    from argparse import Namespace
+
+    from harness_fleet import cli
+
+    store = _store(tmp_path)
+    ledger = Ledger(store)
+    # A node's judgement, long ago.
+    ledger.record([_row("acme.co.uk", "qualified", score=87.5, tier="tier_2")],
+                  dag_id="run-2", node_id="s-score", at="2020-01-01T00:00:00+00:00")
+    # And a campaign run directly, which only the engine records — its own clock,
+    # so the trajectory is ordered by when each number was produced.
+    store.record_score_history("direct-run", "acme.co.uk", "acme.co.uk", 55.0)
+
+    scores = ledger.scores("acme.co.uk")
+    assert [row["score"] for row in scores] == [87.5, 55.0], "both doors are in the trajectory"
+    assert scores[0]["tier"] == "tier_2" and scores[0]["node_id"] == "s-score"
+    assert scores[1]["run_id"] == "direct-run"
+
+    # And both commands report the same numbers, because they read the same rows.
+    cli.cmd_history(Namespace(db=str(tmp_path / "t.db"), json=True, entity="acme.co.uk"))
+    import contextlib
+    import io
+
+    buffer = io.StringIO()
+    with contextlib.redirect_stdout(buffer):
+        cli.cmd_history(Namespace(db=str(tmp_path / "t.db"), json=False, entity="acme.co.uk"))
+    assert "87.5" in buffer.getvalue() and "55.0" in buffer.getvalue()
+
+
+def test_movers_counts_a_movement_the_engine_recorded(tmp_path):
+    store = _store(tmp_path)
+    store.record_score_history("run-a", "acme.co.uk", "acme.co.uk", 40.0)
+    store.record_score_history("run-b", "acme.co.uk", "acme.co.uk", 70.0)
+    movers = Ledger(store).movers()
+    assert movers and movers[0]["delta"] == 30.0
