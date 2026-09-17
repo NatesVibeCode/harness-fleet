@@ -1032,7 +1032,9 @@ class TaskRegistrationResult(ClosedModel):
 
 
 class ProfileResult(ClosedModel):
-    profile_kind: Literal["ideal_company", "ideal_partner", "ideal_employer"]
+    #: A slug, not an enumeration: the objects a product may be about are
+    #: registered, never listed here.
+    profile_kind: str = Field(pattern=r"^[a-z][a-z0-9_]{1,63}$")
     revision: str = Field(pattern=r"^[0-9a-f]{64}$")
     profile: dict[str, JsonValue]
 

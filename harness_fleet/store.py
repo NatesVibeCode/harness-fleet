@@ -13,6 +13,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .profiles import KIND as PROFILE_KIND_SLUG
+from .profiles import model_for as profile_model
 from .models import (
     ID_PATTERN,
     BatchStatusCounts,
@@ -36,10 +38,10 @@ SCHEMA_SQL = SCHEMA_PATH.read_text(encoding="utf-8")
 MIGRATION_002_PATH = Path(__file__).resolve().parent / "migrations" / "002_intelligence_and_policy.sql"
 MIGRATION_003_PATH = Path(__file__).resolve().parent / "migrations" / "003_profiles.sql"
 MIGRATION_004_PATH = Path(__file__).resolve().parent / "migrations" / "004_studio_settings.sql"
-#: Widens `profile_kind` on databases built before a partner profile had a kind
-#: of its own. SQLite cannot alter a CHECK, so this rebuilds and carries rows;
-#: migrate() applies it only when the live DDL predates the widening.
-MIGRATION_005_PATH = Path(__file__).resolve().parent / "migrations" / "005_profile_kinds.sql"
+#: Opens `profile_kind` on databases built while it was an enumerated CHECK.
+#: SQLite cannot alter a CHECK, so this rebuilds and carries rows; migrate()
+#: applies it only when the live DDL still carries one.
+MIGRATION_005_PATH = Path(__file__).resolve().parent / "migrations" / "005_open_profile_kinds.sql"
 
 # Tables added after the numbered migrations were frozen. They are defined here
 # rather than inline in migrate() so that migrate() and
@@ -217,21 +219,16 @@ class _StreamingRunWriter:
         return False
 
 
-#: The onboarding documents the store keeps, one active revision per kind. Every
-#: kind is first-class: a partner profile is stored as a partner profile rather
-#: than flattened into an ICP, so the fields its own lane's questions need —
-#: the target ecosystem, the service models, the delivery roles — survive the
-#: round trip. A kind is what a lane points at, not a filename.
-PROFILE_KINDS = ("ideal_company", "ideal_partner", "ideal_employer")
-
-
 def check_profile_kind(kind: str) -> str:
-    """The kind, or the error naming the kinds that exist."""
-    if kind not in PROFILE_KINDS:
-        raise ValueError(
-            f"unsupported profile kind: {kind} (have: {', '.join(PROFILE_KINDS)})"
-        )
-    return kind
+    """A kind is a slug. That is the only thing the engine may assume about it.
+
+    Membership of a shipped list is deliberately *not* checked: a new object is
+    registered, not enumerated here, and a database written by a build that knew
+    a kind this one does not must still open.
+    """
+    if not PROFILE_KIND_SLUG.fullmatch(str(kind or "")):
+        raise ValueError(f"profile kind {kind!r} must be a slug (a-z, 0-9, _)")
+    return str(kind)
 
 
 class HarnessStore:
@@ -273,18 +270,16 @@ class HarnessStore:
                 connection.executescript(MIGRATION_003_PATH.read_text(encoding="utf-8"))
             if MIGRATION_004_PATH.is_file():
                 connection.executescript(MIGRATION_004_PATH.read_text(encoding="utf-8"))
-            # Widen `profile_kind` so a partner profile is stored as itself. The
-            # live DDL says which kinds the table accepts, so it decides whether
-            # the rebuild is owed: a database built from the widened 003 already
-            # names `ideal_partner` and skips this entirely, which keeps the
-            # rewrite off the path of every command.
+            # Open `profile_kind` where it was enumerated. The live DDL says
+            # whether a CHECK is still there, so it decides whether the rebuild
+            # is owed: a database built from the open 003 skips this entirely,
+            # which keeps the rewrite off the path of every command.
             profile_ddl_row = connection.execute(
                 "SELECT sql FROM sqlite_master WHERE type='table' AND name='profile_revisions'"
             ).fetchone()
             profile_ddl = str(profile_ddl_row["sql"] or "") if profile_ddl_row else ""
             if (
-                profile_ddl
-                and "ideal_partner" not in profile_ddl
+                "check(profile_kind" in profile_ddl.lower()
                 and MIGRATION_005_PATH.is_file()
             ):
                 connection.executescript(MIGRATION_005_PATH.read_text(encoding="utf-8"))
@@ -611,7 +606,7 @@ class HarnessStore:
 
     def save_profile(self, profile: Any, profile_kind: str | None = None) -> str:
         """Persist an immutable profile revision and make it active."""
-        kind = profile_kind or getattr(profile, "profile_kind", "ideal_company")
+        kind = profile_kind or getattr(profile, "profile_kind", "")
         check_profile_kind(kind)
         payload = profile.model_dump(mode="json", by_alias=True)
         encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
@@ -667,19 +662,17 @@ class HarnessStore:
     def _profile_from_row(row: Any, profile_kind: str) -> Any | None:
         if row is None:
             return None
-        # Each kind loads back as its own contract, so a caller that stored an
-        # IPP reads IPP fields rather than a flattened ICP.
-        if profile_kind == "ideal_company":
-            from .profile import IdealCompanyProfile
-
-            return IdealCompanyProfile.model_validate(json.loads(row["profile_json"]))
-        if profile_kind == "ideal_partner":
-            from .partner import IdealPartnerProfile
-
-            return IdealPartnerProfile.model_validate(json.loads(row["profile_json"]))
-        from career_fleet.profile import IdealEmployerProfile
-
-        return IdealEmployerProfile.model_validate(json.loads(row["profile_json"]))
+        # The registry decodes it, so a stored partner profile reads back as a
+        # partner profile and a kind this install does not know reads back as
+        # the mapping it was — data, not an error.
+        written = json.loads(row["profile_json"])
+        model = profile_model(profile_kind)
+        if model is None:
+            return written
+        try:
+            return model.model_validate(written)
+        except Exception:
+            return written
 
     def active_profile_revision_id(self, profile_kind: str = "ideal_company") -> str | None:
         """Return the active profile revision selected for a profile kind."""

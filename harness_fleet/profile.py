@@ -19,6 +19,9 @@ class IdealCompanyProfile(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     profile_kind: ClassVar[str] = "ideal_company"
+    #: The filename this document is authored in, declared by the contract so
+    #: the engine never keeps a kind-to-filename map of its own.
+    authoring_file: ClassVar[str] = "ideal_company_profile.json"
 
     profile_name: str = Field(default="My Ideal Company Profile")
     version: str = Field(default="1.0.0")

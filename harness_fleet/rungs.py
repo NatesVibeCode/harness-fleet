@@ -648,18 +648,24 @@ def resolved_gate_profile(
     root = Path(workspace).expanduser()
     lane_gates = GateProfile.from_object(lane.funnel.gate_profile() if lane else None)
     explicit = Path(profile_path).expanduser() if profile_path else None
+    # The lane names its onboarding kind, and the registry says which document
+    # that kind is authored in — the engine keeps no filename of its own. The
+    # `profiles/` form stays as a second place an operator may keep it.
+    from .onboarding import load_document
+    from .profiles import authoring_file as kind_authoring_file
+
+    kind = str(getattr(lane, "onboarding_profile", "") or "")
+    named = kind_authoring_file(kind) if kind else ""
     candidates = [explicit] if explicit else [
-        root / "ideal_partner_profile.json",
-        root / "profiles" / "ideal_partner_profile.json",
+        path
+        for base in (root, root / "profiles")
+        for path in ([base / named] if named else [])
     ]
     for path in candidates:
         if path is None or not path.is_file():
             continue
-        try:
-            from .partner import IdealPartnerProfile
-
-            profile = IdealPartnerProfile.load(path)
-        except Exception:
+        profile = load_document(path, kind)
+        if profile is None:
             continue
         return lane_gates.intersect(GateProfile.from_object(profile))
     if explicit is not None:

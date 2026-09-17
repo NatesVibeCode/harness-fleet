@@ -549,6 +549,10 @@ def audit_database(db: str | Path) -> dict[str, Any]:
 
     out: dict[str, Any] = {
         "database": str(db_path),
+        "exists": False,
+        "runs": 0,
+        "rung_rows": 0,
+        "unique_entities": 0,
         "lanes": {},
     }
 
@@ -568,6 +572,25 @@ def audit_database(db: str | Path) -> dict[str, Any]:
         if "rung_rows" not in tables:
             out["error"] = "no rung_rows table in database"
             return out
+
+        # The totals the human-readable report leads with. They live here rather
+        # than in the formatter because the formatter has no database to ask: it
+        # read keys this function never produced, so it reported "no records"
+        # for every database — including ones full of rows — and the text half
+        # of this command was unreachable.
+        out["exists"] = True
+        out["rung_rows"] = int(
+            conn.execute("SELECT count(*) FROM rung_rows").fetchone()[0]
+        )
+        out["unique_entities"] = int(
+            conn.execute("SELECT count(DISTINCT item_id) FROM rung_rows").fetchone()[0]
+        )
+        if "runs" in tables:
+            out["runs"] = int(conn.execute("SELECT count(*) FROM runs").fetchone()[0])
+        else:
+            out["runs"] = int(
+                conn.execute("SELECT count(DISTINCT dag_id) FROM rung_rows").fetchone()[0]
+            )
 
         nodes_by_lane: dict[str, dict[str, dict[str, Any]]] = defaultdict(lambda: defaultdict(lambda: {
             "rows": 0, "outcomes": defaultdict(int), "advanced": 0, "eliminated": 0,

@@ -31,6 +31,7 @@ class IdealPartnerProfile(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     profile_kind: ClassVar[str] = "ideal_partner"
+    authoring_file: ClassVar[str] = "ideal_partner_profile.json"
 
     profile_name: str = Field(default="My Ideal Partner Profile")
     version: str = Field(default="1.0.0")

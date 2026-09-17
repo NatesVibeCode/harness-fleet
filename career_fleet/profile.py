@@ -61,6 +61,7 @@ class IdealEmployerProfile(BaseModel):
     #: "ideal_company" and filed an employer profile under the account kind,
     #: which is how two different onboardings ended up sharing one active slot.
     profile_kind: ClassVar[str] = "ideal_employer"
+    authoring_file: ClassVar[str] = "profile.json"
 
     profile_name: str = Field(
         default="My Career Fit Profile",

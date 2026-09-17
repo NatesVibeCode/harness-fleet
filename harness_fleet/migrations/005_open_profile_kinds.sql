@@ -1,16 +1,14 @@
--- Widen the profile-kind constraint for databases created before a partner
--- profile had a kind of its own.
+-- Open `profile_kind` on databases built while it was an enumerated CHECK.
 --
 -- SQLite cannot alter a CHECK constraint, so the tables are rebuilt and their
--- rows carried across. The rebuild is applied only when the existing DDL does
--- not already name `ideal_partner` (see HarnessStore.migrate), so a fresh
--- database — built from the widened 003 — never pays for it and no migration
--- rewrites the tables on every command.
+-- rows carried across. Applied only when the live DDL still carries a CHECK on
+-- `profile_kind` (see HarnessStore.migrate), so a fresh database — built from the
+-- open 003 — never pays for it and no command rewrites the tables.
 PRAGMA foreign_keys=OFF;
 
 CREATE TABLE IF NOT EXISTS profile_revisions_v2 (
     revision_id TEXT PRIMARY KEY,
-    profile_kind TEXT NOT NULL CHECK(profile_kind IN ('ideal_company', 'ideal_partner', 'ideal_employer')),
+    profile_kind TEXT NOT NULL,
     profile_name TEXT NOT NULL,
     profile_version TEXT NOT NULL,
     profile_json TEXT NOT NULL,
@@ -24,7 +22,7 @@ SELECT revision_id, profile_kind, profile_name, profile_version, profile_json, c
 FROM profile_revisions;
 
 CREATE TABLE IF NOT EXISTS active_profiles_v2 (
-    profile_kind TEXT PRIMARY KEY CHECK(profile_kind IN ('ideal_company', 'ideal_partner', 'ideal_employer')),
+    profile_kind TEXT PRIMARY KEY,
     revision_id TEXT NOT NULL REFERENCES profile_revisions(revision_id),
     updated_at TEXT NOT NULL
 );

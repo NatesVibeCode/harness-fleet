@@ -39,15 +39,6 @@ AXES = ("tech", "vertical", "role", "pain")
 #: A template placeholder: ``{tech}``, ``{vertical}``, ``{role}``, ``{pain}``.
 PLACEHOLDER = re.compile(r"\{([a-z][a-z0-9_]*)\}")
 
-#: The authoring form each profile kind is written in, before it becomes a
-#: revision in the store. The JSON is what a person edits; the revision is what
-#: a run reads and what a run can be traced back to.
-AUTHORING_FORM = {
-    "ideal_company": "ideal_company_profile.json",
-    "ideal_partner": "ideal_partner_profile.json",
-    "ideal_employer": "profile.json",
-}
-
 
 def profile_query_terms(profile: Any) -> dict[str, list[str]]:
     """The axis values an onboarding profile supplies.
@@ -145,73 +136,17 @@ def lane_queries(lane: Any, profile: Any, *, cap: int = 0) -> list[str]:
     return queries[:limit] if limit else queries
 
 
-def _load_any(path: Path) -> Any:
-    """The onboarding document at ``path``, whichever kind it is.
+def load_document(path: Path | str, kind: str = "") -> Any:
+    """The onboarding document at ``path``, decoded by contract.
 
-    Every profile contract forbids unknown fields, so trying each in turn is
-    unambiguous: an IEP does not validate as an ICP, and an ICP does not
-    validate as an IPP. Career is a separate distribution, so its import is
-    guarded — a harness-only install still onboards account and partner.
+    The registry owns this, not the lane and not this module: a kind is decoded
+    by the contract registered for it, and an unregistered document reads back as
+    the mapping it is. Reaching into a fixed list of three contracts here is what
+    made a fourth object impossible.
     """
-    if not path.is_file():
-        return None
-    loaders: list[Any] = []
-    try:
-        from .partner import IdealPartnerProfile
+    from .profiles import load as load_registered
 
-        loaders.append(IdealPartnerProfile)
-    except Exception:
-        pass
-    try:
-        from .profile import IdealCompanyProfile
-
-        loaders.append(IdealCompanyProfile)
-    except Exception:
-        pass
-    try:
-        from career_fleet.profile import IdealEmployerProfile
-
-        loaders.append(IdealEmployerProfile)
-    except Exception:
-        pass
-    for model in loaders:
-        try:
-            return model.load(path)
-        except Exception:
-            continue
-    return None
-
-
-def _load_kind(path: Path, kind: str) -> Any:
-    """The document at ``path``, parsed as the contract ``kind`` names."""
-    if not path.is_file():
-        return None
-    models: dict[str, Any] = {}
-    try:
-        from .profile import IdealCompanyProfile
-
-        models["ideal_company"] = IdealCompanyProfile
-    except Exception:
-        pass
-    try:
-        from .partner import IdealPartnerProfile
-
-        models["ideal_partner"] = IdealPartnerProfile
-    except Exception:
-        pass
-    try:
-        from career_fleet.profile import IdealEmployerProfile
-
-        models["ideal_employer"] = IdealEmployerProfile
-    except Exception:
-        pass
-    model = models.get(kind)
-    if model is None:
-        return None
-    try:
-        return model.load(path)
-    except Exception:
-        return None
+    return load_registered(path, kind)
 
 
 def load_onboarding_profile(
@@ -239,7 +174,7 @@ def load_onboarding_profile(
     kind = str(getattr(lane, "onboarding_profile", "") or "").strip()
     if profile_path:
         explicit = Path(profile_path).expanduser()
-        profile = _load_any(explicit if explicit.is_absolute() else root / explicit)
+        profile = load_document(explicit if explicit.is_absolute() else root / explicit, kind)
         if profile is not None and store is not None:
             store.save_profile(profile, kind or None)
         return profile
@@ -249,8 +184,10 @@ def load_onboarding_profile(
         active = store.load_profile(kind)
         if active is not None:
             return active
-    authoring = str(AUTHORING_FORM.get(kind) or "")
-    profile = _load_kind(root / authoring, kind) if authoring else None
+    from .profiles import authoring_file as kind_authoring_file
+
+    authoring = kind_authoring_file(kind)
+    profile = load_document(root / authoring, kind) if authoring else None
     if profile is not None and store is not None:
         store.save_profile(profile, kind)
     return profile
