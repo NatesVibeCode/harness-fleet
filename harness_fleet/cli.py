@@ -3452,7 +3452,10 @@ def build_parser() -> argparse.ArgumentParser:
         "ledger", help="The running list of every entity looked at, across runs"
     )
     ledger.add_argument("--limit", type=int, default=25, help="How many to print")
-    ledger.add_argument("--outcome", help="Only entities currently at this outcome")
+    ledger.add_argument(
+        "--outcome",
+        help="Only entities at this outcome ('scored' means scored but not yet judged)",
+    )
     ledger.add_argument("--lane", help="Only entities a lane has looked at")
     ledger.add_argument("--standing", action="store_true", help="Only entities not eliminated")
     ledger.add_argument("--entity", help="One entity's whole history instead of the list")

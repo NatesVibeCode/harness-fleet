@@ -151,6 +151,13 @@ class Ledger:
                     f"SELECT * FROM {STATE_TABLE} WHERE entity=?", (entity,)
                 ).fetchone()
                 if found is None:
+                    # Same rule on the way in as on the way through: a first
+                    # record that is a walk leaves the firm unjudged, not "read".
+                    # It was the insert that kept "read" in the verdict column
+                    # after the update path stopped writing mechanics there.
+                    first_verdict = (
+                        outcome if outcome and outcome not in _MECHANICS else ""
+                    )
                     connection.execute(
                         f"INSERT INTO {STATE_TABLE} (entity, first_seen, last_seen, last_dag, "
                         "last_node, last_rung, outcome, because, gates_open, lanes, pages_seen, "
@@ -158,7 +165,8 @@ class Ledger:
                         "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                         (
                             entity, stamp, stamp, dag_id, node_id, str(row.get("rung") or ""),
-                            outcome, because, json.dumps(open_gates),
+                            first_verdict, because if first_verdict else "",
+                            json.dumps(open_gates),
                             json.dumps([lane] if lane else []), len(pages), 1, 1,
                             float(row.get("score") or 0.0), str(row.get("tier") or ""),
                             json.dumps(row.get("facts") or {}),
@@ -215,8 +223,15 @@ class Ledger:
         where: list[str] = []
         params: list[Any] = []
         if outcome:
-            where.append("outcome=?")
-            params.append(outcome)
+            # "scored" is what the list shows for a firm with a number and no
+            # ladder verdict, so it is what the filter has to mean — otherwise a
+            # reader filters by a word the command just printed at them and gets
+            # an empty list.
+            if outcome == "scored":
+                where.append("scored_at!='' AND outcome=''")
+            else:
+                where.append("outcome=?")
+                params.append(outcome)
         if lane:
             where.append("lanes LIKE ?")
             params.append(f'%"{lane}"%')

@@ -598,3 +598,33 @@ def test_the_scoring_stage_records_a_number_not_an_outcome(tmp_path):
     assert listed["outcome"] in ("", "lead", "qualified"), listed["outcome"]
     assert listed["standing"] == (listed["outcome"] or "scored")
     assert listed["score"] == 91.0 and listed["tier"] == "tier_3"
+
+
+def test_the_outcome_filter_means_what_the_list_prints(tmp_path, capsys):
+    """Filtering by a word the command shows you must not return nothing."""
+    from argparse import Namespace
+
+    from harness_fleet import cli
+
+    store = _store(tmp_path)
+    ledger = Ledger(store)
+    ledger.record([_row("walked.example", "read")], dag_id="d", node_id="r1-surface")
+    ledger.record([_row("walked.example", "", score=64.0)],
+                  dag_id="d", node_id="s-score", at="2026-01-01T00:00:00+00:00")
+    ledger.record([_row("judged.example", "qualified", score=88.0)],
+                  dag_id="d", node_id="s-score", at="2026-01-01T00:00:00+00:00")
+
+    scored = ledger.entities(outcome="scored")
+    assert [row["entity"] for row in scored] == ["walked.example"], (
+        "a firm with a number and no verdict is what the list calls scored"
+    )
+    assert [row["entity"] for row in ledger.entities(outcome="qualified")] == [
+        "judged.example"
+    ]
+
+    cli.cmd_ledger(Namespace(
+        db=str(tmp_path / "t.db"), json=True, limit=10, outcome="scored", lane=None,
+        standing=False, entity=None, csv=None, trend=False,
+    ))
+    payload = json.loads(capsys.readouterr().out)
+    assert [row["entity"] for row in payload["entities"]] == ["walked.example"]
