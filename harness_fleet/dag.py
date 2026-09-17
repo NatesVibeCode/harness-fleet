@@ -20,13 +20,12 @@ from pydantic import Field, model_validator
 from .calibrate import PARAM_KINDS, collect_observations, fit_calibration
 from .catalog import RouteCatalog
 from .engine import Engine
-from .enrich import enrich_entity
 from .export import (
     _filter_and_sort_records,
     export_clean_packet,
     verified_records_from_snapshot,
 )
-from .gates import DEFAULT_LADDER, FETCHED, SNIPPET, LadderRung
+from .gates import DEFAULT_LADDER, FETCHED, SNIPPET, LadderRung, _evaluable_gates
 from .input_data import load_input_items
 from .models import CalibrationReport, ClaimFilter, ClosedModel, RoutePolicy, SortSpec
 from .profile import IdealCompanyProfile
@@ -201,6 +200,10 @@ class GateNode(ClosedModel):
     lane: str
     rung: str
     from_run: str | None = None
+    #: The captured items a research run is holding when the first rung runs —
+    #: a path, because a funnel that starts from a file can be re-run, read and
+    #: argued with, and the alternative is a stage that only exists in memory.
+    from_items: str | None = None
     from_gate: str | None = None
     from_retrieve: str | None = None
     #: An explicit grade for what this gate is reading. Empty infers it: text
@@ -211,10 +214,10 @@ class GateNode(ClosedModel):
 
     @model_validator(mode="after")
     def check_source(self) -> GateNode:
-        sources = [self.from_run, self.from_gate, self.from_retrieve]
+        sources = [self.from_run, self.from_items, self.from_gate, self.from_retrieve]
         if len([source for source in sources if source]) != 1:
             raise DagError(
-                f"gate node '{self.id}' needs exactly one of 'from_run', "
+                f"gate node '{self.id}' needs exactly one of 'from_run', 'from_items', "
                 "'from_gate' or 'from_retrieve'"
             )
         return self
@@ -235,10 +238,22 @@ class RetrieveNode(ClosedModel):
     id: str
     lane: str
     rung: str
-    from_gate: str
+    from_gate: str | None = None
+    from_items: str | None = None
     max_pages: int = 8
     per_surface: int = 3
-    pace: float = 0.0
+    timeout: float = 20.0
+    delay: float = 1.0
+    respect_robots: bool = True
+    vendor_stories: bool = True
+
+    @model_validator(mode="after")
+    def check_source(self) -> RetrieveNode:
+        if (self.from_gate is None) == (self.from_items is None):
+            raise DagError(
+                f"retrieve node '{self.id}' needs exactly one of 'from_gate' or 'from_items'"
+            )
+        return self
 
 
 DagNode = (
@@ -312,6 +327,14 @@ class DagSpec(ClosedModel):
                 deps[node.id] = set()
             elif isinstance(node, GateNode):
                 refs: list[tuple[str, tuple[type, ...]]] = []
+                if node.from_items:
+                    # Captured items are a file the run wrote before the first
+                    # rung: no node produces them, so nothing to depend on.
+                    items_path = Path(node.from_items)
+                    if not items_path.is_file():
+                        raise DagError(
+                            f"node '{node.id}' reads '{node.from_items}', which is not a file"
+                        )
                 if node.from_run:
                     # A gate reads either a run node in this graph or an
                     # existing run by id, the way a review node does: a ladder
@@ -336,6 +359,9 @@ class DagSpec(ClosedModel):
                 deps[node.id] = {ref for ref, _ in refs}
             elif isinstance(node, RetrieveNode):
                 ref = node.from_gate
+                if ref is None:
+                    deps[node.id] = set()
+                    continue
                 target = by_id.get(ref)
                 if target is None:
                     raise DagError(f"node '{node.id}' references unknown node '{ref}'")
@@ -731,10 +757,11 @@ class _Carried:
     are in the table plus the text file the table points at.
     """
 
-    __slots__ = ("item_id", "text", "source_uri", "metadata")
+    __slots__ = ("item_id", "candidate", "text", "source_uri", "metadata")
 
     def __init__(self, item_id: str, candidate: str, text: str, source_uri: str = "") -> None:
         self.item_id = item_id
+        self.candidate = candidate
         self.text = text
         self.source_uri = source_uri
         self.metadata = {"entity": candidate, "carried_from": source_uri}
@@ -773,7 +800,27 @@ def _execute_gate_node(
     evidence = node.evidence or SNIPPET
     text_paths: dict[str, str] = {}
     upstream_table: str = ""
-    if node.from_run:
+    if node.from_items:
+        items_path = Path(node.from_items)
+        if not items_path.is_file():
+            items_path = root / node.from_items
+        if not items_path.is_file():
+            raise DagError(f"gate node '{node.id}' reads '{node.from_items}', which is not a file")
+        for index, item in enumerate(load_input_items(items_path)):
+            item_id = str(getattr(item, "item_id", "") or "")
+            metadata = getattr(item, "metadata", None)
+            entity = ""
+            if isinstance(metadata, dict):
+                entity = str(metadata.get("entity") or metadata.get("domain") or "")
+            candidate = entity.strip() or item_id
+            text = record_text(item)
+            path = _text_file(directory, index, candidate)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text, encoding="utf-8")
+            text_paths[item_id] = str(path)
+            carried.append(_Carried(item_id, candidate, text,
+                                    str(getattr(item, "source_uri", "") or "")))
+    elif node.from_run:
         saved_node = (state.get("nodes") or {}).get(node.from_run)
         run_id = str(
             (saved_node or {}).get("run_id") if isinstance(saved_node, dict) else ""
@@ -858,6 +905,13 @@ def _execute_gate_node(
     path = table_path(directory)
     write_table(path, rows)
     counts = count_rows(rows)
+    live = sorted(_evaluable_gates(profile))
+    note = ""
+    if live == ["kind"] or not live:
+        note = (
+            "running on the kind question alone: no profile states a headcount, a "
+            "territory or an industry, so nothing else can rule a candidate out"
+        )
     passing = surviving_ids([row for row in rows if row["advances"]]) if following else []
     return {
         "kind": "gate",
@@ -870,6 +924,8 @@ def _execute_gate_node(
         "table": str(path),
         "next_rung": following.name if following else "",
         "counts": counts,
+        "gates_live": live,
+        "note": note,
         "ids": passing,
         "count": len(passing),
         "gated": len(rows),
@@ -892,59 +948,112 @@ def _execute_retrieve_node(
     state: dict[str, Any],
 ) -> dict[str, Any]:
     """Spend one rung's page visits and write down what came back."""
+    from .enrich import walk_entities
+
     lane = _lane_for(node.lane, root)
     rung, _ladder = _rung_of(lane, node.rung)
-    source_state = (state.get("nodes") or {}).get(node.from_gate) or {}
-    upstream_table = str(source_state.get("table") or "")
-    if not upstream_table or not Path(upstream_table).is_file():
-        raise DagError(
-            f"retrieve node '{node.id}' reads gate '{node.from_gate}', which has no table"
-        )
-    passing = {str(item) for item in source_state.get("ids") or []}
-    rows: list[dict[str, Any]] = []
+    wanted: list[Any] = []
+    if node.from_items:
+        # No gates asked for, so every captured candidate is walked.
+        items_path = Path(node.from_items)
+        if not items_path.is_file():
+            items_path = root / node.from_items
+        if not items_path.is_file():
+            raise DagError(
+                f"retrieve node '{node.id}' reads '{node.from_items}', which is not a file"
+            )
+        for item in load_input_items(items_path):
+            metadata = getattr(item, "metadata", None)
+            entity = ""
+            if isinstance(metadata, dict):
+                entity = str(metadata.get("entity") or metadata.get("domain") or "")
+            wanted.append(_Carried(
+                item_id=str(getattr(item, "item_id", "") or ""),
+                candidate=entity.strip() or str(getattr(item, "item_id", "") or ""),
+                text=record_text(item),
+                source_uri=str(getattr(item, "source_uri", "") or ""),
+            ))
+    else:
+        source_state = (state.get("nodes") or {}).get(node.from_gate) or {}
+        upstream_table = str(source_state.get("table") or "")
+        if not upstream_table or not Path(upstream_table).is_file():
+            raise DagError(
+                f"retrieve node '{node.id}' reads gate '{node.from_gate}', which has no table"
+            )
+        passing = {str(item) for item in source_state.get("ids") or []}
+        for row in read_table(upstream_table):
+            item_id = str(row.get("item_id") or "")
+            if item_id not in passing:
+                # The rung above decided this candidate is not owed a page visit.
+                # Not reading it is the decision, so it is not in this table.
+                continue
+            wanted.append(_Carried(
+                item_id=item_id,
+                candidate=str(row.get("candidate") or item_id),
+                text=_read_text(str(row.get("text_path") or "")),
+                source_uri=str(row.get("source_uri") or ""),
+            ))
+    # The walk is the engine's: the same gap-driven, per-host-paced walk every
+    # research run does, reading exactly the surfaces this rung declared.
+    extra, walk_report = walk_entities(
+        wanted,
+        lane,
+        per_surface=node.per_surface,
+        max_pages=node.max_pages,
+        timeout=node.timeout,
+        delay=node.delay,
+        respect_robots=node.respect_robots,
+        vendor_stories=node.vendor_stories,
+        surface_order=list(rung.surfaces),
+    )
+    by_entity: dict[str, list[Any]] = {}
+    for item in extra:
+        by_entity.setdefault(str(getattr(item, "item_id", "") or ""), []).append(item)
+    walked = {str(entry.get("entity") or ""): entry for entry in walk_report}
+
     directory = dag_dir / node.id
     directory.mkdir(parents=True, exist_ok=True)
-    for index, row in enumerate(read_table(upstream_table)):
-        item_id = str(row.get("item_id") or "")
-        if item_id not in passing:
-            # The rung above decided this candidate is not owed a page visit.
-            # Not reading it is the decision, so it is not in this table.
-            continue
-        candidate = str(row.get("candidate") or item_id)
-        records, walk = enrich_entity(
-            candidate,
-            kinds=lane.require_kinds,
-            per_surface=node.per_surface,
-            max_pages=node.max_pages,
-            pace=node.pace,
-            surface_order=rung.surfaces,
+    rows: list[dict[str, Any]] = []
+    for index, candidate_item in enumerate(wanted):
+        candidate = candidate_item.candidate
+        entry = walked.get(candidate_item.item_id, {})
+        records = by_entity.get(candidate_item.item_id, [])
+        if not entry:
+            outcome, because = "complete", "nothing this rung's evidence could add was missing"
+        elif records:
+            outcome, because = "read", ""
+        else:
+            outcome, because = "nothing", f"no page on {', '.join(rung.surfaces)} named them"
+        text = "\n\n".join(
+            str(getattr(record, "text", "") or "") for record in records
         )
-        text = "\n\n".join(record_text(record) for record in records if record_text(record))
         path = _text_file(directory, index, candidate)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding="utf-8")
-        rows.append(
-            {
-                "item_id": item_id,
-                "candidate": candidate,
-                "rung": rung.name,
-                "evidence": FETCHED,
-                "outcome": "read" if records else "nothing",
-                "earned": "",
-                "because": "" if records else f"no page on {', '.join(rung.surfaces)}",
-                "gates": [],
-                "surfaces": walk.by_surface,
-                "pages": [record.source_uri for record in records if getattr(record, "source_uri", None)],
-                "text_path": str(path),
-                "source_uri": str(row.get("source_uri") or ""),
-                "visited": walk.visited,
-                "kept": walk.kept,
-                "skipped": walk.skipped,
-                "advances": True,
-            }
-        )
+        rows.append({
+            "item_id": candidate_item.item_id,
+            "candidate": candidate,
+            "rung": rung.name,
+            "evidence": FETCHED,
+            "outcome": outcome,
+            "earned": "",
+            "because": because,
+            "gates": [],
+            "surfaces": entry.get("by_surface") or {},
+            "pages": [str(getattr(record, "source_uri", "") or "") for record in records],
+            "text_path": str(path),
+            "source_uri": candidate_item.source_uri,
+            "visited": entry.get("visited", 0),
+            "kept": entry.get("kept", 0),
+            "skipped": entry.get("skipped") or [],
+            "advances": True,
+        })
     path = table_path(directory)
     write_table(path, rows)
+    items_path = directory / "items.jsonl"
+    with items_path.open("w", encoding="utf-8") as handle:
+        for item in extra:
+            handle.write(json.dumps(item.model_dump(mode="json", by_alias=True)) + "\n")
     return {
         "kind": "retrieve",
         "lane": node.lane,
@@ -952,9 +1061,11 @@ def _execute_retrieve_node(
         "surfaces": list(rung.surfaces),
         "from_gate": node.from_gate,
         "table": str(path),
+        "items": str(items_path),
         "count": len(rows),
         "read": sum(1 for row in rows if row["outcome"] == "read"),
         "empty": sum(1 for row in rows if row["outcome"] == "nothing"),
+        "skipped": sum(1 for row in rows if row["outcome"] == "complete"),
         "visited": sum(int(row["visited"]) for row in rows),
         "ids": [str(row["item_id"]) for row in rows],
     }

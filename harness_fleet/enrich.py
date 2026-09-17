@@ -1171,3 +1171,131 @@ def enrich_entity(
     )
     report.kept = len(attributed) + len(addressed)
     return attributed + addressed, report
+
+
+def evidence_gaps(text: str, uri: str, bar: Sequence[str]) -> list[str]:
+    """Which of the bar's evidence kinds this entity's evidence does not carry.
+
+    One reader for the question, so the walk and the report of what the walk was
+    missing cannot disagree: ``evidence.coverage`` is what says whether a text
+    evidences a kind, and an entity short of three kinds is walked for those
+    three rather than for everything.
+    """
+    from .evidence import coverage
+
+    if not bar:
+        return []
+    kinds = coverage(text or "", uri or "")
+    return [kind for kind in bar if not kinds.get(kind)]
+
+
+def walk_entities(
+    entities: Sequence[Any],
+    lane: Any = None,
+    *,
+    per_surface: int = 3,
+    max_pages: int = 8,
+    max_entities: int = 10_000,
+    timeout: float = 20.0,
+    delay: float = 1.0,
+    respect_robots: bool = True,
+    vendor_stories: bool = True,
+    surface_order: Sequence[str] | None = None,
+    workers: int = 8,
+) -> tuple[list[Any], list[dict[str, Any]]]:
+    """Go to each entity's own surfaces for the evidence its bar is missing.
+
+    Discovery finds pages *about* an entity. The bar asks for evidence a page
+    about somebody rarely carries — the stack they actually deliver, the people
+    they are hiring, what they charge — because that lives on their own site,
+    their hiring board and the stories their vendors publish. This is the stage
+    that stops searching and goes to look, and it is the same walk for every
+    lane: only the missing kinds and the surfaces differ.
+
+    ``surface_order`` is the ladder's own order when a caller has one: a rung
+    names the pages it may read, and passing that through means the walk and the
+    funnel agree about what a candidate is entitled to. Entities are independent
+    of each other, so they walk concurrently; the shared hosts are paced per host
+    inside the walk, so breadth does not cost politeness.
+
+    Returns the extra items to bundle, and a report of what each walk did.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    from . import contracts
+    from .models import InputItem
+
+    bar: tuple[str, ...] = ()
+    if lane is not None:
+        bar = tuple(lane.require_kinds) or tuple(contracts.TIER_MINIMUMS.get(lane.tier or "", ()))
+
+    # Enumerate the vendor story indexes once for the whole run. Doing it inside
+    # each entity's walk cost a dozen requests per entity and made this the
+    # slowest stage of a run.
+    shared_story_urls: list[str] = []
+    if vendor_stories:
+        try:
+            shared_story_urls, _skipped = vendor_story_urls(
+                max_per_vendor=40, timeout=timeout, respect_robots=respect_robots,
+            )
+        except Exception:
+            shared_story_urls = []
+
+    if surface_order is None:
+        surface_order = (
+            list(dict.fromkeys(
+                surface for rung in lane.funnel.rungs() for surface in rung.surfaces
+            ))
+            if lane is not None else []
+        )
+
+    extra: list[Any] = []
+    report: list[dict[str, Any]] = []
+    targets: list[Any] = []
+    for dossier in list(entities)[: max(1, max_entities)]:
+        entity = str(getattr(dossier, "item_id", "") or "")
+        missing = evidence_gaps(
+            getattr(dossier, "text", "") or "", getattr(dossier, "source_uri", "") or "", bar
+        )
+        if not missing:
+            continue
+        targets.append((entity, missing))
+
+    def walk_one(target: tuple[str, list[str]]) -> tuple[str, list[str], list[Any], Any]:
+        entity, missing = target
+        records, walk = enrich_entity(
+            entity,
+            kinds=missing,
+            per_surface=per_surface,
+            max_pages=max_pages,
+            timeout=timeout,
+            delay=delay,
+            respect_robots=respect_robots,
+            vendor_stories=vendor_stories,
+            story_urls=shared_story_urls,
+            pace=max(0.0, delay),
+            surface_order=list(surface_order),
+        )
+        return entity, missing, records, walk
+
+    workers = max(1, min(workers, len(targets))) if targets else 1
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        walked = list(pool.map(walk_one, targets))
+
+    for entity, missing, records, walk in walked:
+        summary = walk.as_dict()
+        summary["missing"] = missing
+        report.append(summary)
+        for record in records:
+            metadata = dict(getattr(record, "metadata", None) or {})
+            # The lane report attributes yield by surface, so carry the surface
+            # the walk tagged rather than one flat "enrichment" bucket.
+            metadata.setdefault("backend", str(metadata.get("enrich_surface") or "enrich"))
+            extra.append(InputItem(
+                item_id=entity,
+                text=str(getattr(record, "text", "") or ""),
+                title=getattr(record, "title", None),
+                source_uri=getattr(record, "source_uri", None),
+                metadata=metadata,
+            ))
+    return extra, report

@@ -11,7 +11,6 @@ import sys
 import time
 import uuid
 from collections.abc import Iterable, Sequence
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -1746,14 +1745,9 @@ def _skip_reasons_note(skipped: Any, limit: int = 3) -> str:
 
 
 def _gaps_for_dossier(text: str, uri: str, bar: tuple[str, ...]) -> list[str]:
-    """Which of the lane's required kinds this entity's evidence does not carry."""
-    from .evidence import coverage
+    from .enrich import evidence_gaps
 
-    if not bar:
-        return []
-    kinds = coverage(text or "", uri or "")
-    return [kind for kind in bar if not kinds.get(kind)]
-
+    return evidence_gaps(text, uri, bar)
 
 def _enrich_entities(
     dossiers: list[Any],
@@ -1766,105 +1760,24 @@ def _enrich_entities(
     respect_robots: bool,
     vendor_stories: bool = True,
 ) -> tuple[list[Any], list[dict[str, Any]]]:
-    """Go to each entity's own surfaces for the evidence the lane's bar wants.
+    """The walk, in the engine where the DAG's retrieve nodes can reach it.
 
-    Discovery finds pages *about* an entity. The bar asks for evidence a page
-    about somebody rarely carries — the stack they actually deliver, the people
-    they are hiring, what they charge — because that lives on their own site,
-    their hiring board and the stories their vendors publish. This is the stage
-    that stops searching and goes to look, and it is the same walk for every
-    lane: only the missing kinds differ.
-
-    Returns the extra items to bundle, and a report of what each walk did.
+    This used to live here, which is why the funnel stage could not become a
+    node: the walk was a private function of the command that called it. It is
+    the engine's stage now — ``enrich.walk_entities`` — and the research command
+    reaches it the same way the graph does.
     """
-    from . import contracts
-    from .enrich import enrich_entity
-    from .models import InputItem
+    from .enrich import walk_entities
 
-    bar: tuple[str, ...] = ()
-    if lane is not None:
-        bar = tuple(lane.require_kinds) or tuple(contracts.TIER_MINIMUMS.get(lane.tier or "", ()))
-
-    # Enumerate the vendor story indexes once for the whole run. Doing it inside
-    # each entity's walk cost a dozen requests per entity and made this the
-    # slowest stage of a run.
-    from .enrich import vendor_story_urls
-
-    shared_story_urls: list[str] = []
-    if vendor_stories:
-        try:
-            shared_story_urls, _skipped = vendor_story_urls(
-                max_per_vendor=40, timeout=timeout, respect_robots=respect_robots,
-            )
-        except Exception:
-            shared_story_urls = []
-
-    extra: list[Any] = []
-    report: list[dict[str, Any]] = []
-    targets: list[Any] = []
-    for dossier in dossiers[: max(1, max_entities)]:
-        entity = str(getattr(dossier, "item_id", "") or "")
-        missing = _gaps_for_dossier(
-            getattr(dossier, "text", "") or "", getattr(dossier, "source_uri", "") or "", bar
-        )
-        if not missing:
-            continue
-        targets.append((entity, missing))
-
-    # The lane's ladder names the pages the walk should read, in rung order —
-    # landing page first, then the cheap-qualifier pages, then the deep read.
-    # The walk reads whatever names the plan knows; a lane without a ladder
-    # walks exactly as before.
-    surface_order = (
-        list(dict.fromkeys(
-            surface for rung in lane.funnel.rungs() for surface in rung.surfaces
-        ))
-        if lane is not None else []
+    return walk_entities(
+        dossiers, lane,
+        per_surface=per_surface,
+        max_entities=max_entities,
+        timeout=timeout,
+        delay=delay,
+        respect_robots=respect_robots,
+        vendor_stories=vendor_stories,
     )
-
-    def walk_one(target: tuple[str, list[str]]) -> tuple[str, list[str], list[Any], Any]:
-        entity, missing = target
-        records, walk = enrich_entity(
-            entity,
-            kinds=missing,
-            per_surface=per_surface,
-            timeout=timeout,
-            delay=delay,
-            respect_robots=respect_robots,
-            vendor_stories=vendor_stories,
-            story_urls=shared_story_urls,
-            pace=max(0.0, delay),
-            surface_order=surface_order,
-        )
-        return entity, missing, records, walk
-
-    # Entities are independent of each other, so the walk runs several at once.
-    # Each is a different site, and the shared hosts (a hiring board, a code
-    # host) are paced per host inside the walk, so breadth does not cost
-    # politeness. Sequentially this stage ran for tens of minutes.
-    workers = max(1, min(8, len(targets)))
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        walked = list(pool.map(walk_one, targets))
-
-    for entity, missing, records, walk in walked:
-        summary = walk.as_dict()
-        summary["missing"] = missing
-        report.append(summary)
-        for record in records:
-            metadata = dict(getattr(record, "metadata", None) or {})
-            # The lane report attributes yield by surface, so carry the surface
-            # the walk tagged rather than one flat "enrichment" bucket.
-            metadata.setdefault("backend", str(metadata.get("enrich_surface") or "enrich"))
-            extra.append(InputItem(
-                item_id=entity,
-                text=str(getattr(record, "text", "") or ""),
-                title=getattr(record, "title", None),
-                source_uri=getattr(record, "source_uri", None),
-                metadata=metadata,
-            ))
-    return extra, report
-
-
 def expand_lane_queries(lane: Any) -> list[str]:
     """A lane's query templates, one query per combination of its terms.
 
@@ -1974,118 +1887,127 @@ def _lane_items(items: list[Any], lane: Any) -> tuple[list[Any], int]:
     return kept, len(items) - len(kept)
 
 
-def _funnel_profile(args: argparse.Namespace, workspace: Path, lane: Any) -> Any:
-    """The firmographics this run gates on, from the profile and the lane.
 
-    A profile says what this engagement needs; a lane says what the product
-    accepts. Both bind, so they are intersected rather than one winning. When no
-    profile is authored yet the lane's own gates still apply, which is what lets
-    a first run with no setup eliminate the obviously wrong companies.
+
+
+
+
+def funnel_population(captured: list[Any], state: dict[str, Any], spec: Any) -> list[Any]:
+    """Who the ladder left alive, with everything its walks read about them.
+
+    Nobody is dropped for failing to earn more evidence, and nobody comes back
+    from a rung that eliminated them: a candidate is alive when *no* rung threw
+    it out, whether or not a later rung had anything left to ask it. Reading
+    only the last table would lose every lead the ladder had finished with —
+    a firm whose size and country no rung can settle is still a firm the run
+    found, and it belongs in the deliverable as the lead it is. A retrieve-only
+    funnel (gates switched off) leaves everyone standing, which is what that
+    node itself says.
     """
-    from .gates import GateProfile
+    from .models import InputItem
 
-    lane_gates = GateProfile.from_object(
-        lane.funnel.gate_profile() if lane is not None else None
-    )
-    explicit = getattr(args, "profile", None)
-    candidates = [Path(explicit).expanduser()] if explicit else []
-    if not explicit:
-        candidates = [
-            workspace / "ideal_partner_profile.json",
-            workspace / "profiles" / "ideal_partner_profile.json",
-        ]
-    for path in candidates:
-        if not path.is_file():
+    nodes = state.get("nodes") or {}
+    gates = [node.id for node in spec.nodes if getattr(node, "kind", "") == "gate"]
+    retrieves = [node.id for node in spec.nodes if getattr(node, "kind", "") == "retrieve"]
+    alive: set[str] = set()
+    eliminated: set[str] = set()
+    for node_id in gates:
+        table = str((nodes.get(node_id) or {}).get("table") or "")
+        if not table or not Path(table).is_file():
             continue
-        try:
-            from .partner import IdealPartnerProfile
-
-            profile = IdealPartnerProfile.load(path)
-        except Exception as exc:
-            print(f"Funnel: ignoring {path} ({exc})")
+        for row in read_rung_table(table):
+            item_id = str(row.get("item_id") or "")
+            if row.get("outcome") == "eliminated":
+                eliminated.add(item_id)
+            else:
+                alive.add(item_id)
+    alive -= eliminated
+    if not gates:
+        for node_id in retrieves:
+            alive |= {str(item) for item in (nodes.get(node_id) or {}).get("ids") or []}
+    kept = [item for item in captured if str(getattr(item, "item_id", "")) in alive]
+    walked: list[Any] = []
+    for node_id in retrieves:
+        items_path = str((nodes.get(node_id) or {}).get("items") or "")
+        if not items_path or not Path(items_path).is_file():
             continue
-        print(f"Funnel gates from profile '{profile.profile_name}' ({path})")
-        return lane_gates.intersect(GateProfile.from_object(profile))
-    if explicit:
-        raise ValueError(f"profile not found: {candidates[0]}")
-    return lane_gates
+        for line in Path(items_path).read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            item = InputItem.model_validate(json.loads(line))
+            if str(item.item_id) in alive:
+                walked.append(item)
+    return kept + walked
 
 
-def _funnel_note(counts: dict[str, Any]) -> str:
-    """Where the world shrank, in one line, naming the worst offender."""
-    if not counts.get("candidates"):
-        return ""
-    parts = []
-    for gate, number in sorted(
-        counts.get("eliminated_at", {}).items(), key=lambda row: -row[1]
-    ):
-        who = (counts.get("eliminated", {}).get(gate) or [{}])[0].get("candidate", "")
-        parts.append(f"{number} at {gate}" + (f" (e.g. {who})" if who else ""))
-    for gate, number in sorted(counts.get("unresolved_at", {}).items()):
-        parts.append(f"{number} unresolved on {gate}")
-    survived = counts.get("verdicts", {}).get("needing_retrieval", 0)
-    detail = f"Funnel: {counts['candidates']} candidates -> {survived} needing retrieval"
-    if parts:
-        detail += " (" + ", ".join(parts) + ")"
-    return detail
+def read_rung_table(path: str | Path) -> list[dict[str, str]]:
+    from .rungs import read_table
+
+    return read_table(path)
 
 
-def _run_funnel(
-    items: list[Any], *, args: argparse.Namespace, workspace: Path, lane: Any
-) -> tuple[list[Any], dict[str, Any], dict[str, int]]:
-    """Eliminate before spending: the candidates left, the counts, what they await.
-
-    This is the gate between searching and fetching. Everything before it costs
-    one search per query; everything after it costs a page fetch per entity and a
-    model call per batch. A product vendor, a five-person shop, a firm in the
-    wrong country is ruled out here on the search result that named it, and the
-    counts are returned so the run can report the shape of what it did instead
-    of leaving a person to infer it from a shorter list.
-    """
-    from .gates import funnel_entities
-
-    profile = _funnel_profile(args, workspace, lane)
-    escaped, counts, all_reports = funnel_entities(
-        items, profile=profile, ladder=lane.funnel.rungs() if lane is not None else None
-    )
-    survivors = {report.candidate for report in escaped}
-    dropped = len({str(getattr(item, "item_id", "") or "") for item in items}) - len(survivors)
-    if dropped:
-        note = _funnel_note(counts)
-        print(
-            f"Funnel eliminated {dropped} candidate(s): {note}"
-            if note else f"Funnel eliminated {dropped} candidate(s)"
-        )
-    kept = [
-        item for item in items
-        if str(getattr(item, "item_id", "") or "") in survivors
-    ]
-    return kept, _funnel_data(counts), _earned_counts(all_reports)
-
-
-def _earned_counts(reports: list[Any]) -> dict[str, int]:
-    """What the survivors are still owed: how many wait on each rung.
-
-    A run that fetched nothing leaves every lead waiting on the same rung, and
-    that number is the honest answer to "did this run do the retrieval it said
-    it would" — better than a dossier count, which rises for either reason.
-    """
-    earned: dict[str, int] = {}
-    for report in reports:
-        if report.eliminated or not report.earned:
-            continue
-        earned[report.earned] = earned.get(report.earned, 0) + 1
-    return earned
-
-
-def _funnel_data(counts: dict[str, Any]) -> dict[str, Any]:
-    """The funnel's counts, with the names trimmed to what a report can carry."""
-    trimmed = dict(counts)
-    for bucket in ("eliminated", "unresolved"):
-        trimmed[bucket] = {
-            gate: rows[:10] for gate, rows in (counts.get(bucket) or {}).items()
+def funnel_stage_report(state: dict[str, Any]) -> dict[str, Any]:
+    """Each node's own account of itself, for the run's discovery report."""
+    return {
+        node_id: {
+            key: info.get(key)
+            for key in ("kind", "rung", "gates", "evidence", "counts", "count", "gated",
+                        "read", "empty", "skipped", "visited", "note", "table", "items")
+            if info.get(key) not in (None, "", [], {})
         }
-    return trimmed
+        for node_id, info in (state.get("nodes") or {}).items()
+    }
+
+
+def funnel_walk_report(state: dict[str, Any]) -> list[dict[str, Any]]:
+    """What the walks did, in the shape the discovery report always carried."""
+    out: list[dict[str, Any]] = []
+    for info in (state.get("nodes") or {}).values():
+        if info.get("kind") != "retrieve":
+            continue
+        table = str(info.get("table") or "")
+        if not table or not Path(table).is_file():
+            continue
+        for row in read_rung_table(table):
+            out.append({
+                "entity": row.get("candidate"),
+                "rung": info.get("rung"),
+                "surfaces": info.get("surfaces"),
+                "visited": row.get("visited"),
+                "kept": row.get("kept"),
+                "by_surface": row.get("surfaces"),
+                "outcome": row.get("outcome"),
+                "skipped": row.get("skipped"),
+            })
+    return out
+
+
+def funnel_stage_note(state: dict[str, Any]) -> str:
+    """Where the world shrank, rung by rung, naming the gate that did it."""
+    nodes = state.get("nodes") or {}
+    parts: list[str] = []
+    for info in nodes.values():
+        if info.get("kind") == "gate":
+            counts = info.get("counts") or {}
+            verdicts = counts.get("verdicts") or {}
+            killed = ", ".join(
+                f"{number} at {gate}"
+                for gate, number in sorted(
+                    (counts.get("eliminated_at") or {}).items(), key=lambda row: -row[1]
+                )
+            )
+            parts.append(
+                f"{info.get('rung')}: {counts.get('candidates', 0)} in -> "
+                f"{verdicts.get('eliminated', 0)} eliminated"
+                + (f" ({killed})" if killed else "")
+                + (f" [{info.get('note')}]" if info.get("note") else "")
+            )
+        elif info.get("kind") == "retrieve":
+            parts.append(
+                f"{info.get('rung')}: read {info.get('read', 0)}, "
+                f"nothing on {info.get('empty', 0)}, {info.get('visited', 0)} page(s)"
+            )
+    return ("Funnel: " + " | ".join(parts)) if parts else ""
 
 
 def cmd_research(args: argparse.Namespace) -> None:
@@ -2230,20 +2152,45 @@ def cmd_research(args: argparse.Namespace) -> None:
             "repositories that credit nobody), so there is no entity to score"
             + _skip_reasons_note(report.get("skipped"))
         )
-    # 1a-bis. Shrink the world before spending anything on it. Everything above
-    # this line costs searches; everything below it costs page fetches and model
-    # calls. A product vendor, a five-person shop or a firm in the wrong country
-    # is gone here, having cost one search result to rule out, and the funnel's
-    # counts go into the run's report so the shape of the run is visible rather
-    # than inferred from a shorter dossier list.
-    if not getattr(args, "no_funnel", False) and keyed:
-        keyed, funnel, earned = _run_funnel(
-            keyed, args=args, workspace=workspace, lane=lane
+    # 1a-bis. Shrink the world before spending anything on it — as a graph.
+    # The lane's ladder is the pipeline: a gate node per rung, and a retrieve
+    # node for the page visits each rung declared. Everything above this line
+    # costs searches; the nodes below are where a page fetch and a model call
+    # get spent, and nothing is fetched for a candidate a rung below has already
+    # eliminated. The captured items are written down first, so the funnel runs
+    # from a file a person can read and re-run rather than from a list inside
+    # this function.
+    no_funnel = bool(getattr(args, "no_funnel", False))
+    no_enrich = bool(getattr(args, "no_enrich", False))
+    captured_path = workspace / "runs" / run_id / "captured.jsonl"
+    captured_path.parent.mkdir(parents=True, exist_ok=True)
+    write_items_jsonl(keyed, captured_path)
+    funnel_state: dict[str, Any] = {}
+    if keyed and not (no_funnel and no_enrich):
+        from .dag import DagSpec, run_dag
+        from .rungs import lane_spec
+
+        spec = DagSpec.model_validate(lane_spec(
+            lane,
+            from_items=str(captured_path),
+            name=f"funnel-{run_id}",
+            workspace=workspace,
+            profile_path=getattr(args, "profile", None),
+            per_surface=int(getattr(args, "enrich_pages", 3) or 3),
+            timeout=float(getattr(args, "timeout", 20.0) or 20.0),
+            delay=float(getattr(args, "delay", 1.0) or 0.0),
+            respect_robots=not getattr(args, "ignore_robots", False),
+            gates=not no_funnel,
+            walk=not no_enrich,
+        ))
+        funnel_state = run_dag(
+            spec, store, workspace_root=workspace, dag_id=f"{run_id}-funnel", resume=False
         )
-        report["funnel"] = funnel
-        # What the survivors have earned, once fetched, tells a reader whether
-        # the run collected the evidence the leads were waiting for.
-        report["funnel_earned"] = earned
+        report["funnel"] = funnel_stage_report(funnel_state)
+        report["funnel_stage"] = funnel_stage_note(funnel_state)
+        print(funnel_stage_note(funnel_state))
+        keyed = funnel_population(keyed, funnel_state, spec)
+        report["gathered"] = len(keyed)
         _write_discovery_report(workspace, run_id, report)
         if not keyed:
             raise DiscoverError(
@@ -2252,40 +2199,9 @@ def cmd_research(args: argparse.Namespace) -> None:
                 "territory the lane and profile name. "
                 f"Reasons recorded: {report_path}"
             )
+    report["enrich"] = funnel_walk_report(funnel_state)
     dossiers = bundle_records(keyed)
     print(f"Captured {len(keyed)} sources into {len(dossiers)} account dossiers")
-
-    # 1b. Go to each entity's own surfaces for the evidence the lane's bar wants
-    # and the search results did not carry. Skipped with --no-enrich.
-    if not getattr(args, "no_enrich", False) and dossiers:
-        extra, walk_report = _enrich_entities(
-            dossiers, lane,
-            per_surface=int(getattr(args, "enrich_pages", 3) or 3),
-            # Zero means every entity short of the bar. A cap of 25 could not
-            # cover a lane that gathers hundreds of candidates, so most of them
-            # were scored on search snippets alone and came back unfit.
-            max_entities=int(getattr(args, "enrich_entities", 0) or 0) or 10_000,
-            timeout=float(getattr(args, "timeout", 20.0) or 20.0),
-            delay=float(getattr(args, "delay", 1.0) or 0.0),
-            respect_robots=not getattr(args, "ignore_robots", False),
-        )
-        report["enrich"] = walk_report
-        if extra:
-            kept = sum(len(entry.get("missing", [])) for entry in walk_report)
-            print(
-                f"Went to {len(walk_report)} entit"
-                f"{'y' if len(walk_report) == 1 else 'ies'} for {kept} missing evidence kind(s): "
-                f"collected {len(extra)} more source(s)"
-            )
-            keyed = keyed + extra
-            dossiers = bundle_records(keyed)
-        else:
-            walked = ", ".join(
-                f"{entry.get('entity')}: {'nothing collected' if not entry.get('kept') else 'nothing new'}"
-                for entry in walk_report[:3]
-            ) or "no entity was short of the bar"
-            print(f"Nothing further collected from their own surfaces ({walked})")
-        _write_discovery_report(workspace, run_id, report)
 
     input_path = workspace / output
     input_path.parent.mkdir(parents=True, exist_ok=True)

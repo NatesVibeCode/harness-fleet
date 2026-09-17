@@ -26,7 +26,6 @@ from harness_fleet.gates import (
     SNIPPET,
     GateProfile,
     LadderRung,
-    funnel_counts,
     funnel_entities,
     read_grade,
     run_evidence_funnel,
@@ -338,14 +337,13 @@ def test_the_wiring_counts_eliminations_per_gate_and_only_survivor_unknowns():
 
 
 def test_the_run_gates_on_the_profile_and_the_lane_together(tmp_path: Path):
-    """Both bind: the profile says what this engagement needs, the lane what the
-    product accepts. A lane's floor cannot erase a stricter profile's."""
-    from harness_fleet import cli
+    """Both bind, so the gates are the intersection rather than one winner."""
+    from harness_fleet.rungs import resolved_gate_profile
 
     (tmp_path / "ideal_partner_profile.json").write_text(
         json.dumps({
             "ipp_profile": {
-                "profile_name": "UK fintech partners",
+                "profile_name": "UK delivery partners",
                 "target_ecosystem": "Snowflake",
                 "partner_size_min": 50,
                 "partner_size_max": 400,
@@ -360,8 +358,7 @@ def test_the_run_gates_on_the_profile_and_the_lane_together(tmp_path: Path):
     lane.funnel.size_max = 5000
     lane.funnel.locations = ["United Kingdom", "Germany"]
 
-    args = cli.build_parser().parse_args(["research", "--lane", "partner"])
-    profile = cli._funnel_profile(args, tmp_path, lane)
+    profile = resolved_gate_profile(lane, workspace=tmp_path)
     assert profile.size_min == 50, "the stricter floor wins"
     assert profile.size_max == 400, "the stricter ceiling wins"
     assert profile.locations == ("United Kingdom",), "the stricter territory wins"
@@ -371,59 +368,77 @@ def test_the_run_gates_on_the_profile_and_the_lane_together(tmp_path: Path):
 
 def test_a_run_with_no_profile_still_gates_on_the_lane(tmp_path: Path):
     """A first run with no setup eliminates the obviously wrong companies."""
-    from harness_fleet import cli
+    from harness_fleet.rungs import resolved_gate_profile
 
     lane = lane_module.shipped_lanes()["partner"]
     lane.funnel.size_min = 20
     lane.funnel.verticals = ["fintech"]
-    args = cli.build_parser().parse_args(["research", "--lane", "partner"])
-    profile = cli._funnel_profile(args, tmp_path, lane)
+    profile = resolved_gate_profile(lane, workspace=tmp_path)
     assert profile.size_min == 20 and profile.verticals == ("fintech",)
     assert profile.locations == ()
 
 
 def test_a_profile_the_user_names_but_that_is_missing_is_an_error(tmp_path: Path):
     """Silently gating on less than the user asked for is the bad outcome."""
-    from harness_fleet import cli
+    from harness_fleet.rungs import resolved_gate_profile
 
-    args = cli.build_parser().parse_args(
-        ["research", "--profile", str(tmp_path / "nope.json")]
-    )
     with pytest.raises(ValueError) as err:
-        cli._funnel_profile(args, tmp_path, None)
+        resolved_gate_profile(
+            lane_module.shipped_lanes()["partner"],
+            workspace=tmp_path,
+            profile_path=tmp_path / "nope.json",
+        )
     assert "not found" in str(err.value)
 
 
 def test_the_run_says_where_the_world_shrank():
+    """The funnel line names the rung, the count, and the gate that did it."""
     from harness_fleet import cli
 
-    note = cli._funnel_note(funnel_counts([
-        run_funnel("vendor.io", snippet="Our platform is a SaaS product",
-                   profile={"allows": "services"}),
-        run_funnel("acme.co.uk", snippet="An advisory firm of 200 people in London",
-                   profile={"allows": "services", "locations": ("United Kingdom",),
-                            "verticals": ("fintech",)}),
-    ]))
-    assert "2 candidates" in note and "1 needing retrieval" in note
-    assert "1 at kind" in note and "vendor.io" in note, "the note names an example"
-    assert "unresolved on" in note, "and says what the survivor is waiting on"
+    note = cli.funnel_stage_note({"nodes": {
+        "g0-result": {
+            "kind": "gate",
+            "rung": "result",
+            "counts": {
+                "candidates": 2,
+                "verdicts": {"eliminated": 1, "lead": 1},
+                "eliminated_at": {"kind": 1},
+            },
+        },
+        "r1-surface": {"kind": "retrieve", "rung": "surface", "read": 1, "empty": 0,
+                       "visited": 3},
+    }})
+    assert "result: 2 in -> 1 eliminated (1 at kind)" in note
+    assert "surface: read 1" in note and "3 page(s)" in note
 
 
-def test_the_earned_counts_say_what_the_survivors_are_owed():
-    from harness_fleet import cli
+def test_the_table_says_who_is_owed_the_next_rung_and_who_is_not():
+    """What the survivors are owed is a column, not a separate tally."""
+    from harness_fleet.gates import LadderRung
+    from harness_fleet.rungs import advances_to, gate_rows
 
+    ladder = [
+        LadderRung(name="result", evidence="snippet", gates=["kind"]),
+        LadderRung(name="surface", evidence="fetched", gates=["size", "location"],
+                   surfaces=["about"]),
+    ]
     profile = {"allows": "services", "locations": ("United Kingdom",),
                "verticals": ("fintech",)}
-    reports = [
-        run_funnel("a.co.uk", snippet="An advisory firm of 200 people in London.", profile=profile),
-        run_funnel("b.co.uk", snippet="A consultancy of 30 people in Leeds.", profile=profile),
-    ]
-    earned = cli._earned_counts(reports)
-    assert earned == {"surface": 2}, "both are owed the page fetch they earned"
-    # An eliminated candidate is owed nothing: it never spends a fetch.
-    assert cli._earned_counts([
-        run_funnel("vendor.io", snippet="Our platform is a SaaS product", profile=profile)
-    ]) == {}
+    rows, reports = gate_rows(
+        [
+            _record("vendor.io", "Our platform is a SaaS product. Book a demo."),
+            _record("acme.co.uk", "An advisory firm of 200 people in London."),
+        ],
+        rung=ladder[0],
+        ladder=ladder,
+        profile=profile,
+    )
+    following = ladder[1]
+    owed = {row["candidate"]: advances_to(report, following)
+            for row, report in zip(rows, reports, strict=True)}
+    assert owed == {"vendor.io": False, "acme.co.uk": True}, (
+        "an eliminated candidate is owed nothing: it never spends a fetch"
+    )
 
 
 def test_every_lead_names_a_next_step_or_says_there_is_none():
@@ -540,16 +555,14 @@ def test_the_ladder_is_climbed_one_fetch_at_a_time():
             assert report.fetched, "only a fetched page qualifies"
 
 
-def test_an_eliminated_candidate_is_never_bundled_and_never_fetched(tmp_path: Path):
-    """The point of the whole exercise: elimination happens before the spend.
-
-    Asserted on the stage command actually runs, because the failure it guards
-    against is silent — a funnel that judges correctly and then hands the
-    original list downstream would look right in a report and cost a page fetch
-    per company it claimed to have dropped.
-    """
+def test_an_eliminated_candidate_is_never_bundled_and_never_fetched(tmp_path: Path, monkeypatch):
+    """The run's own path: the ladder as a DAG, over the items it gathered."""
     from harness_fleet import cli
     from harness_fleet.bundler import bundle_records
+    from harness_fleet.dag import DagSpec, run_dag
+    from harness_fleet.enrich import EnrichReport
+    from harness_fleet.rungs import lane_spec
+    from harness_fleet.store import HarnessStore
 
     (tmp_path / "ideal_partner_profile.json").write_text(
         json.dumps({
@@ -575,20 +588,42 @@ def test_an_eliminated_candidate_is_never_bundled_and_never_fetched(tmp_path: Pa
         InputItem(item_id="acme.co.uk", text="A data consultancy of 200 people in London",
                   metadata={"evidence": "indicator"}),
     ]
-    args = cli.build_parser().parse_args(["research", "--lane", "partner"])
-    kept, funnel, earned = cli._run_funnel(
-        items, args=args, workspace=tmp_path, lane=lane
+    walked: list[str] = []
+
+    def fake_enrich(entity, **kwargs):
+        walked.append(entity)
+        report = EnrichReport(entity=entity, domain=entity,
+                              surfaces=list(kwargs.get("surface_order") or []))
+        report.visited = 1
+        report.kept = 1
+        report.by_surface = {"about": 1}
+        from harness_fleet.models import InputItem as _Item
+
+        return [_Item(item_id=entity, text=f"{entity} delivers data platforms for fintech clients.",
+                      source_uri=f"https://{entity}/about",
+                      metadata={"enrich_surface": "about"})], report
+
+    monkeypatch.setattr("harness_fleet.enrich.enrich_entity", fake_enrich)
+    captured = tmp_path / "captured.jsonl"
+    from harness_fleet.discover import write_items_jsonl
+
+    write_items_jsonl(items, captured)
+    store = HarnessStore(tmp_path / "t.db")
+    spec = DagSpec.model_validate(lane_spec(
+        lane, from_items=str(captured), workspace=tmp_path, walk=True, gates=True,
+    ))
+    state = run_dag(spec, store, workspace_root=tmp_path, dag_id="f1")
+
+    first = cli.funnel_stage_report(state)["g0-result"]
+    assert first["counts"]["candidates"] == 4
+    assert first["counts"]["eliminated_at"] == {"kind": 1, "size": 1, "location": 1}
+    kept = cli.funnel_population(items, state, spec)
+    # Only the survivor is fetched, and only it goes on to be scored.
+    assert {item.item_id for item in kept} == {"acme.co.uk"}
+    assert walked and set(walked) <= {"acme.co.uk"}, (
+        f"a fetch was spent on a candidate the rung below eliminated: {walked}"
     )
-
-    assert [item.item_id for item in kept] == ["acme.co.uk"], "only the survivor goes on"
-    assert funnel["candidates"] == 4
-    assert funnel["eliminated_at"] == {"kind": 1, "size": 1, "location": 1}
-    named = {gate: [row["candidate"] for row in rows] for gate, rows in funnel["eliminated"].items()}
-    assert named == {"kind": ["vendor.io"], "size": ["tiny.io"], "location": ["munich.de"]}
-    # What actually reaches the expensive stage: one dossier, not four.
     assert [d.item_id for d in bundle_records(kept)] == ["acme.co.uk"]
-    assert earned == {"surface": 1}, "and it is owed the page fetch it earned"
-
 
 def test_the_funnel_can_be_turned_off_for_a_run(tmp_path: Path):
     """--no-funnel keeps everything, for anyone who wants the raw candidate set."""
@@ -596,3 +631,18 @@ def test_the_funnel_can_be_turned_off_for_a_run(tmp_path: Path):
 
     args = cli.build_parser().parse_args(["research", "--lane", "partner", "--no-funnel"])
     assert args.no_funnel is True, "the flag exists and is what the command reads"
+
+
+def _record(item_id: str, text: str):
+    """The minimum a gate reads: an id, its text, and nothing else."""
+
+    class _Record:
+        pass
+
+    record = _Record()
+    record.item_id = item_id
+    record.text = text
+    record.source_uri = ""
+    record.quotes = []
+    record.metadata = {}
+    return record

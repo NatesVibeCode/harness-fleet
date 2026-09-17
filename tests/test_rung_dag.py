@@ -316,12 +316,15 @@ def test_the_walk_reads_only_what_the_rung_below_it_passed_on(tmp_path, monkeypa
         report.by_surface = {"about": 1}
         return [_record(f"{entity}-about", INTEGRATOR, uri=f"https://{entity}/about")], report
 
-    monkeypatch.setattr(dag_module, "enrich_entity", fake_enrich, raising=False)
+    monkeypatch.setattr("harness_fleet.enrich.enrich_entity", fake_enrich)
     _profile(tmp_path)
     store = _store(tmp_path)
     _seed_run(monkeypatch, store, [
-        _record("vendor", VENDOR, uri="https://zapcloud.example", entity="zapcloud.example"),
-        _record("integrator", INTEGRATOR, uri="https://northwind.example",
+        # An item id is the entity key by the time a funnel sees it: the stage
+        # that gathered the candidates keyed them, and the walk visits the id.
+        _record("zapcloud.example", VENDOR, uri="https://zapcloud.example",
+                entity="zapcloud.example"),
+        _record("northwind.example", INTEGRATOR, uri="https://northwind.example",
                 entity="northwind.example"),
     ])
     spec = DagSpec.model_validate(lane_spec(_lane("partner"), from_run="discovery"))
@@ -367,11 +370,11 @@ def test_the_fetched_rung_above_a_walk_gates_on_what_was_read(tmp_path, monkeypa
         )
         return [_record(f"{entity}-about", page, uri=f"https://{entity}/about")], report
 
-    monkeypatch.setattr(dag_module, "enrich_entity", fake_enrich, raising=False)
+    monkeypatch.setattr("harness_fleet.enrich.enrich_entity", fake_enrich)
     _profile(tmp_path)
     store = _store(tmp_path)
     _seed_run(monkeypatch, store, [
-        _record("integrator", INTEGRATOR, uri="https://northwind.example",
+        _record("northwind.example", INTEGRATOR, uri="https://northwind.example",
                 entity="northwind.example"),
     ])
     spec = DagSpec.model_validate(lane_spec(_lane("partner"), from_run="discovery"))
@@ -398,7 +401,8 @@ def test_a_rung_reports_the_gates_it_ran_and_where_its_table_lives(tmp_path, mon
     _profile(tmp_path)
     store = _store(tmp_path)
     _seed_run(monkeypatch, store, [
-        _record("a", VENDOR, uri="https://zapcloud.example", entity="zapcloud.example"),
+        _record("zapcloud.example", VENDOR, uri="https://zapcloud.example",
+                entity="zapcloud.example"),
     ])
     spec = DagSpec.model_validate(lane_spec(_lane("partner"), from_run="discovery"))
 
@@ -419,7 +423,7 @@ def test_a_run_of_the_chain_writes_the_sidecar_with_every_table(tmp_path, monkey
     _profile(tmp_path)
     store = _store(tmp_path)
     _seed_run(monkeypatch, store, [
-        _record("a", VENDOR, entity="zapcloud.example"),
+        _record("zapcloud.example", VENDOR, entity="zapcloud.example"),
     ])
     spec = DagSpec.model_validate(lane_spec(_lane("partner"), from_run="discovery"))
     dag_module.run_dag(spec, store, workspace_root=tmp_path, dag_id="rungs")

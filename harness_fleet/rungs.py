@@ -281,13 +281,19 @@ def _node_slug(name: str) -> str:
 def lane_spec(
     lane: Any,
     *,
-    from_run: str,
+    from_run: str | None = None,
+    from_items: str | None = None,
     name: str | None = None,
     workspace: str | Path = ".",
     profile_path: str | Path | None = None,
     max_pages: int = 8,
     per_surface: int = 3,
-    pace: float = 0.0,
+    timeout: float = 20.0,
+    delay: float = 1.0,
+    respect_robots: bool = True,
+    vendor_stories: bool = True,
+    gates: bool = True,
+    walk: bool = True,
 ) -> dict[str, Any]:
     """Compile a lane's ladder into a DAG: one gate per rung, one walk between.
 
@@ -302,16 +308,42 @@ def lane_spec(
     re-put to the population on the text already in hand, which is how a ladder
     says two sets of gates have to hold. What it does not get is a walk.
     """
+    if (from_run is None) == (from_items is None):
+        raise ValueError("a lane graph starts from exactly one of 'from_run' or 'from_items'")
     rungs = list(lane.funnel.rungs() or DEFAULT_LADDER)
     if not rungs:
         raise ValueError(f"lane '{getattr(lane, 'name', '')}' declares no rungs to run")
     nodes: list[dict[str, Any]] = []
     previous_gate: str | None = None
     for index, rung in enumerate(rungs):
+        if not gates and index == 0:
+            # A run that asked for no gates still walks: the ladder's surfaces
+            # are how it knows where to look, and the walks stay nodes.
+            first_rung = next((r for r in rungs if r.surfaces), None)
+            if not walk or first_rung is None:
+                break
+            nodes.append({
+                "kind": "retrieve",
+                "id": f"r{index}-{_node_slug(first_rung.name)}",
+                "lane": lane.name,
+                "rung": first_rung.name,
+                "from_items": from_items,
+                "max_pages": max_pages,
+                "per_surface": per_surface,
+                "timeout": timeout,
+                "delay": delay,
+                "respect_robots": respect_robots,
+                "vendor_stories": vendor_stories,
+            })
+            break
         gate_id = f"g{index}-{_node_slug(rung.name)}"
         source: dict[str, Any]
         if index == 0:
-            source = {"from_run": from_run}
+            source = (
+                {"from_items": from_items} if from_items is not None else {"from_run": from_run}
+            )
+        elif not walk:
+            source = {"from_gate": previous_gate}
         elif previous_gate is not None and rung.surfaces:
             retrieve_id = f"r{index}-{_node_slug(rung.name)}"
             nodes.append(
@@ -323,7 +355,10 @@ def lane_spec(
                     "from_gate": previous_gate,
                     "max_pages": max_pages,
                     "per_surface": per_surface,
-                    "pace": pace,
+                    "timeout": timeout,
+                    "delay": delay,
+                    "respect_robots": respect_robots,
+                    "vendor_stories": vendor_stories,
                 }
             )
             source = {"from_retrieve": retrieve_id}
