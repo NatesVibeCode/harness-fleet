@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import importlib
 import io
-import sys
 from contextlib import redirect_stdout
 
 import pytest
