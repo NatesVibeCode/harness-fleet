@@ -105,6 +105,7 @@ class Engine:
         session_stickiness_tolerance: float = 0.10,
         profile: Any | None = None,
         prompt_timeout_sec: int = DEFAULT_PROMPT_TIMEOUT_SEC,
+        max_batch_chars: int | None = None,
     ):
         self.task = task
         self.store = store or (catalog.store if catalog else HarnessStore())
@@ -113,6 +114,14 @@ class Engine:
         self.policy = policy
         self.registry = registry or ProviderRegistry()
         self.prompt_timeout_sec = int(prompt_timeout_sec)
+        # How big one model request may get. None means the task's own field; a
+        # caller that knows the routes it will spend can bound it here without
+        # changing what the task *is* (a revision id is scoring identity).
+        self.max_batch_chars = (
+            int(max_batch_chars)
+            if max_batch_chars is not None
+            else int(getattr(task, "max_batch_chars", 0) or 0)
+        )
         # Session route is pinned first only while within tolerance of the best
         # score. Beyond that the ranked ladder wins and the session migrates to
         # the route that actually verifies (see execute_batch success path).
@@ -623,6 +632,7 @@ class Engine:
                     _manifest_stream(source_factory(), second_manifest),
                     batch_size=self.task.batch_size,
                     max_slice_chars=self.task.max_slice_chars,
+                    max_batch_chars=self.max_batch_chars,
                 ):
                     writer.enqueue_batch(batch, position, self.max_attempts_per_batch)
                     position += 1
@@ -654,6 +664,7 @@ class Engine:
                     _manifest_stream(chain((first_item,), one_shot), manifest),
                     batch_size=self.task.batch_size,
                     max_slice_chars=self.task.max_slice_chars,
+                    max_batch_chars=self.max_batch_chars,
                 ):
                     writer.enqueue_batch(batch, position, self.max_attempts_per_batch)
                     position += 1

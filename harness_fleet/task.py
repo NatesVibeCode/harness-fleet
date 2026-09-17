@@ -394,6 +394,7 @@ def create_task_from_preset(
     preset_name: str = "score",
     instructions: str | None = None,
     batch_size: int = 5,
+    max_batch_chars: int = 0,
     source_weights: dict[str, float] | None = None,
     default_source_weight: float = 1.0,
     recency_half_lives: dict[str, float] | None = None,
@@ -405,6 +406,10 @@ def create_task_from_preset(
         name=name,
         instructions=instructions or preset["instructions"],
         batch_size=batch_size,
+        # A request budget, not an item count. Five walked dossiers in one call
+        # was 188,236 tokens and no free model would take it; a preset that
+        # names only a count leaves the size of the request to chance.
+        max_batch_chars=max_batch_chars,
         claims_schema={
             "type": "object",
             "properties": preset["properties"],
@@ -437,6 +442,7 @@ SCORING_EDITABLE_FIELDS = frozenset({
     "min_quote_chars",
     "batch_size",
     "max_slice_chars",
+    "max_batch_chars",
     "candidate_top_n",
 })
 SCORING_LOCKED_FIELDS = frozenset({"score", "fit_tier", "passed", "tier_bands", "claims_schema"})

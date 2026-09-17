@@ -228,6 +228,12 @@ class TaskSpec(ClosedModel):
     )
     batch_size: int = Field(default=6, description="Maximum input items per model request", ge=1, le=100)
     max_slice_chars: int = Field(default=6000, description="Maximum source characters exposed per item", ge=300, le=100_000)
+    max_batch_chars: int = Field(
+        default=0,
+        description="Maximum source characters per model request (0 = bounded by batch_size alone)",
+        ge=0,
+        le=10_000_000,
+    )
     min_quote_chars: int = Field(default=15, description="Minimum admitted evidence-quote length", ge=1, le=10_000)
     claims_schema: dict[str, Any] = Field(
         default_factory=lambda: deepcopy(DEFAULT_CLAIMS_SCHEMA),
@@ -500,6 +506,12 @@ class TaskSpec(ClosedModel):
             payload.pop("default_source_weight", None)
         if not self.recency_half_lives:
             payload.pop("recency_half_lives", None)
+        if self.max_batch_chars == TaskSpec.model_fields["max_batch_chars"].default:
+            # Same rule as the calibration fields: a spec that leaves the request
+            # budget at its default behaves exactly like one written before the
+            # field existed, so stored revisions keep validating. Without this the
+            # store's digest and the packet's differ the moment a run sets it.
+            payload.pop("max_batch_chars", None)
         return payload
 
     def derive_passed(self, score: Any) -> bool:

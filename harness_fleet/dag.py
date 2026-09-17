@@ -1499,6 +1499,10 @@ def _execute_score_node(
             "ids": [],
         }
 
+    # A research dossier is many walked pages; five of them in one request was
+    # 188,236 tokens and no free model would take it. The budget belongs to the
+    # call that knows which routes will answer, not to the task's identity.
+    node_batch_chars = 48_000
     name = node.task or lane.preset
     try:
         task = _resolve_dag_task(name, store, root)
@@ -1511,7 +1515,9 @@ def _execute_score_node(
     dossiers_path = dag_dir / node.id / "dossiers.jsonl"
     dossiers_path.parent.mkdir(parents=True, exist_ok=True)
     write_items_jsonl(dossiers, dossiers_path)
-    packet = Engine(task=task, store=store, policy=node.policy).run_campaign(
+    packet = Engine(
+        task=task, store=store, policy=node.policy, max_batch_chars=node_batch_chars
+    ).run_campaign(
         raw_items=iter(dossiers),
         run_id=run_id,
         input_path=str(dossiers_path),
