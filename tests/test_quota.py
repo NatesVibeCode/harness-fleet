@@ -426,3 +426,30 @@ def test_the_loop_reports_the_diagnosis_when_it_stops_short(tmp_path):
         result["diagnosis"]["surfaced"]
         == result["diagnosis"]["standing"] + result["diagnosis"]["eliminated"]
     ), "and the three numbers still add up"
+
+
+def test_two_queries_finding_the_same_firm_is_one_candidate(tmp_path):
+    """Search returns the same company for several queries. That is not an error.
+
+    The graph writes the candidates down and reads them back through a loader
+    that rejects a repeated id, and the old funnel grouped by entity instead — so
+    wiring the funnel into the graph made the most ordinary thing search does
+    fail a live run: `duplicate item_id: gpsolutions.com`.
+    """
+    from harness_fleet import cli
+    from harness_fleet.models import InputItem
+
+    first = InputItem(item_id="gpsolutions.com", text="GPS is a systems integrator.",
+                      source_uri="https://gpsolutions.com")
+    second = InputItem(item_id="gpsolutions.com", text="They deliver Kafka pipelines.",
+                       source_uri="https://gpsolutions.com/about")
+
+    merged, extra = cli.merge_candidates([first, second, InputItem(
+        item_id="other.example", text="Another firm.", source_uri="https://other.example")])
+
+    assert extra == 1
+    assert [item.item_id for item in merged] == ["gpsolutions.com", "other.example"]
+    assert "systems integrator" in merged[0].text and "Kafka pipelines" in merged[0].text, (
+        "both sources are evidence about the one firm, so both are kept"
+    )
+    assert cli.merge_candidates([first])[1] == 0, "and a run with no overlap says nothing"

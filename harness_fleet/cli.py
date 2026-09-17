@@ -2049,6 +2049,39 @@ def _lane_items(items: list[Any], lane: Any) -> tuple[list[Any], int]:
 
 
 
+def merge_candidates(items: list[Any]) -> tuple[list[Any], int]:
+    """One item per company: what several queries found about a firm is one firm.
+
+    Text is joined rather than chosen, because two sources about the same company
+    are two pieces of evidence about it — and the gates read the text.
+    """
+    from .models import InputItem
+
+    merged: dict[str, Any] = {}
+    order: list[str] = []
+    extra = 0
+    for item in items:
+        key = str(getattr(item, "item_id", "") or "")
+        if key not in merged:
+            merged[key] = item
+            order.append(key)
+            continue
+        first = merged[key]
+        extra += 1
+        text = "\n\n".join(
+            part for part in (str(getattr(first, "text", "") or ""),
+                              str(getattr(item, "text", "") or "")) if part
+        )
+        merged[key] = InputItem(
+            item_id=key,
+            text=text or str(getattr(first, "text", "") or ""),
+            title=getattr(first, "title", None),
+            source_uri=getattr(first, "source_uri", None),
+            metadata=dict(getattr(first, "metadata", None) or {}),
+        )
+    return [merged[key] for key in order], extra
+
+
 def funnel_population(
     captured: list[Any], state: dict[str, Any], spec: Any, store: Any
 ) -> list[Any]:
@@ -2389,6 +2422,14 @@ def cmd_research(args: argparse.Namespace) -> dict[str, Any]:
     # this function.
     no_funnel = bool(getattr(args, "no_funnel", False))
     no_enrich = bool(getattr(args, "no_enrich", False))
+    # One row per company, before anything reads this as a file. Two queries
+    # finding the same firm is the ordinary case, not a malformed input — the
+    # old funnel grouped by entity and swallowed it; the graph writes the
+    # candidates down and reads them back through a loader that rejects a
+    # repeated id, so a live run died on the most normal thing search does.
+    keyed, merged_sources = merge_candidates(keyed)
+    if merged_sources:
+        print(f"Merged {merged_sources} source(s) about firms more than one query found")
     captured_path = workspace / "runs" / run_id / "captured.jsonl"
     captured_path.parent.mkdir(parents=True, exist_ok=True)
     write_items_jsonl(keyed, captured_path)
