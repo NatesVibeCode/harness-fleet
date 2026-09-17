@@ -1130,6 +1130,61 @@ def cmd_dag(args: argparse.Namespace) -> None:
     )
 
 
+def cmd_ledger(args: argparse.Namespace) -> None:
+    """The running list: every entity the fleet has looked at, across every run.
+
+    A run's tables say what happened in that run. This says who we have looked
+    at, what is currently believed about them, and where each one stopped — the
+    question an operator actually has, and the reason running again is worth
+    anything.
+    """
+    from .ledger import Ledger
+
+    ledger = Ledger(_store(args))
+    entity = getattr(args, "entity", None)
+    if entity:
+        events = ledger.history(entity, limit=int(getattr(args, "limit", 50) or 50))
+        _emit(
+            {"entity": entity, "events": events},
+            args.json,
+            f"{entity}: {len(events)} event(s)"
+            + "".join(
+                f"\n  {event['at']}  {event['node_id'] or event['dag_id']}  "
+                f"{event['outcome']}  {event['because']}"
+                for event in events
+            ),
+        )
+        return
+    rows = ledger.entities(
+        limit=int(getattr(args, "limit", 25) or 25),
+        outcome=str(getattr(args, "outcome", "") or ""),
+        lane=str(getattr(args, "lane", "") or ""),
+        standing_only=bool(getattr(args, "standing", False)),
+    )
+    csv_path = getattr(args, "csv", None)
+    if csv_path:
+        ledger.export_csv(str(csv_path), rows)
+    counts = ledger.counts()
+    _emit(
+        {"counts": counts, "entities": rows, "csv": str(csv_path) if csv_path else None},
+        args.json,
+        f"Running list: {counts.get('entities', 0)} entit"
+        f"{'y' if counts.get('entities') == 1 else 'ies'}"
+        + (
+            " ("
+            + ", ".join(
+                f"{number} {outcome or 'unjudged'}"
+                for outcome, number in sorted(counts.items())
+                if outcome != "entities"
+            )
+            + ")"
+            if counts
+            else ""
+        )
+        + "".join(f"\n  {row['outcome']:<10} {row['entity']}" for row in rows),
+    )
+
+
 def cmd_export(args: argparse.Namespace) -> None:
     store = _store(args)
     snapshot = store.run_snapshot(args.run_id)
@@ -3260,6 +3315,16 @@ def build_parser() -> argparse.ArgumentParser:
     dag.add_argument("--dry-run", action="store_true", help="Validate the spec and print execution order without running")
     dag.add_argument("--no-resume", action="store_true", help="Re-execute completed run nodes instead of resuming them")
     dag.add_argument("--workspace-root", default=".", help="Workspace root for relative paths")
+    ledger = commands.add_parser(
+        "ledger", help="The running list of every entity looked at, across runs"
+    )
+    ledger.add_argument("--limit", type=int, default=25, help="How many to print")
+    ledger.add_argument("--outcome", help="Only entities currently at this outcome")
+    ledger.add_argument("--lane", help="Only entities a lane has looked at")
+    ledger.add_argument("--standing", action="store_true", help="Only entities not eliminated")
+    ledger.add_argument("--entity", help="One entity's whole history instead of the list")
+    ledger.add_argument("--csv", help="Also write the list to this file")
+    _common(ledger)
     _common(dag)
     export.add_argument("--adjust-scores", action="store_true", help="Rank by bias-adjusted scores (raw - per-route bias from eval goldens). Recommended when Phase-A used multiple raters; prefer single-judge Phase-B for final ranking.")
     export.add_argument("--score-field", default="score", help="Numeric claim field bias applies to (default: score)")
@@ -3504,6 +3569,7 @@ def main() -> None:
         "research": cmd_research,
         "fetch": cmd_fetch,
         "dag": cmd_dag,
+        "ledger": cmd_ledger,
     }
     try:
         handlers[args.command](args)

@@ -34,6 +34,7 @@ from .gates import (
     _evaluable_gates,
 )
 from .input_data import load_input_items
+from .ledger import Ledger
 from .models import CalibrationReport, ClaimFilter, ClosedModel, RoutePolicy, SortSpec
 from .profile import IdealCompanyProfile
 from .providers.registry import ProviderRegistry, ProviderResolutionError
@@ -966,7 +967,8 @@ def _execute_gate_node(
     for gate_row, report in zip(rows, reports, strict=True):
         gate_row["advances"] = advances_to(report, following)
         gate_row["next_rung"] = following.name if following else ""
-    tables.write(dag_id, node.id, rows, texts=texts, kind="gate", lane=node.lane)
+    attempt = tables.write(dag_id, node.id, rows, texts=texts, kind="gate", lane=node.lane)
+    Ledger(store).record(rows, dag_id=dag_id, node_id=node.id, run_seq=attempt, lane=node.lane)
     counts = count_rows(rows)
     live = sorted(_evaluable_gates(profile))
     note = ""
@@ -985,6 +987,7 @@ def _execute_gate_node(
         "from_run": node.from_run or "",
         "from_node": upstream_node,
         "next_rung": following.name if following else "",
+        "attempt": attempt,
         "counts": counts,
         "gates_live": live,
         "note": note,
@@ -1106,7 +1109,8 @@ def _execute_retrieve_node(
             "skipped": entry.get("skipped") or [],
             "advances": True,
         })
-    tables.write(dag_id, node.id, rows, texts=texts, kind="retrieve", lane=node.lane)
+    attempt = tables.write(dag_id, node.id, rows, texts=texts, kind="retrieve", lane=node.lane)
+    Ledger(store).record(rows, dag_id=dag_id, node_id=node.id, run_seq=attempt, lane=node.lane)
     # What the walk gathered is the next node's input, so it goes in the same
     # place: a table queried out of the database rather than a file to re-read.
     items_table = f"rung_items_{dag_id}_{node.id}".replace("-", "_")
@@ -1127,6 +1131,7 @@ def _execute_retrieve_node(
         "rung": rung.name,
         "surfaces": list(rung.surfaces),
         "from_gate": node.from_gate,
+        "attempt": attempt,
         "items_table": items_table,
         "items": len(extra),
         "count": len(rows),
@@ -1233,13 +1238,15 @@ def _execute_resolve_node(
             "source_uri": str(row.get("source_uri") or ""),
             "advances": True,
         })
-    tables.write(dag_id, node.id, rows, texts=texts, kind="resolve", lane=node.lane)
+    attempt = tables.write(dag_id, node.id, rows, texts=texts, kind="resolve", lane=node.lane)
+    Ledger(store).record(rows, dag_id=dag_id, node_id=node.id, run_seq=attempt, lane=node.lane)
     return {
         "kind": "resolve",
         "lane": node.lane,
         "fields": list(node.fields),
         "from_gate": node.from_gate,
         "evidence": SNIPPET,
+        "attempt": attempt,
         "count": len(rows),
         "asked": sum(1 for row in rows if row["queries"]),
         "questions": sum(len(row["queries"]) for row in rows),

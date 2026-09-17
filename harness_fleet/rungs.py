@@ -66,6 +66,7 @@ _SCHEMA = f"""
 CREATE TABLE IF NOT EXISTS {ROWS_TABLE} (
     dag_id TEXT NOT NULL,
     node_id TEXT NOT NULL,
+    run_seq INTEGER NOT NULL DEFAULT 1,
     seq INTEGER NOT NULL,
     kind TEXT NOT NULL DEFAULT '',
     lane TEXT NOT NULL DEFAULT '',
@@ -86,14 +87,16 @@ CREATE TABLE IF NOT EXISTS {ROWS_TABLE} (
     visited INTEGER NOT NULL DEFAULT 0,
     kept INTEGER NOT NULL DEFAULT 0,
     skipped TEXT NOT NULL DEFAULT '[]',
-    PRIMARY KEY (dag_id, node_id, seq)
+    PRIMARY KEY (dag_id, node_id, run_seq, seq)
 );
+CREATE INDEX IF NOT EXISTS {ROWS_TABLE}_entity ON {ROWS_TABLE} (item_id);
 CREATE TABLE IF NOT EXISTS {TEXT_TABLE} (
     dag_id TEXT NOT NULL,
     node_id TEXT NOT NULL,
+    run_seq INTEGER NOT NULL DEFAULT 1,
     item_id TEXT NOT NULL,
     text TEXT NOT NULL,
-    PRIMARY KEY (dag_id, node_id, item_id)
+    PRIMARY KEY (dag_id, node_id, run_seq, item_id)
 );
 """
 
@@ -117,6 +120,30 @@ class RungTables:
         with self.store.connect() as connection:
             connection.executescript(_SCHEMA)
 
+    def next_seq(self, dag_id: str, node_id: str) -> int:
+        """The attempt number this write will be: one more than the last.
+
+        A node's table is not overwritten. Re-running a rung adds an attempt, so
+        what the run concluded last time is still there to compare against, and
+        a person can see whether a rung got better or the world changed.
+        """
+        with self.store.connect() as connection:
+            found = connection.execute(
+                f"SELECT MAX(run_seq) AS last FROM {ROWS_TABLE} WHERE dag_id=? AND node_id=?",
+                (dag_id, node_id),
+            ).fetchone()
+        return int((found["last"] if found else 0) or 0) + 1
+
+    def attempts(self, dag_id: str, node_id: str) -> list[int]:
+        """Every attempt this node has been run, oldest first."""
+        with self.store.connect() as connection:
+            found = connection.execute(
+                f"SELECT DISTINCT run_seq FROM {ROWS_TABLE} WHERE dag_id=? AND node_id=? "
+                "ORDER BY run_seq",
+                (dag_id, node_id),
+            ).fetchall()
+        return [int(row["run_seq"]) for row in found]
+
     def write(
         self,
         dag_id: str,
@@ -126,21 +153,29 @@ class RungTables:
         texts: dict[str, str] | None = None,
         kind: str = "",
         lane: str = "",
+        run_seq: int | None = None,
     ) -> int:
-        """Replace this node's table with these rows, and store their prose."""
+        """Add this attempt's rows, keeping every earlier attempt.
+
+        Returns the attempt number, which is what a caller records so the exact
+        table a verdict came from can be named later.
+        """
+        run_seq = int(run_seq or self.next_seq(dag_id, node_id))
         columns = (
-            "dag_id", "node_id", "seq", "kind", "lane", "rung", "item_id", "candidate",
+            "dag_id", "node_id", "run_seq", "seq", "kind", "lane", "rung", "item_id", "candidate",
             "evidence", "outcome", "earned", "because", "gates", "surfaces", "pages",
             "queries", "advances", "next_rung", "source_uri", "visited", "kept", "skipped",
         )
         with self.store.connect() as connection:
             connection.execute(
-                f"DELETE FROM {ROWS_TABLE} WHERE dag_id=? AND node_id=?", (dag_id, node_id)
+                f"DELETE FROM {ROWS_TABLE} WHERE dag_id=? AND node_id=? AND run_seq=?",
+                (dag_id, node_id, run_seq),
             )
             for seq, row in enumerate(rows):
                 values = {
                     "dag_id": dag_id,
                     "node_id": node_id,
+                    "run_seq": run_seq,
                     "seq": seq,
                     "kind": kind,
                     "lane": lane,
@@ -169,21 +204,27 @@ class RungTables:
                 )
             if texts:
                 connection.execute(
-                    f"DELETE FROM {TEXT_TABLE} WHERE dag_id=? AND node_id=?", (dag_id, node_id)
+                    f"DELETE FROM {TEXT_TABLE} WHERE dag_id=? AND node_id=? AND run_seq=?",
+                    (dag_id, node_id, run_seq),
                 )
                 for item_id, text in texts.items():
                     connection.execute(
-                        f"INSERT OR REPLACE INTO {TEXT_TABLE} (dag_id, node_id, item_id, text) "
-                        "VALUES (?, ?, ?, ?)",
-                        (dag_id, node_id, str(item_id), text),
+                        f"INSERT OR REPLACE INTO {TEXT_TABLE} "
+                        "(dag_id, node_id, run_seq, item_id, text) VALUES (?, ?, ?, ?, ?)",
+                        (dag_id, node_id, run_seq, str(item_id), text),
                     )
-        return len(rows)
+        return run_seq
 
-    def rows(self, dag_id: str, node_id: str) -> list[dict[str, Any]]:
+    def rows(
+        self, dag_id: str, node_id: str, run_seq: int | None = None
+    ) -> list[dict[str, Any]]:
+        """This node's table: the latest attempt unless one is named."""
+        run_seq = run_seq or (self.attempts(dag_id, node_id) or [1])[-1]
         with self.store.connect() as connection:
             found = connection.execute(
-                f"SELECT * FROM {ROWS_TABLE} WHERE dag_id=? AND node_id=? ORDER BY seq",
-                (dag_id, node_id),
+                f"SELECT * FROM {ROWS_TABLE} WHERE dag_id=? AND node_id=? AND run_seq=? "
+                "ORDER BY seq",
+                (dag_id, node_id, run_seq),
             ).fetchall()
         out: list[dict[str, Any]] = []
         for record in found:
@@ -197,33 +238,34 @@ class RungTables:
             out.append(row)
         return out
 
-    def text(self, dag_id: str, node_id: str, item_id: str) -> str:
+    def text(self, dag_id: str, node_id: str, item_id: str, run_seq: int | None = None) -> str:
+        run_seq = run_seq or (self.attempts(dag_id, node_id) or [1])[-1]
         with self.store.connect() as connection:
             found = connection.execute(
-                f"SELECT text FROM {TEXT_TABLE} WHERE dag_id=? AND node_id=? AND item_id=?",
-                (dag_id, node_id, str(item_id)),
+                f"SELECT text FROM {TEXT_TABLE} WHERE dag_id=? AND node_id=? AND run_seq=? "
+                "AND item_id=?",
+                (dag_id, node_id, run_seq, str(item_id)),
             ).fetchone()
         return str(found["text"]) if found else ""
 
-    def texts(self, dag_id: str, node_id: str) -> dict[str, str]:
+    def texts(self, dag_id: str, node_id: str, run_seq: int | None = None) -> dict[str, str]:
+        run_seq = run_seq or (self.attempts(dag_id, node_id) or [1])[-1]
         with self.store.connect() as connection:
             found = connection.execute(
-                f"SELECT item_id, text FROM {TEXT_TABLE} WHERE dag_id=? AND node_id=?",
-                (dag_id, node_id),
+                f"SELECT item_id, text FROM {TEXT_TABLE} WHERE dag_id=? AND node_id=? "
+                "AND run_seq=?",
+                (dag_id, node_id, run_seq),
             ).fetchall()
         return {str(row["item_id"]): str(row["text"]) for row in found}
 
-    def ids(self, dag_id: str, node_id: str) -> list[str]:
-        with self.store.connect() as connection:
-            found = connection.execute(
-                f"SELECT item_id FROM {ROWS_TABLE} WHERE dag_id=? AND node_id=? ORDER BY seq",
-                (dag_id, node_id),
-            ).fetchall()
-        return [str(row["item_id"]) for row in found]
+    def ids(self, dag_id: str, node_id: str, run_seq: int | None = None) -> list[str]:
+        return [str(row["item_id"]) for row in self.rows(dag_id, node_id, run_seq)]
 
-    def export_csv(self, dag_id: str, node_id: str, path: str | Path) -> int:
+    def export_csv(
+        self, dag_id: str, node_id: str, path: str | Path, run_seq: int | None = None
+    ) -> int:
         """Hand a node's table to somebody who wants a file, on request."""
-        return write_csv(path, self.rows(dag_id, node_id))
+        return write_csv(path, self.rows(dag_id, node_id, run_seq))
 
 
 def _cell(value: Any) -> str:

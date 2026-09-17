@@ -108,7 +108,20 @@ calls — into one node per rung, and each node writes the table it produced int
 the run's own SQLite database: `rung_rows` (the population, the verdicts, who it
 passes on) and `rung_text` (the prose each verdict stood on). The next node
 queries those tables rather than parsing a file, and CSV is an export you ask
-for. `harness-fleet dag --lane partner --from-items captured.jsonl --emit-spec`
+for. Each write is an *attempt* keyed by `run_seq`, so re-running a rung adds an
+answer rather than replacing one.
+
+Two tables outlive the run:
+
+- **`entity_state`** — the running list. One row per entity, forever: what is
+  currently believed (last verdict, the gate that stopped it, what is still
+  open), what has been gathered, and how many times it has been seen. Every node
+  folds its rows in as it finishes. `harness-fleet ledger` reads it.
+- **`entity_events`** — append-only, one row per entity per node per attempt, so
+  "when did they first appear" and "why did we drop them" stay answerable after
+  the state row has moved on. An elimination stands until something actually
+  re-qualifies the entity; a node that merely carried it forward cannot revive
+  it. `harness-fleet dag --lane partner --from-items captured.jsonl --emit-spec`
 prints exactly this:
 
 ```
