@@ -20,15 +20,30 @@ from pydantic import Field, model_validator
 from .calibrate import PARAM_KINDS, collect_observations, fit_calibration
 from .catalog import RouteCatalog
 from .engine import Engine
+from .enrich import enrich_entity
 from .export import (
     _filter_and_sort_records,
     export_clean_packet,
     verified_records_from_snapshot,
 )
+from .gates import DEFAULT_LADDER, FETCHED, SNIPPET, LadderRung
 from .input_data import load_input_items
 from .models import CalibrationReport, ClaimFilter, ClosedModel, RoutePolicy, SortSpec
 from .profile import IdealCompanyProfile
 from .providers.registry import ProviderRegistry, ProviderResolutionError
+from .rungs import (
+    advances_to,
+    candidate_name,
+    count_rows,
+    gate_rows,
+    next_rung,
+    read_table,
+    record_text,
+    resolved_gate_profile,
+    surviving_ids,
+    table_path,
+    write_table,
+)
 from .store import HarnessStore
 from .task import load_task_spec
 
@@ -169,12 +184,72 @@ class ReviewNode(ClosedModel):
     workspace_root: str | None = None
 
 
-DagNode = RunNode | RescoreNode | CalibrateNode | FilterNode | ExportNode | ReviewNode
+class GateNode(ClosedModel):
+    """One rung of a lane's ladder, put to the population the rung above left.
+
+    A gate node reads exactly one source, and the source is what its verdict is
+    entitled to stand on: the discovery run's records (the rung that reads
+    search results), a retrieve node's fetched prose (the rung that spends a
+    page visit), or the gate above it (a rung that adds gates but no evidence).
+    Either way it writes the table this rung produced — every candidate it was
+    given, the gates' verdicts, and who it passes on — so the population is
+    inspectable at each step rather than only at the end.
+    """
+
+    kind: Literal["gate"] = "gate"
+    id: str
+    lane: str
+    rung: str
+    from_run: str | None = None
+    from_gate: str | None = None
+    from_retrieve: str | None = None
+    #: An explicit grade for what this gate is reading. Empty infers it: text
+    #: that came through a retrieve node was read, so it gates as ``fetched``;
+    #: a run's own records were given, so they gate as results.
+    evidence: Literal["", "snippet", "fetched"] = ""
+    profile: str | None = None
+
+    @model_validator(mode="after")
+    def check_source(self) -> GateNode:
+        sources = [self.from_run, self.from_gate, self.from_retrieve]
+        if len([source for source in sources if source]) != 1:
+            raise DagError(
+                f"gate node '{self.id}' needs exactly one of 'from_run', "
+                "'from_gate' or 'from_retrieve'"
+            )
+        return self
+
+
+class RetrieveNode(ClosedModel):
+    """Spend the page visits one rung declared, and write down what came back.
+
+    The walk is bounded by the rung's own surfaces rather than by a list
+    assembled at the call site, so a rung that names case studies is the reason
+    case studies get read and a rung that names none reads none. The prose it
+    fetched is kept next to the table, one file per candidate, because that text
+    is what the next rung's gate is judged on — and a verdict has to be
+    re-readable after the run.
+    """
+
+    kind: Literal["retrieve"] = "retrieve"
+    id: str
+    lane: str
+    rung: str
+    from_gate: str
+    max_pages: int = 8
+    per_surface: int = 3
+    pace: float = 0.0
+
+
+DagNode = (
+    RunNode | RescoreNode | CalibrateNode | FilterNode | ExportNode | ReviewNode
+    | GateNode | RetrieveNode
+)
 
 
 class DagSpec(ClosedModel):
     name: str
-    nodes: list[RunNode | RescoreNode | CalibrateNode | FilterNode | ExportNode | ReviewNode]
+    nodes: list[DagNode]
 
     @model_validator(mode="after")
     def check_graph(self) -> DagSpec:
@@ -235,6 +310,40 @@ class DagSpec(ClosedModel):
                 deps[node.id] = {ref}
             elif isinstance(node, CalibrateNode):
                 deps[node.id] = set()
+            elif isinstance(node, GateNode):
+                refs: list[tuple[str, tuple[type, ...]]] = []
+                if node.from_run:
+                    # A gate reads either a run node in this graph or an
+                    # existing run by id, the way a review node does: a ladder
+                    # is worth running over a discovery run that already
+                    # happened, and demanding a `run` node for it would make
+                    # every ladder graph begin with work it does not need.
+                    if by_id.get(node.from_run) is not None:
+                        refs.append((node.from_run, (RunNode, RescoreNode)))
+                if node.from_gate:
+                    refs.append((node.from_gate, (GateNode,)))
+                if node.from_retrieve:
+                    refs.append((node.from_retrieve, (RetrieveNode,)))
+                for ref, allowed in refs:
+                    target = by_id.get(ref)
+                    if target is None:
+                        raise DagError(f"node '{node.id}' references unknown node '{ref}'")
+                    if not isinstance(target, allowed):
+                        wanted = " or ".join(cls.__name__ for cls in allowed)
+                        raise DagError(f"node '{node.id}' reads '{ref}', which is not a {wanted}")
+                    if ref == node.id:
+                        raise DagError(f"node '{node.id}' references itself")
+                deps[node.id] = {ref for ref, _ in refs}
+            elif isinstance(node, RetrieveNode):
+                ref = node.from_gate
+                target = by_id.get(ref)
+                if target is None:
+                    raise DagError(f"node '{node.id}' references unknown node '{ref}'")
+                if not isinstance(target, GateNode):
+                    raise DagError(f"node '{node.id}' from_gate '{ref}' is not a gate node")
+                if ref == node.id:
+                    raise DagError(f"node '{node.id}' references itself")
+                deps[node.id] = {ref}
             else:
                 ref = node.from_run
                 target = by_id.get(ref)
@@ -590,6 +699,267 @@ def _ensure_routes(store: HarnessStore, policy: RoutePolicy | None) -> None:
     print("No verified-free route yet; refreshing route prices from the providers...")
     catalog.refresh_all()
 
+def _lane_for(name: str, root: Path):
+    """The lane a gate or retrieve node names, workspace lane first."""
+    from .lanes import load_available_lanes
+
+    lane = load_available_lanes(root).get(name)
+    if lane is None:
+        raise DagError(f"lane '{name}' is not available in {root / 'lanes'}")
+    return lane
+
+
+def _ladder_of(lane: Any) -> list[LadderRung]:
+    return list(lane.funnel.rungs() or DEFAULT_LADDER)
+
+
+def _rung_of(lane: Any, name: str) -> tuple[LadderRung, list[LadderRung]]:
+    ladder = _ladder_of(lane)
+    for rung in ladder:
+        if rung.name == name:
+            return rung, ladder
+    known = ", ".join(rung.name for rung in ladder) or "none"
+    raise DagError(f"lane '{lane.name}' has no rung '{name}' (its rungs: {known})")
+
+
+class _Carried:
+    """One upstream row, read back as the record a gate node can gate on.
+
+    A row that came through a gate or a retrieve node is not a run record, but
+    the gate contract only needs three things from it — who it is about, the
+    text the verdict stands on, and where that text came from — and all three
+    are in the table plus the text file the table points at.
+    """
+
+    __slots__ = ("item_id", "text", "source_uri", "metadata")
+
+    def __init__(self, item_id: str, candidate: str, text: str, source_uri: str = "") -> None:
+        self.item_id = item_id
+        self.text = text
+        self.source_uri = source_uri
+        self.metadata = {"entity": candidate, "carried_from": source_uri}
+
+
+def _read_text(path: str) -> str:
+    if not path:
+        return ""
+    try:
+        return Path(path).read_text(encoding="utf-8")
+    except OSError:
+        return ""
+
+
+def _text_file(directory: Path, index: int, candidate: str) -> Path:
+    slug = "".join(ch if ch.isalnum() or ch in "-_." else "_" for ch in candidate) or "candidate"
+    return directory / "text" / f"{index:04d}-{slug}.txt"
+
+
+def _execute_gate_node(
+    node: GateNode,
+    store: HarnessStore,
+    root: Path,
+    dag_dir: Path,
+    state: dict[str, Any],
+    dag_id: str,
+) -> dict[str, Any]:
+    """Put one rung's gates to the population above it, and write the table."""
+    lane = _lane_for(node.lane, root)
+    rung, ladder = _rung_of(lane, node.rung)
+    profile = resolved_gate_profile(lane, workspace=root, profile_path=node.profile)
+    directory = dag_dir / node.id
+    directory.mkdir(parents=True, exist_ok=True)
+
+    carried: list[Any] = []
+    evidence = node.evidence or SNIPPET
+    text_paths: dict[str, str] = {}
+    upstream_table: str = ""
+    if node.from_run:
+        saved_node = (state.get("nodes") or {}).get(node.from_run)
+        run_id = str(
+            (saved_node or {}).get("run_id") if isinstance(saved_node, dict) else ""
+        ) or node.from_run
+        try:
+            snapshot = store.run_snapshot(run_id)
+        except KeyError as exc:
+            raise DagError(
+                f"gate node '{node.id}' reads run '{run_id}', which does not exist"
+            ) from exc
+        records, _task = verified_records_from_snapshot(snapshot)
+        # The rung that reads search results reads the item the run was given,
+        # not the quotes the model chose to cite: a citation is the sentence
+        # that supported a claim, and a headcount or a country can sit anywhere
+        # on the result the run was handed. The item file is the only place the
+        # whole of it still exists.
+        given: dict[str, Any] = {}
+        input_path = str(snapshot.get("input_path") or "")
+        if input_path and Path(input_path).is_file():
+            try:
+                given = {
+                    str(item.item_id): item
+                    for item in load_input_items(
+                        Path(input_path),
+                        only_ids={str(getattr(record, "item_id", "")) for record in records},
+                    )
+                }
+            except (OSError, ValueError):
+                given = {}
+        for index, record in enumerate(records):
+            item_id = str(getattr(record, "item_id", "") or "")
+            source = given.get(item_id)
+            candidate = candidate_name(source or record, item_id)
+            text = record_text(source) if source is not None else record_text(record)
+            uri = str(getattr(source or record, "source_uri", "") or "")
+            path = _text_file(directory, index, candidate)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text, encoding="utf-8")
+            text_paths[item_id] = str(path)
+            carried.append(_Carried(item_id, candidate, text, uri))
+    else:
+        source_id = node.from_gate or node.from_retrieve or ""
+        source_state = (state.get("nodes") or {}).get(source_id) or {}
+        upstream_table = str(source_state.get("table") or "")
+        if not upstream_table or not Path(upstream_table).is_file():
+            raise DagError(
+                f"gate node '{node.id}' reads '{source_id}', which has no table to read"
+            )
+        if node.from_retrieve:
+            # We read these pages in the node above, so this rung stands on
+            # fetched text whether or not it declared that grade itself.
+            evidence = node.evidence or FETCHED
+        elif not node.evidence:
+            evidence = str(source_state.get("evidence") or SNIPPET)
+        for row in read_table(upstream_table):
+            item_id = str(row.get("item_id") or "")
+            text_path = str(row.get("text_path") or "")
+            text_paths[item_id] = text_path
+            carried.append(
+                _Carried(
+                    item_id=item_id,
+                    candidate=str(row.get("candidate") or item_id),
+                    text=_read_text(text_path),
+                    source_uri=str(row.get("source_uri") or ""),
+                )
+            )
+    if node.from_gate and node.evidence:
+        evidence = node.evidence
+
+    rows, reports = gate_rows(
+        carried,
+        rung=rung,
+        ladder=ladder,
+        profile=profile,
+        evidence=evidence,
+    )
+    following = next_rung(ladder, rung)
+    for row, report in zip(rows, reports, strict=True):
+        row["text_path"] = text_paths.get(str(row["item_id"]), "")
+        row["advances"] = advances_to(report, following)
+        row["next_rung"] = following.name if following else ""
+    path = table_path(directory)
+    write_table(path, rows)
+    counts = count_rows(rows)
+    passing = surviving_ids([row for row in rows if row["advances"]]) if following else []
+    return {
+        "kind": "gate",
+        "lane": node.lane,
+        "rung": node.rung,
+        "evidence": evidence,
+        "gates": list(rung.gates),
+        "from_run": node.from_run or "",
+        "upstream_table": upstream_table,
+        "table": str(path),
+        "next_rung": following.name if following else "",
+        "counts": counts,
+        "ids": passing,
+        "count": len(passing),
+        "gated": len(rows),
+        "gates_run": [
+            {
+                "gate": result.gate,
+                "outcome": result.outcome,
+                "reason": result.reason,
+            }
+            for report in reports
+            for result in report.results
+        ],
+    }
+
+
+def _execute_retrieve_node(
+    node: RetrieveNode,
+    root: Path,
+    dag_dir: Path,
+    state: dict[str, Any],
+) -> dict[str, Any]:
+    """Spend one rung's page visits and write down what came back."""
+    lane = _lane_for(node.lane, root)
+    rung, _ladder = _rung_of(lane, node.rung)
+    source_state = (state.get("nodes") or {}).get(node.from_gate) or {}
+    upstream_table = str(source_state.get("table") or "")
+    if not upstream_table or not Path(upstream_table).is_file():
+        raise DagError(
+            f"retrieve node '{node.id}' reads gate '{node.from_gate}', which has no table"
+        )
+    passing = {str(item) for item in source_state.get("ids") or []}
+    rows: list[dict[str, Any]] = []
+    directory = dag_dir / node.id
+    directory.mkdir(parents=True, exist_ok=True)
+    for index, row in enumerate(read_table(upstream_table)):
+        item_id = str(row.get("item_id") or "")
+        if item_id not in passing:
+            # The rung above decided this candidate is not owed a page visit.
+            # Not reading it is the decision, so it is not in this table.
+            continue
+        candidate = str(row.get("candidate") or item_id)
+        records, walk = enrich_entity(
+            candidate,
+            kinds=lane.require_kinds,
+            per_surface=node.per_surface,
+            max_pages=node.max_pages,
+            pace=node.pace,
+            surface_order=rung.surfaces,
+        )
+        text = "\n\n".join(record_text(record) for record in records if record_text(record))
+        path = _text_file(directory, index, candidate)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        rows.append(
+            {
+                "item_id": item_id,
+                "candidate": candidate,
+                "rung": rung.name,
+                "evidence": FETCHED,
+                "outcome": "read" if records else "nothing",
+                "earned": "",
+                "because": "" if records else f"no page on {', '.join(rung.surfaces)}",
+                "gates": [],
+                "surfaces": walk.by_surface,
+                "pages": [record.source_uri for record in records if getattr(record, "source_uri", None)],
+                "text_path": str(path),
+                "source_uri": str(row.get("source_uri") or ""),
+                "visited": walk.visited,
+                "kept": walk.kept,
+                "skipped": walk.skipped,
+                "advances": True,
+            }
+        )
+    path = table_path(directory)
+    write_table(path, rows)
+    return {
+        "kind": "retrieve",
+        "lane": node.lane,
+        "rung": rung.name,
+        "surfaces": list(rung.surfaces),
+        "from_gate": node.from_gate,
+        "table": str(path),
+        "count": len(rows),
+        "read": sum(1 for row in rows if row["outcome"] == "read"),
+        "empty": sum(1 for row in rows if row["outcome"] == "nothing"),
+        "visited": sum(int(row["visited"]) for row in rows),
+        "ids": [str(row["item_id"]) for row in rows],
+    }
+
+
 def run_dag(
     spec: DagSpec,
     store: HarnessStore,
@@ -633,6 +1003,26 @@ def run_dag(
         saved = state["nodes"].get(node_id) if isinstance(state.get("nodes"), dict) else None
         if isinstance(node, ReviewNode):
             state["nodes"][node_id] = _execute_review_node(node, store, root, state, dag_id)
+            sidecar.write_text(json.dumps(state, indent=2), encoding="utf-8")
+            continue
+        if isinstance(node, GateNode):
+            if resume and isinstance(saved, dict) and saved.get("table") and Path(saved["table"]).is_file():
+                saved["cached"] = True
+                id_sets[node_id] = {str(item) for item in saved.get("ids") or []}
+                continue
+            saved = _execute_gate_node(node, store, root, dag_dir, state, dag_id)
+            state["nodes"][node_id] = saved
+            id_sets[node_id] = {str(item) for item in saved.get("ids") or []}
+            sidecar.write_text(json.dumps(state, indent=2), encoding="utf-8")
+            continue
+        if isinstance(node, RetrieveNode):
+            if resume and isinstance(saved, dict) and saved.get("table") and Path(saved["table"]).is_file():
+                saved["cached"] = True
+                id_sets[node_id] = {str(item) for item in saved.get("ids") or []}
+                continue
+            saved = _execute_retrieve_node(node, root, dag_dir, state)
+            state["nodes"][node_id] = saved
+            id_sets[node_id] = {str(item) for item in saved.get("ids") or []}
             sidecar.write_text(json.dumps(state, indent=2), encoding="utf-8")
             continue
         if isinstance(node, RunNode):

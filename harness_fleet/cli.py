@@ -1052,13 +1052,55 @@ def cmd_eval(args: argparse.Namespace) -> None:
         ui.print_eval_table(report)
 
 
+def _lane_dag_spec(args: argparse.Namespace, lane_name: str):
+    """A lane's ladder, compiled into the DAG that runs it rung by rung.
+
+    The ladder is already the shape of the pipeline, so nothing here decides
+    anything: each rung becomes the gate that puts its questions to the
+    population above it, and the walk between two rungs becomes the retrieve
+    node that spends the page visits the rung declared. What comes out is a spec
+    like any other, so it can be inspected, edited and re-run with --spec.
+    """
+    from .dag import DagError, DagSpec
+    from .lanes import load_available_lanes
+    from .rungs import lane_spec
+
+    root = Path(getattr(args, "workspace_root", ".") or ".")
+    lane = load_available_lanes(root).get(lane_name)
+    if lane is None:
+        available = ", ".join(sorted(load_available_lanes(root))) or "none installed"
+        raise DagError(f"lane '{lane_name}' is not available (have: {available})")
+    from_run = getattr(args, "from_run", None)
+    if not from_run:
+        raise DagError(
+            f"--lane {lane_name} gates the records of a run: give --from-run <run_id>"
+        )
+    spec = lane_spec(
+        lane,
+        from_run=from_run,
+        name=f"lane-{lane_name}",
+        workspace=root,
+        profile_path=getattr(args, "profile", None),
+    )
+    return DagSpec.model_validate(spec)
+
+
 def cmd_dag(args: argparse.Namespace) -> None:
     from .dag import DagError, DagSpec, run_dag
 
-    try:
-        spec = DagSpec.model_validate_json(Path(args.spec).read_text(encoding="utf-8"))
-    except Exception as exc:
-        raise DagError(f"invalid DAG spec '{args.spec}': {exc}") from exc
+    lane_name = getattr(args, "lane", None)
+    if lane_name:
+        spec = _lane_dag_spec(args, lane_name)
+        if getattr(args, "emit_spec", False):
+            print(json.dumps(spec.model_dump(mode="json"), indent=2))
+            return
+    else:
+        if not getattr(args, "spec", None):
+            raise DagError("give --spec, or --lane with --from-run")
+        try:
+            spec = DagSpec.model_validate_json(Path(args.spec).read_text(encoding="utf-8"))
+        except Exception as exc:
+            raise DagError(f"invalid DAG spec '{args.spec}': {exc}") from exc
     order = spec.topo_order()
     if getattr(args, "dry_run", False):
         _emit(
@@ -1769,6 +1811,17 @@ def _enrich_entities(
             continue
         targets.append((entity, missing))
 
+    # The lane's ladder names the pages the walk should read, in rung order —
+    # landing page first, then the cheap-qualifier pages, then the deep read.
+    # The walk reads whatever names the plan knows; a lane without a ladder
+    # walks exactly as before.
+    surface_order = (
+        list(dict.fromkeys(
+            surface for rung in lane.funnel.rungs() for surface in rung.surfaces
+        ))
+        if lane is not None else []
+    )
+
     def walk_one(target: tuple[str, list[str]]) -> tuple[str, list[str], list[Any], Any]:
         entity, missing = target
         records, walk = enrich_entity(
@@ -1781,6 +1834,7 @@ def _enrich_entities(
             vendor_stories=vendor_stories,
             story_urls=shared_story_urls,
             pace=max(0.0, delay),
+            surface_order=surface_order,
         )
         return entity, missing, records, walk
 
@@ -3258,7 +3312,12 @@ def build_parser() -> argparse.ArgumentParser:
     export.add_argument("--filter", dest="filter", help="ClaimFilter JSON (e.g. '{\"all\": [{\"field\": \"score\", \"op\": \">=\", \"value\": 80}]}'; ops: ==, !=, >=, <=, >, <, in, not_in; \"any\" holds OR branches)")
 
     dag = commands.add_parser("dag", help="Run a declarative DAG workflow (typed nodes, lossless edges)")
-    dag.add_argument("--spec", required=True, help="DAG spec JSON file")
+    dag.add_argument("--spec", help="DAG spec JSON file")
+    dag.add_argument("--lane", help="Run this lane's ladder as a DAG (needs --from-run)")
+    dag.add_argument("--from-run", help="Existing run id the lane's first rung gates")
+    dag.add_argument("--profile", help="Ideal partner profile the gates come from")
+    dag.add_argument("--emit-spec", action="store_true",
+                     help="Print the compiled lane spec instead of running it")
     dag.add_argument("--dag-id", help="Workflow ID (default: <name>-<spec digest>)")
     dag.add_argument("--dry-run", action="store_true", help="Validate the spec and print execution order without running")
     dag.add_argument("--no-resume", action="store_true", help="Re-execute completed run nodes instead of resuming them")
