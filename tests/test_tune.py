@@ -328,3 +328,81 @@ def test_cli_lane_tune_and_lane_eval(capsys):
     assert "Synthetic Gate Benchmark" in out
     assert "Accuracy    : 100.0%" in out
 
+
+
+def test_audit_database_output_feeds_the_text_report(tmp_path):
+    """The report is only reachable if the audit produces what it reads.
+
+    The formatter's contract was exercised against a hand-written dict, so it
+    passed while the real path reported "no records" for every database —
+    including ones full of rows. This asserts the round trip instead.
+    """
+    import sqlite3
+
+    db = tmp_path / "audit.db"
+    con = sqlite3.connect(db)
+    con.executescript(
+        """
+        CREATE TABLE rung_rows (
+            dag_id TEXT, node_id TEXT, lane TEXT, rung TEXT, item_id TEXT,
+            outcome TEXT, advances INTEGER, score REAL, surfaces TEXT
+        );
+        """
+    )
+    con.executemany(
+        "INSERT INTO rung_rows VALUES (?,?,?,?,?,?,?,?,?)",
+        [
+            ("d1", "g0-result", "partner", "result", "a.com", "lead", 1, 0, "{}"),
+            ("d1", "g1-surface", "partner", "surface", "a.com", "eliminated", 0, 0, "{}"),
+            ("d1", "r1-surface", "partner", "surface", "b.com", "read", 1, 0, '{"home": 2}'),
+        ],
+    )
+    con.commit()
+    con.close()
+
+    aud = audit_database(db)
+    assert aud["exists"] is True
+    assert aud["rung_rows"] == 3
+    assert aud["unique_entities"] == 2
+    assert aud["runs"] == 1  # counted from dag ids when there is no runs table
+
+    rendered = format_audit_report(aud)
+    assert "does not exist" not in rendered
+    assert "PARTNER" in rendered
+    assert "g1-surface" in rendered
+    assert "Unique Entities: 2" in rendered
+
+
+def test_the_simulator_uses_the_lanes_own_gates():
+    """A lane that asks no kind question must not be asked the partner's.
+
+    `simulate_candidate` handed the gate engine `lane.model_dump()`, which nests
+    the gate fields under `funnel`; `allows` was therefore never read, every lane
+    defaulted to `services`, and a career posting was eliminated for "nothing
+    reads as a delivery firm" in a lane that asks nothing of the kind.
+    """
+    product_text = "Our platform. Book a demo. Free trial and pricing plans, per seat."
+    for lane_name in ("career", "account"):
+        sim = simulate_candidate(
+            candidate="vendor.example",
+            snippet=product_text,
+            page_text=product_text,
+            lane_name=lane_name,
+        )
+        kind_failures = [
+            gate
+            for step in sim.steps
+            for gate in step.gates
+            if gate.get("gate") == "kind" and gate.get("outcome") == "fail"
+        ]
+        assert not kind_failures, f"{lane_name} asks no kind question, so it cannot fail one"
+        assert sim.standing is True
+
+    # The partner lane *does* ask it, and must still eliminate the vendor.
+    partner_sim = simulate_candidate(
+        candidate="vendor.example",
+        snippet=product_text,
+        page_text=product_text,
+        lane_name="partner",
+    )
+    assert partner_sim.final_verdict == "eliminated"
