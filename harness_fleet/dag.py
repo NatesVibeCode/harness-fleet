@@ -337,8 +337,9 @@ class ScoreNode(ClosedModel):
     kind: Literal["score"] = "score"
     id: str
     lane: str
-    #: The gate whose survivors are judged. Usually the last one.
-    from_gate: str
+    #: The gate whose survivors are judged. Usually the last one, and absent
+    #: when the graph ran no gates at all — a walk-only run is still scored.
+    from_gate: str = ""
     #: Every node whose rows and items belong to these firms: the walks, and the
     #: file of candidates the run started from.
     from_nodes: list[str] = Field(default_factory=list)
@@ -352,6 +353,14 @@ class ScoreNode(ClosedModel):
     max_attempts: int = 300
     policy: RoutePolicy | None = None
     top: int | None = None
+
+    @model_validator(mode="after")
+    def check_source(self) -> ScoreNode:
+        if not self.from_gate and not self.from_nodes:
+            raise DagError(
+                f"score node '{self.id}' needs something to judge: 'from_gate' or 'from_nodes'"
+            )
+        return self
 
 
 DagNode = (
@@ -469,7 +478,7 @@ class DagSpec(ClosedModel):
                     raise DagError(f"node '{node.id}' references itself")
                 deps[node.id] = {ref}
             elif isinstance(node, ScoreNode):
-                refs = [node.from_gate, *node.from_nodes]
+                refs = [ref for ref in [node.from_gate, *node.from_nodes] if ref]
                 for source_ref in refs:
                     target = by_id.get(source_ref)
                     if target is None:
@@ -1355,6 +1364,7 @@ def _execute_score_node(
     dag_dir: Path,
     dag_id: str,
     state: dict[str, Any],
+    gate_ids: Sequence[str] = (),
 ) -> dict[str, Any]:
     """Judge the population the ladder left, and record what came back."""
     from .bundler import bundle_records
@@ -1362,10 +1372,11 @@ def _execute_score_node(
 
     lane = _lane_for(node.lane, root)
     tables = RungTables(store)
-    gates = [n.id for n in state.get("_spec_nodes", []) if n.get("kind") == "gate"] or [
-        node.from_gate
-    ]
-    standing = population(tables, dag_id, gates)
+    # Who is standing is a question about every gate in the graph, not about the
+    # last one: a candidate killed at the surface rung is in the walk's table
+    # (it was walked before it was judged) and must not be scored anyway.
+    gates = list(gate_ids) or [node.from_gate]
+    standing = population(tables, dag_id, [gate for gate in gates if gate])
     sources: list[Any] = []
     empty_sources = 0
     for source_id in [*(node.from_nodes or []), *([node.from_gate] if node.from_gate else [])]:
@@ -1464,6 +1475,7 @@ def _execute_score_node(
             sum(row["score"] for row in rows) / len(rows), 2
         ) if rows else 0.0,
         "ids": [str(row["item_id"]) for row in rows],
+        "dossiers_path": str(dossiers_path),
         "packet": str(dag_dir / node.id / "clean_packet.json"),
     }
 
@@ -1554,7 +1566,10 @@ def run_dag(
         if isinstance(node, ScoreNode):
             # A score is the thing being tuned, so it is never silently reused:
             # running the graph again is how a lane gets judged twice.
-            saved = _execute_score_node(node, store, root, dag_dir, dag_id, state)
+            saved = _execute_score_node(
+                node, store, root, dag_dir, dag_id, state,
+                gate_ids=[n.id for n in spec.nodes if isinstance(n, GateNode)],
+            )
             state["nodes"][node_id] = saved
             id_sets[node_id] = {str(item) for item in saved.get("ids") or []}
             sidecar.write_text(json.dumps(state, indent=2), encoding="utf-8")

@@ -2314,22 +2314,35 @@ def cmd_research(args: argparse.Namespace) -> None:
                 f"Reasons recorded: {report_path}"
             )
     report["enrich"] = funnel_walk_report(funnel_state, store)
-    dossiers = bundle_records(keyed)
-    print(f"Captured {len(keyed)} sources into {len(dossiers)} account dossiers")
-
+    # The dossiers the scoring node judged are the deliverable's input, and the
+    # file a person reads has to be that file. Bundling again here produced a
+    # second set that could differ from what the model actually saw.
+    scored_node = next(
+        (
+            info for info in (funnel_state.get("nodes") or {}).values()
+            if isinstance(info, dict) and info.get("kind") == "score"
+        ),
+        None,
+    )
+    judged_input = Path(str((scored_node or {}).get("dossiers_path") or ""))
+    dossiers = bundle_records(keyed) if not judged_input.is_file() else None
     input_path = workspace / output
     input_path.parent.mkdir(parents=True, exist_ok=True)
-    export_bundled_csv(dossiers, input_path)
-    merged = len(keyed) - len(dossiers)
-    print(f"Bundled {len(keyed)} sources into {len(dossiers)} account dossiers"
-          + (f" ({merged} merged)" if merged else "") + f" -> {input_path}")
+    if judged_input.is_file():
+        shutil.copyfile(judged_input, input_path)
+        dossier_count = int((scored_node or {}).get("dossiers") or 0)
+    else:
+        assert dossiers is not None
+        export_bundled_csv(dossiers, input_path)
+        dossier_count = len(dossiers)
+    print(f"Bundled {len(keyed)} sources into {dossier_count} account dossiers -> {input_path}")
     # The report is written before the bundle, so it held only the search hits
     # while the run shipped hundreds of dossiers. A run's account of itself has
     # to describe what it produced, not the first stage of producing it.
     report["sources_bundled"] = len(keyed)
-    report["dossiers"] = len(dossiers)
-    if merged:
-        report["merged"] = merged
+    report["dossiers"] = dossier_count
+    if len(keyed) - dossier_count > 0:
+        report["merged"] = len(keyed) - dossier_count
     _write_discovery_report(workspace, run_id, report)
 
     # 2-3. The scoring stage already ran — it is a node in the graph above, and
@@ -2381,7 +2394,7 @@ def cmd_research(args: argparse.Namespace) -> None:
             "accounts": str(input_path),
             "packet": str(packet_path),
             "ranked": str(ranked_path),
-            "items": len(dossiers),
+            "items": report.get("dossiers"),
             "verified_records": verified,
             "evidence": readout,
             "evidence_path": str(evidence_path),

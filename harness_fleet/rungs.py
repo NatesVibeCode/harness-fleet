@@ -685,7 +685,7 @@ def lane_spec(
                 "from_gate": resolve_id,
             })
             previous_gate = recheck_id
-    if score and previous_gate:
+    if score and (previous_gate or nodes):
         # The last stage is a stage: it reads the population the ladder left
         # standing, gathers what the walks read about those firms, and writes the
         # score and the facts onto the same running list everything else feeds.
@@ -693,7 +693,7 @@ def lane_spec(
             "kind": "score",
             "id": "s-score",
             "lane": lane.name,
-            "from_gate": previous_gate,
+            **({"from_gate": previous_gate} if previous_gate else {}),
             "from_nodes": [node["id"] for node in nodes if node["kind"] == "retrieve"],
             **({"from_items": from_items} if from_items is not None else {}),
             **({"task": score_task} if score_task else {}),

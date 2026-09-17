@@ -296,3 +296,26 @@ def test_the_trend_command_reads_the_movement(tmp_path, capsys):
     ))
     payload = json.loads(capsys.readouterr().out)
     assert payload["movers"][0]["delta"] == 26.5
+
+
+def test_a_walk_only_run_is_still_scored(tmp_path):
+    """Turning the gates off is not turning the run off: someone still judges it."""
+    from harness_fleet.dag import DagSpec, run_dag
+    from harness_fleet.lanes import shipped_lanes
+    from harness_fleet.rungs import lane_spec
+
+    captured = tmp_path / "captured.jsonl"
+    captured.write_text(
+        json.dumps({"item_id": "acme.co.uk", "text": "Acme is a systems integrator.",
+                    "content_type": "text/plain"}) + "\n",
+        encoding="utf-8",
+    )
+    spec = DagSpec.model_validate(lane_spec(
+        shipped_lanes()["partner"], from_items=str(captured), workspace=tmp_path,
+        gates=False, score=True, score_task="partner-research",
+    ))
+    assert spec.topo_order() == ["r0-surface", "s-score"]
+    # No gate to name, so the score node holds the population itself.
+    assert spec.nodes[-1].from_gate == ""
+    assert spec.nodes[-1].from_nodes == ["r0-surface"]
+    assert run_dag is not None
