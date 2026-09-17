@@ -354,6 +354,13 @@ class Ledger:
             out.append(row)
         return out
 
+    def history_count(self) -> int:
+        """How many visits the record holds, for a store nobody prunes by hand."""
+        with self.store.connect() as connection:
+            return int(
+                connection.execute(f"SELECT COUNT(*) AS n FROM {EVENTS_TABLE}").fetchone()["n"]
+            )
+
     def counts(self) -> dict[str, int]:
         """The running list in one line: how many, and where they stand."""
         with self.store.connect() as connection:

@@ -1175,18 +1175,12 @@ def _execute_retrieve_node(
     Ledger(store).record(rows, dag_id=dag_id, node_id=node.id, run_seq=attempt, lane=node.lane)
     # What the walk gathered is the next node's input, so it goes in the same
     # place: a table queried out of the database rather than a file to re-read.
-    items_table = f"rung_items_{dag_id}_{node.id}".replace("-", "_")
-    with store.connect() as connection:
-        connection.execute(
-            f'CREATE TABLE IF NOT EXISTS "{items_table}" '
-            "(seq INTEGER PRIMARY KEY, payload TEXT NOT NULL)"
-        )
-        connection.execute(f'DELETE FROM "{items_table}"')
-        for seq, item in enumerate(extra):
-            connection.execute(
-                f'INSERT INTO "{items_table}" (seq, payload) VALUES (?, ?)',
-                (seq, json.dumps(item.model_dump(mode="json", by_alias=True), ensure_ascii=False)),
-            )
+    tables.write_items(
+        dag_id,
+        node.id,
+        [item.model_dump(mode="json", by_alias=True) for item in extra],
+        run_seq=attempt,
+    )
     return {
         "kind": "retrieve",
         "lane": node.lane,
@@ -1194,7 +1188,6 @@ def _execute_retrieve_node(
         "surfaces": list(rung.surfaces),
         "from_gate": node.from_gate,
         "attempt": attempt,
-        "items_table": items_table,
         "items": len(extra),
         "count": len(rows),
         "read": sum(1 for row in rows if row["outcome"] == "read"),
@@ -1380,8 +1373,7 @@ def _execute_score_node(
     sources: list[Any] = []
     empty_sources = 0
     for source_id in [*(node.from_nodes or []), *([node.from_gate] if node.from_gate else [])]:
-        source_state = (state.get("nodes") or {}).get(source_id) or {}
-        for payload in _read_items_table(store, str(source_state.get("items_table") or "")):
+        for payload in tables.items(dag_id, source_id):
             sources.append(InputItem.model_validate(payload))
         for row in tables.rows(dag_id, source_id):
             item_id = str(row.get("item_id") or "")
@@ -1505,14 +1497,6 @@ def _execute_score_node(
         "dossiers_path": str(dossiers_path),
         "packet": str(dag_dir / node.id / "clean_packet.json"),
     }
-
-
-def _read_items_table(store: HarnessStore, table: str) -> list[dict[str, Any]]:
-    if not table:
-        return []
-    with store.connect() as connection:
-        found = connection.execute(f'SELECT payload FROM "{table}" ORDER BY seq').fetchall()
-    return [json.loads(row["payload"]) for row in found]
 
 
 def run_dag(

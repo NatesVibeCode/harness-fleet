@@ -61,6 +61,12 @@ TABLE_COLUMNS: tuple[str, ...] = (
 #: find, parse and keep in step.
 ROWS_TABLE = "rung_rows"
 TEXT_TABLE = "rung_text"
+#: What a walk gathered, one row per item, in the same keyed shape as everything
+#: else. This used to be a table per node whose name was built by joining the
+#: dag and node ids — which meant two different nodes could produce the same
+#: name ("a-b"+"c" and "a"+"b-c" both become rung_items_a_b_c) and quietly write
+#: into each other's table. A key is a key.
+ITEMS_TABLE = "rung_items"
 
 _SCHEMA = f"""
 CREATE TABLE IF NOT EXISTS {ROWS_TABLE} (
@@ -94,6 +100,14 @@ CREATE TABLE IF NOT EXISTS {ROWS_TABLE} (
     PRIMARY KEY (dag_id, node_id, run_seq, seq)
 );
 CREATE INDEX IF NOT EXISTS {ROWS_TABLE}_entity ON {ROWS_TABLE} (item_id);
+CREATE TABLE IF NOT EXISTS {ITEMS_TABLE} (
+    dag_id TEXT NOT NULL,
+    node_id TEXT NOT NULL,
+    run_seq INTEGER NOT NULL DEFAULT 1,
+    seq INTEGER NOT NULL,
+    payload TEXT NOT NULL,
+    PRIMARY KEY (dag_id, node_id, run_seq, seq)
+);
 CREATE TABLE IF NOT EXISTS {TEXT_TABLE} (
     dag_id TEXT NOT NULL,
     node_id TEXT NOT NULL,
@@ -275,6 +289,93 @@ class RungTables:
     ) -> int:
         """Hand a node's table to somebody who wants a file, on request."""
         return write_csv(path, self.rows(dag_id, node_id, run_seq))
+
+    def write_items(
+        self,
+        dag_id: str,
+        node_id: str,
+        payloads: Sequence[Any],
+        *,
+        run_seq: int,
+    ) -> int:
+        """Store what a walk gathered, in the attempt its rows were written to.
+
+        The attempt is required rather than derived: items that belong to one
+        attempt and land in another is the kind of bug a default hides.
+        """
+        run_seq = int(run_seq)
+        with self.store.connect() as connection:
+            connection.execute(
+                f"DELETE FROM {ITEMS_TABLE} WHERE dag_id=? AND node_id=? AND run_seq=?",
+                (dag_id, node_id, run_seq),
+            )
+            for seq, payload in enumerate(payloads):
+                connection.execute(
+                    f"INSERT INTO {ITEMS_TABLE} (dag_id, node_id, run_seq, seq, payload) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (dag_id, node_id, run_seq, seq, json.dumps(payload, ensure_ascii=False)),
+                )
+        return len(payloads)
+
+    def items(
+        self, dag_id: str, node_id: str, run_seq: int | None = None
+    ) -> list[Any]:
+        """The items a walk gathered, in order."""
+        run_seq = run_seq or (self.attempts(dag_id, node_id) or [1])[-1]
+        with self.store.connect() as connection:
+            found = connection.execute(
+                f"SELECT payload FROM {ITEMS_TABLE} WHERE dag_id=? AND node_id=? "
+                "AND run_seq=? ORDER BY seq",
+                (dag_id, node_id, run_seq),
+            ).fetchall()
+        return [json.loads(row["payload"]) for row in found]
+
+    def prune(self, *, keep_attempts: int = 1, dag_id: str | None = None) -> dict[str, int]:
+        """Drop all but the newest attempts, and say what went.
+
+        Rung tables are the record of a run, and a fleet that has run a hundred
+        times is a hundred attempts per node. The newest is the answer; the rest
+        are history somebody has to decide to keep, so this is a command rather
+        than something that happens on its own.
+        """
+        removed = {"rows": 0, "text": 0, "items": 0}
+        where = " WHERE dag_id=?" if dag_id else ""
+        params: tuple[Any, ...] = (dag_id,) if dag_id else ()
+        with self.store.connect() as connection:
+            found = connection.execute(
+                f"SELECT DISTINCT dag_id, node_id FROM {ROWS_TABLE}{where}", params
+            ).fetchall()
+            for key in found:
+                attempts = self.attempts(str(key["dag_id"]), str(key["node_id"]))
+                stale = attempts[: max(0, len(attempts) - max(1, int(keep_attempts)))]
+                for run_seq in stale:
+                    for table, column in (
+                        (ROWS_TABLE, "rows"),
+                        (TEXT_TABLE, "text"),
+                        (ITEMS_TABLE, "items"),
+                    ):
+                        cursor = connection.execute(
+                            f"DELETE FROM {table} WHERE dag_id=? AND node_id=? AND run_seq=?",
+                            (str(key["dag_id"]), str(key["node_id"]), run_seq),
+                        )
+                        removed[column] += int(cursor.rowcount or 0)
+        return removed
+
+    def stats(self) -> dict[str, int]:
+        """What the store is holding, so growth is visible before it is a problem."""
+        out: dict[str, int] = {}
+        with self.store.connect() as connection:
+            for table in (ROWS_TABLE, TEXT_TABLE, ITEMS_TABLE):
+                out[table] = int(
+                    connection.execute(f"SELECT COUNT(*) AS n FROM {table}").fetchone()["n"]
+                )
+            out["attempts"] = int(
+                connection.execute(
+                    f"SELECT COUNT(*) AS n FROM (SELECT DISTINCT dag_id, node_id, run_seq "
+                    f"FROM {ROWS_TABLE})"
+                ).fetchone()["n"]
+            )
+        return out
 
 
 def _cell(value: Any) -> str:

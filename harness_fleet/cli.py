@@ -1482,6 +1482,48 @@ def cmd_db_backup(args: argparse.Namespace) -> None:
     )
 
 
+def cmd_db_stats(args: argparse.Namespace) -> None:
+    """What the store is holding, so growth is visible before it is a problem.
+
+    Rung tables are the record of every run, kept per attempt: hundreds of runs
+    is hundreds of attempts per node, and nothing here deletes anything on its
+    own. This says how much there is; `db prune` is how you decide to let some
+    of it go.
+    """
+    from .ledger import Ledger
+    from .rungs import RungTables
+
+    store = _store(args)
+    tables = RungTables(store)
+    stats = tables.stats()
+    ledger = Ledger(store)
+    stats["entity_state"] = len(ledger.entities(limit=1_000_000))
+    stats["entity_events"] = ledger.history_count()
+    stats["bytes"] = Path(store.path).stat().st_size if Path(store.path).is_file() else 0
+    _emit(
+        stats,
+        args.json,
+        "Store: "
+        + ", ".join(f"{name}={value}" for name, value in stats.items())
+        + "\n  (`db prune` drops all but the newest attempt per node)",
+    )
+
+
+def cmd_db_prune(args: argparse.Namespace) -> None:
+    """Drop rung tables older than the newest attempts, keeping the answer."""
+    from .rungs import RungTables
+
+    removed = RungTables(_store(args)).prune(
+        keep_attempts=int(getattr(args, "keep_attempts", 1) or 1),
+        dag_id=getattr(args, "dag_id", None),
+    )
+    _emit(
+        removed,
+        getattr(args, "json", False),
+        "Pruned " + ", ".join(f"{number} {name}" for name, number in removed.items()),
+    )
+
+
 def cmd_serve(args: argparse.Namespace) -> None:
     from .mcp_server import run_mcp_server
 
@@ -2023,22 +2065,11 @@ def funnel_population(
     kept = [item for item in captured if str(getattr(item, "item_id", "")) in alive]
     walked: list[Any] = []
     for node_id in retrieves:
-        for payload in read_rung_items(store, str((nodes.get(node_id) or {}).get("items_table") or "")):
+        for payload in RungTables(store).items(dag_id, node_id):
             item = InputItem.model_validate(payload)
             if str(item.item_id) in alive:
                 walked.append(item)
     return kept + walked
-
-
-def read_rung_items(store: Any, table: str) -> list[dict[str, Any]]:
-    """The items a walk gathered, read back out of the run's own database."""
-    if not table:
-        return []
-    with store.connect() as connection:
-        found = connection.execute(
-            f'SELECT payload FROM "{table}" ORDER BY seq'
-        ).fetchall()
-    return [json.loads(row["payload"]) for row in found]
 
 
 def read_rung_table(store: Any, dag_id: str, node_id: str) -> list[dict[str, Any]]:
@@ -3153,6 +3184,14 @@ def build_parser() -> argparse.ArgumentParser:
     # them and silently back up the wrong database.
     _common(backup, database=True)
 
+    stats = db_sub.add_parser("stats", help="How much the store is holding")
+    _common(stats, database=True)
+    prune = db_sub.add_parser("prune", help="Drop all but the newest attempt per node")
+    prune.add_argument("--keep-attempts", type=int, default=1,
+                       help="Attempts to keep per node (default 1)")
+    prune.add_argument("--dag-id", help="Only this graph")
+    _common(prune, database=True)
+
     test = commands.add_parser("test", help="Run one real inference batch")
     test.add_argument("task", help="Registered task name or TaskSpec JSON path")
     test.add_argument("--input", required=True)
@@ -3604,6 +3643,12 @@ def main() -> None:
         sub = getattr(args, "db_command", None)
         if sub == "backup":
             cmd_db_backup(args)
+            return
+        if sub == "stats":
+            cmd_db_stats(args)
+            return
+        if sub == "prune":
+            cmd_db_prune(args)
             return
         print(f"Unknown db subcommand: {sub}", file=sys.stderr)
         raise SystemExit(2)

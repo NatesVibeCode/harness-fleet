@@ -426,3 +426,63 @@ def test_movers_counts_a_movement_the_engine_recorded(tmp_path):
     store.record_score_history("run-b", "acme.co.uk", "acme.co.uk", 70.0)
     movers = Ledger(store).movers()
     assert movers and movers[0]["delta"] == 30.0
+
+
+# --------------------------------------------------------------------------
+# The store is state somebody has to be able to see and trim
+
+
+def test_a_walks_items_are_keyed_not_named_after_ids(tmp_path):
+    """Two nodes can concatenate to the same name; a key cannot collide."""
+    store = _store(tmp_path)
+    tables = RungTables(store)
+    # The pair that used to collide: "a-b"+"c" and "a"+"b-c" both became
+    # rung_items_a_b_c, and each run wrote into the other's table.
+    tables.write("a-b", "c", [_row("first.example", "read")], texts={"first.example": "one"})
+    tables.write_items("a-b", "c", [{"item_id": "first.example", "text": "one"}], run_seq=1)
+    tables.write("a", "b-c", [_row("second.example", "read")], texts={"second.example": "two"})
+    tables.write_items("a", "b-c", [{"item_id": "second.example", "text": "two"}], run_seq=1)
+
+    assert [item["item_id"] for item in tables.items("a-b", "c")] == ["first.example"]
+    assert [item["item_id"] for item in tables.items("a", "b-c")] == ["second.example"]
+    assert tables.text("a", "b-c", "second.example") == "two"
+
+
+def test_prune_keeps_the_answer_and_drops_the_history(tmp_path):
+    store = _store(tmp_path)
+    tables = RungTables(store)
+    tables.write("dag", "g0-result", [_row("acme.co.uk", "lead")], texts={"acme.co.uk": "old"})
+    tables.write("dag", "g0-result", [_row("acme.co.uk", "eliminated")],
+                 texts={"acme.co.uk": "new"})
+    tables.write_items("dag", "g0-result", [{"item_id": "acme.co.uk"}], run_seq=1)
+    assert tables.stats()["attempts"] == 2
+
+    removed = tables.prune(keep_attempts=1)
+    assert removed["rows"] == 1 and removed["text"] == 1
+    # The newest attempt is untouched: pruning never changes the answer.
+    assert tables.attempts("dag", "g0-result") == [2]
+    assert tables.rows("dag", "g0-result")[0]["outcome"] == "eliminated"
+    assert tables.text("dag", "g0-result", "acme.co.uk") == "new"
+    # And it can be aimed at one graph.
+    assert tables.prune(keep_attempts=1, dag_id="dag") == {"rows": 0, "text": 0, "items": 0}
+
+
+def test_db_stats_and_prune_are_commands(tmp_path, capsys):
+    from argparse import Namespace
+
+    from harness_fleet import cli
+
+    store = _store(tmp_path)
+    tables = RungTables(store)
+    tables.write("dag", "g", [_row("a.example", "lead")])
+    tables.write("dag", "g", [_row("a.example", "lead")])
+    args = dict(db=str(tmp_path / "t.db"), json=True)
+    cli.cmd_db_stats(Namespace(**args))
+    stats = json.loads(capsys.readouterr().out)
+    assert stats["rung_rows"] == 2 and stats["attempts"] == 2 and stats["bytes"] > 0
+
+    cli.cmd_db_prune(Namespace(**args, keep_attempts=1, dag_id=None))
+    removed = json.loads(capsys.readouterr().out)
+    assert removed["rows"] == 1
+    cli.cmd_db_stats(Namespace(**args))
+    assert json.loads(capsys.readouterr().out)["attempts"] == 1

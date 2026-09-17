@@ -1,6 +1,7 @@
 """The lanes that ship, and the guard that keeps one public repo clean."""
 from __future__ import annotations
 
+import re
 import subprocess
 from pathlib import Path
 
@@ -92,3 +93,92 @@ def test_no_private_data_is_tracked_in_the_public_repo():
         or "/runs/" in path
     ]
     assert forbidden == [], f"private/runtime artifacts must not be tracked: {forbidden}"
+
+
+def _readme_lane_table() -> dict[str, tuple[str, str]]:
+    """The lane table in the README, as {lane: (preset, bar)}.
+
+    The bar cell is prose ("the tier ladder, floor `tier_3`" / "`delivery_hiring`"),
+    so it comes back as written and the assertions below read it.
+    """
+    readme = (REPO / "README.md").read_text(encoding="utf8")
+    rows: dict[str, tuple[str, str]] = {}
+    for line in readme.splitlines():
+        if not line.startswith("| `"):
+            continue
+        cells = [cell.strip() for cell in line.strip("|").split("|")]
+        if len(cells) != 4 or not cells[0].startswith("`"):
+            continue
+        name = cells[0].strip("`")
+        if name not in {"account", "career", "partner"}:
+            continue
+        rows[name] = (cells[2].strip("`"), cells[3])
+    return rows
+
+
+def test_the_readme_lane_table_matches_the_lanes_that_ship():
+    """The table is how a reader decides which lane to run, so it must be true.
+
+    It drifted: partner's documented floor said `tier_1` while the lane said
+    `tier_2`. A reader then judged correct output as failing the lane's own bar —
+    and the README was the stricter of the two, so the error was silent and in
+    the direction of throwing away good records.
+    """
+    shipped = lane_module.shipped_lanes()
+    documented = _readme_lane_table()
+    assert documented, "the README still carries the lane table"
+
+    assert set(documented) == set(shipped), (
+        f"documented lanes {sorted(documented)} != shipped {sorted(shipped)}"
+    )
+
+    for name, (preset, bar) in documented.items():
+        lane = shipped[name]
+        assert preset == lane.preset, f"{name}: README preset {preset!r} != lane {lane.preset!r}"
+        if lane.tier is None:
+            # A lane that gates on evidence instead of the tier ladder names it.
+            assert lane.require_kinds, f"{name} gates on the tier ladder or names its evidence"
+            for kind in lane.require_kinds:
+                assert kind in bar, f"{name}: README bar omits required evidence {kind!r}"
+        else:
+            assert lane.tier in bar, f"{name}: README bar omits the real floor {lane.tier!r}"
+            for other in {"tier_1", "tier_2", "tier_3"} - {lane.tier}:
+                assert other not in bar, f"{name}: README bar names {other} but the lane floors at {lane.tier}"
+
+
+def test_every_documented_lane_name_resolves_or_is_a_placeholder():
+    """Every `--lane <value>` a reader will copy must be a real lane name.
+
+    Written after the first version of this test passed against a deliberate
+    typo: it collected the names it found and then asserted those names existed
+    in the set it had collected them from, which cannot fail. This version
+    inverts it — every value must be a shipped lane or an explicit `<...>`
+    placeholder, so a misspelling is a failure rather than a no-op.
+    """
+    shipped = set(lane_module.shipped_lanes())
+    assert shipped, "there are lanes to name"
+
+    # The README only: it is what a user copies. The design notes under docs/
+    # discuss `--lane` in prose ("which lanes --lane can name"), so judging
+    # their next word would flag English rather than a lane name.
+    readme = (REPO / "README.md").read_text(encoding="utf8").replace("`", " ")
+    looks_like_a_lane = re.compile(r"^(?:[A-Za-z][A-Za-z0-9_-]*|<[^<>]+>)$")
+    seen: dict[str, list[str]] = {}
+    tokens = readme.split()
+    for index, token in enumerate(tokens[:-1]):
+        if token not in {"--lane", "--lane="}:
+            continue
+        value = tokens[index + 1].strip(".,;:")
+        if looks_like_a_lane.match(value):
+            seen.setdefault(value, []).append("README.md")
+
+    assert seen, "the docs name lanes"
+    unknown = {value: where for value, where in seen.items()
+               if value not in shipped and not value.startswith("<")}
+    assert unknown == {}, f"documented lane names that do not ship: {unknown}"
+    # The placeholder is only honest if adding your own lane is possible, and the
+    # README says where the file goes.
+    if any(value.startswith("<") for value in seen):
+        assert "lanes/<name>.json" in (REPO / "README.md").read_text(encoding="utf8"), (
+            "an unnamed lane is only runnable if the docs say where to drop one"
+        )
