@@ -2302,16 +2302,20 @@ def cmd_research(args: argparse.Namespace) -> None:
             # The deliverable is the scoring node's own table, so the report and
             # the ranked file are the same rows the running list just recorded.
             report["score"] = {
+                "skipped": scored.get("skipped") or "",
                 "task": scored.get("task"),
                 "judged": scored.get("judged"),
                 "verified": scored.get("verified"),
                 "mean_score": scored.get("mean_score"),
                 "run_id": scored.get("run_id"),
             }
-            print(
-                f"Scored {scored.get('verified')} of {scored.get('judged')} standing "
-                f"candidates (mean {scored.get('mean_score')})"
-            )
+            if scored.get("skipped"):
+                print(f"Nothing was scored: {scored['skipped']}.")
+            else:
+                print(
+                    f"Scored {scored.get('verified')} of {scored.get('judged')} standing "
+                    f"candidates (mean {scored.get('mean_score')})"
+                )
         _write_discovery_report(workspace, run_id, report)
         if not keyed:
             raise DiscoverError(
@@ -2371,6 +2375,12 @@ def cmd_research(args: argparse.Namespace) -> None:
                 if error:
                     reasons.append(f"{route}: {error[:120]}")
         detail = ("\n  " + "\n  ".join(reasons)) if reasons else ""
+        why = str(scored.get("skipped") or "")
+        if why:
+            raise ValueError(
+                f"no records were scored: {why}.\n"
+                f"  The funnel's own counts are in the run report: {report_path}"
+            )
         raise ValueError(
             f"no records were scored: every attempt failed, so there is no deliverable.{detail}\n"
             f"  Check the routes this install can actually use: `{branding.CLI_NAME} routes --json`"

@@ -348,3 +348,42 @@ def test_a_walk_does_not_erase_the_verdict_that_decided_the_firm(tmp_path):
                   dag_id="run-1", node_id="g2-stories", lane="partner")
     listed = ledger.entities()[0]
     assert listed["outcome"] == "eliminated" and listed["because"] == "vertical"
+
+
+def test_scoring_nobody_says_so_instead_of_running_a_campaign(tmp_path, monkeypatch):
+    """An empty population is an answer, not a failed model call."""
+    from harness_fleet.dag import DagSpec, run_dag
+    from harness_fleet.gates import LadderRung
+    from harness_fleet.lanes import shipped_lanes
+    from harness_fleet.rungs import lane_spec
+
+    calls: list[str] = []
+
+    class _Engine:
+        def __init__(self, **kwargs):
+            calls.append("built")
+
+        def run_campaign(self, **kwargs):
+            calls.append("ran")
+            return {"total_verified_records": 0}
+
+    monkeypatch.setattr("harness_fleet.dag.Engine", _Engine)
+    captured = tmp_path / "captured.jsonl"
+    captured.write_text(
+        json.dumps({"item_id": "vendor.io", "text": "Book a demo of our platform.",
+                    "content_type": "text/plain"}) + "\n",
+        encoding="utf-8",
+    )
+    lane = shipped_lanes()["partner"]
+    lane.funnel.ladder = [LadderRung(name="result", evidence="snippet", gates=["kind"])]
+    spec = DagSpec.model_validate(lane_spec(
+        lane, from_items=str(captured), workspace=tmp_path, score=True,
+        score_task="partner-research",
+    ))
+    state = run_dag(spec, _store(tmp_path), workspace_root=tmp_path, dag_id="f1")
+
+    scored = state["nodes"]["s-score"]
+    assert scored["judged"] == 0 and scored["skipped"]
+    assert "eliminated every candidate" in scored["skipped"]
+    assert calls == [], "no campaign is built for a population of nobody"
+    assert RungTables(_store(tmp_path)).rows("f1", "s-score") == []

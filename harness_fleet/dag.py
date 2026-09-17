@@ -1416,6 +1416,32 @@ def _execute_score_node(
     ]
     if node.top:
         dossiers = dossiers[: node.top]
+    if not dossiers:
+        # Nothing is standing, or nothing was gathered about what is. Spending a
+        # campaign on zero dossiers would report a run that scored nothing as if
+        # the model had failed, when the answer is that the ladder left nobody —
+        # and the node says which of the two it was.
+        reason = (
+            "the ladder eliminated every candidate"
+            if not standing
+            else "nothing was gathered about the candidates still standing"
+        )
+        attempt = tables.write(dag_id, node.id, [], kind="score", lane=node.lane)
+        return {
+            "kind": "score",
+            "lane": node.lane,
+            "run_id": node.run_id or "",
+            "attempt": attempt,
+            "judged": len(standing),
+            "empty_sources": empty_sources,
+            "dossiers": 0,
+            "verified": 0,
+            "count": 0,
+            "scored": 0,
+            "mean_score": 0.0,
+            "skipped": reason,
+            "ids": [],
+        }
 
     name = node.task or lane.preset
     try:
@@ -1464,6 +1490,7 @@ def _execute_score_node(
         "lane": node.lane,
         "run_id": run_id,
         "attempt": attempt,
+        "skipped": "",
         "task": task.name,
         "dossiers": len(dossiers),
         "judged": len(standing),
