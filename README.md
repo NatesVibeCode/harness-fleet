@@ -419,7 +419,7 @@ mechanism. Three ship in the package:
 | Lane | Answers | Scores with | Bar |
 | --- | --- | --- | --- |
 | `account` | Which accounts are doing the work (and hiring for it) | `account-research` | the tier ladder, floor `tier_3` |
-| `partner` | Which implementation partners can generate revenue with us | `partner-research` | the tier ladder, floor `tier_1` |
+| `partner` | Which implementation partners can generate revenue with us | `partner-research` | the tier ladder, floor `tier_2` |
 | `career` | Which employers are hiring for this kind of role | `triage` | `delivery_hiring` |
 
 ```jsonc
