@@ -628,3 +628,48 @@ def test_the_outcome_filter_means_what_the_list_prints(tmp_path, capsys):
     ))
     payload = json.loads(capsys.readouterr().out)
     assert [row["entity"] for row in payload["entities"]] == ["walked.example"]
+
+
+def test_the_report_and_the_node_agree_on_who_is_standing(tmp_path):
+    """Two surfaces, one rule. The command's population and the node's are equal."""
+    from harness_fleet import cli
+    from harness_fleet.dag import DagSpec, run_dag
+    from harness_fleet.lanes import shipped_lanes
+    from harness_fleet.models import InputItem
+    from harness_fleet.rungs import lane_spec, population
+
+    (tmp_path / "ideal_partner_profile.json").write_text(
+        json.dumps({"ipp_profile": {
+            "partner_size_min": 20, "partner_size_max": 5000,
+            "target_territories": ["United Kingdom"], "target_industries": ["fintech"],
+        }}),
+        encoding="utf-8",
+    )
+    captured = tmp_path / "captured.jsonl"
+    captured.write_text("\n".join([
+        json.dumps({"item_id": "vendor.io", "content_type": "text/plain",
+                    "text": "Zap Cloud. Book a demo of our platform. Pricing plans."}),
+        json.dumps({"item_id": "acme.co.uk", "content_type": "text/plain",
+                    "text": "Northwind Consulting is a systems integrator."}),
+    ]) + "\n", encoding="utf-8")
+    store = _store(tmp_path)
+    spec = DagSpec.model_validate(lane_spec(
+        shipped_lanes()["partner"], from_items=str(captured), workspace=tmp_path,
+        gates=True, walk=False,
+    ))
+    state = run_dag(spec, store, workspace_root=tmp_path, dag_id="f1")
+
+    items = [InputItem(item_id="vendor.io", text="Zap Cloud. Book a demo of our platform."),
+             InputItem(item_id="acme.co.uk", text="Northwind Consulting is a systems integrator.")]
+    from_command = cli.funnel_population(items, state, spec, store)
+    from_rule = population(
+        RungTables(store), "f1", [n.id for n in spec.nodes if n.kind == "gate"]
+    )
+    assert {item.item_id for item in from_command} == from_rule
+    assert from_rule == {"acme.co.uk"}, "the vendor is out, the integrator is standing"
+
+    # And the running list agrees with both about who is left.
+    listed = {row["entity"]: row for row in Ledger(store).entities()}
+    assert listed["vendor.io"]["outcome"] == "eliminated"
+    assert listed["acme.co.uk"]["outcome"] != "eliminated"
+    assert "kind" in listed["vendor.io"]["gates_open"] or listed["vendor.io"]["because"]
