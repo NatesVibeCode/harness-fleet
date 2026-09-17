@@ -72,12 +72,24 @@ One writer per fact. A second writer is the defect, not the fix.
    packet; `entity_state` comes from the node's rows. The *shape* of both is
    guarded (#3, #11) but nothing compares them for the same run and firm, which
    is where a stale `evidence.json` would show up.
-2. **A graph re-run over the same `dag_id`.** Attempts are kept and the newest
-   is read; nothing asserts that a second `run_dag` over an existing dag leaves
-   the first attempt's answers readable and unchanged.
+2. ~~A graph re-run over the same `dag_id`.~~ Guarded:
+   `test_ledger::test_a_second_run_over_the_same_graph_keeps_the_first_answer`
+   — and it settled a distinction worth writing down: **resume is the default**
+   and reuses what the graph produced, so a second attempt only appears with
+   `resume=False` (the CLI's `--no-resume`).)
 3. **`docs/pipeline-map.md` itself.** Its commands and table names are checked;
    the claims in its tables — who writes what — are prose. A cheap guard would
    assert the writer column against the code that calls `RungTables.write`.
+
+## 4b. Verified end to end, outside the checkout
+
+`python3 scripts/check_wheel.py --distribution harness-fleet` (a pip-capable
+interpreter; the repo's pytest venv has none) builds a wheel from a clean
+snapshot, installs it in a fresh venv with fresh dependencies, and exercises the
+installed resources, the skills, the offline demo, resume, idempotent setup, the
+lane report and a safe failure. It passes. That is the gate that says the
+pipeline works as installed rather than as checked out, and it covers the lane
+report and the resources the skills load.
 
 ## 5. Decisions that are not mine to make
 

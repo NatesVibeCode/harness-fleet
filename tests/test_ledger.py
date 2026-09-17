@@ -832,3 +832,48 @@ def test_the_lane_report_counts_what_the_nodes_scored(tmp_path):
             "the report named a record the scoring node did not write"
         )
     assert report.run_id == "report-scored"
+
+
+def test_a_second_run_over_the_same_graph_keeps_the_first_answer(tmp_path):
+    """The map's last queue item: re-running reads the newest attempt, keeps all."""
+    from harness_fleet.dag import DagSpec, run_dag
+    from harness_fleet.gates import LadderRung
+    from harness_fleet.lanes import shipped_lanes
+    from harness_fleet.rungs import lane_spec
+
+    (tmp_path / "ideal_partner_profile.json").write_text(
+        json.dumps({"ipp_profile": {
+            "partner_size_min": 20, "partner_size_max": 5000,
+            "target_territories": ["United Kingdom"], "target_industries": ["fintech"],
+        }}),
+        encoding="utf-8",
+    )
+    captured = tmp_path / "captured.jsonl"
+    captured.write_text(
+        json.dumps({"item_id": "vendor.io", "content_type": "text/plain",
+                    "text": "Zap Cloud. Book a demo of our platform."}) + "\n",
+        encoding="utf-8",
+    )
+    lane = shipped_lanes()["partner"]
+    lane.funnel.ladder = [LadderRung(name="result", evidence="snippet", gates=["kind"])]
+    spec = DagSpec.model_validate(lane_spec(
+        lane, from_items=str(captured), workspace=tmp_path, walk=False,
+    ))
+    store = _store(tmp_path)
+    first = run_dag(spec, store, workspace_root=tmp_path, dag_id="same")
+    tables = RungTables(store)
+    assert tables.attempts("same", "g0-result") == [1]
+    assert tables.rows("same", "g0-result")[0]["outcome"] == "eliminated"
+
+    # Resume (the default) reuses what the graph already produced; a genuine
+    # re-run is the one that re-executes, which is what --no-resume asks for.
+    second = run_dag(spec, store, workspace_root=tmp_path, dag_id="same", resume=False)
+
+    assert tables.attempts("same", "g0-result") == [1, 2], "a re-run is an attempt, not a replacement"
+    assert first["nodes"]["g0-result"]["attempt"] == 1
+    assert second["nodes"]["g0-result"]["attempt"] == 2
+    assert tables.rows("same", "g0-result")[0]["outcome"] == "eliminated", "the newest reads"
+    assert tables.rows("same", "g0-result", 1)[0]["outcome"] == "eliminated", (
+        "and the first is still there to compare against"
+    )
+    assert tables.text("same", "g0-result", "vendor.io", 1).startswith("Zap Cloud")
