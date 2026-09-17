@@ -319,3 +319,32 @@ def test_a_walk_only_run_is_still_scored(tmp_path):
     assert spec.nodes[-1].from_gate == ""
     assert spec.nodes[-1].from_nodes == ["r0-surface"]
     assert run_dag is not None
+
+
+def test_a_walk_does_not_erase_the_verdict_that_decided_the_firm(tmp_path):
+    """A visit is not a verdict: 'read' must not overwrite 'lead, open on kind'."""
+    ledger = Ledger(_store(tmp_path))
+    ledger.record(
+        [_row("acme.co.uk", "lead", because="unresolved on kind",
+              gates=[{"gate": "kind", "outcome": "unknown"}])],
+        dag_id="run-1", node_id="g0-result", lane="partner",
+    )
+    # The walk goes and reads their site. It reports a visit, not a judgement.
+    ledger.record([_row("acme.co.uk", "read", pages=["https://acme.co.uk/about"])],
+                  dag_id="run-1", node_id="r1-surface", lane="partner")
+    row = ledger.entities()[0]
+    assert row["outcome"] == "lead", "the gate's verdict is still where this firm stands"
+    assert row["because"] == "unresolved on kind"
+    assert row["gates_open"] == ["kind"], "and what is open is still open"
+    assert row["last_node"] == "r1-surface", "while the visit is still recorded"
+    assert row["pages_seen"] == 1
+
+    # A judgement does move it, and so does a later elimination.
+    ledger.record([_row("acme.co.uk", "qualified", gates=[])],
+                  dag_id="run-1", node_id="g1-surface", lane="partner")
+    assert ledger.entities()[0]["outcome"] == "qualified"
+    assert ledger.entities()[0]["gates_open"] == []
+    ledger.record([_row("acme.co.uk", "eliminated", because="vertical")],
+                  dag_id="run-1", node_id="g2-stories", lane="partner")
+    listed = ledger.entities()[0]
+    assert listed["outcome"] == "eliminated" and listed["because"] == "vertical"

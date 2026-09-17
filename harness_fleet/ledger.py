@@ -79,10 +79,16 @@ CREATE VIEW IF NOT EXISTS entity_score_history AS
     FROM {EVENTS_TABLE} WHERE score > 0 ORDER BY entity, at;
 """
 
-#: A verdict that means "still standing, nothing has killed it". The running list
-#: keeps the worst news: once a rung eliminates an entity, a later rung that
-#: never saw it must not quietly make it look alive again.
-_ALIVE = ("", "read", "nothing", "complete", "resolved", "lead", "qualified")
+#: What a node says when it went and looked, rather than when it judged. These
+#: are facts about the visit — a page was read, a search answered — and they are
+#: not verdicts, so they never overwrite one. The running list's `outcome` is
+#: "where this firm stands", and a walk is not a change of standing.
+_MECHANICS = frozenset({"", "read", "nothing", "complete", "resolved"})
+
+#: The verdict an elimination carries, and the only one that may overwrite
+#: another verdict outright: worst news stands until something re-qualifies the
+#: entity, and a node that merely carried it forward cannot revive it.
+_ELIMINATED = "eliminated"
 
 
 def _now() -> str:
@@ -165,14 +171,13 @@ class Ledger:
                     )
                     recorded += 1
                     continue
-                # The current belief, never an older one: an elimination stands
-                # until something actually re-qualifies the entity, and a node
-                # that merely carried it forward does not overwrite the verdict
-                # that decided it.
-                keeps = (
-                    outcome == "eliminated"
-                    or (found["outcome"] != "eliminated" and outcome in _ALIVE)
-                    or found["outcome"] in ("",)
+                # What gets written onto the list is a verdict, never a mechanic.
+                # A node that says "read" is reporting a visit; letting that land
+                # in `outcome` would erase the gate that decided the firm's fate
+                # and leave a list of rows that say "read" and mean nothing.
+                judged = outcome not in _MECHANICS or bool(row.get("tier"))
+                keeps = judged and (
+                    outcome == _ELIMINATED or found["outcome"] != _ELIMINATED
                 )
                 lanes = sorted({*(json.loads(found["lanes"] or "[]")), *([lane] if lane else [])})
                 scored = bool(row.get("score")) or bool(row.get("facts"))
