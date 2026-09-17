@@ -110,3 +110,25 @@ def test_without_a_lane_nothing_is_filtered(tmp_path):
 
     items = [Item(item_id="a", title="anything", text="at all", source_uri="https://x/1")]
     assert cli._lane_items(items, None) == (items, 0)
+
+
+def test_routes_are_checked_before_anything_is_searched(tmp_path, monkeypatch):
+    """A run that cannot be scored must not spend minutes on the web first.
+
+    When scoring moved into the graph, the route check moved out of the command
+    with it: a live probe discovered it had no usable route *after* discovery and
+    sixty-five page fetches, and failed on a check that costs nothing.
+    """
+    _workspace(tmp_path)
+    order: list[str] = []
+
+    def route_check(store, policy):
+        order.append("routes")
+        raise RuntimeError("no usable route")
+
+    monkeypatch.setattr(cli, "_check_routes_for_run", route_check)
+    monkeypatch.setattr(cli, "run_discovery", lambda **kwargs: order.append("discovery"))
+
+    with pytest.raises(RuntimeError, match="no usable route"):
+        cli.cmd_research(_args(tmp_path))
+    assert order == ["routes"], "the search never started"

@@ -2264,6 +2264,13 @@ def cmd_research(args: argparse.Namespace) -> dict[str, Any]:
         output = workspace / output
     lane = _load_lane_for_run(args, workspace)
 
+    # Routes are checked before anything expensive happens. When scoring moved
+    # into the graph this check went with the block it lived in, so a run with no
+    # usable route discovered it *after* discovery and 65 page fetches — a live
+    # probe spent minutes on the web and then failed on a check that costs
+    # nothing. A run that cannot be scored should not search.
+    _check_routes_for_run(store, _extract_policy(args))
+
     # A quota turns one run into as many as the delivery needs. The loop is a
     # driver around this same command, so each round is a real run: its own
     # artifacts, its own place in the running list, its own resume.
