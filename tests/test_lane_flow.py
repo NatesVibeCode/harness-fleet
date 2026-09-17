@@ -17,6 +17,7 @@ def _workspace(tmp_path, **lane_fields):
         "title_include": ["enterprise sales", "sales ops"],
         "remote": True,
         "preset": "triage",
+        "funnel": {"allows": "any"},
         "top": 5,
         **lane_fields,
     }), encoding="utf-8")

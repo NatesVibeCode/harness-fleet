@@ -5,6 +5,7 @@ from harness_fleet.gates import (
     FETCHED,
     SNIPPET,
     LadderRung,
+    check_kind,
     check_vertical,
     read_size,
     run_funnel,
@@ -215,3 +216,27 @@ def _record(item_id: str, text: str):
     record.quotes = []
     record.metadata = {}
     return record
+
+
+def test_a_page_with_no_delivery_work_on_it_fails_the_kind_gate():
+    """The fetch is evidence, including when it says "not this".
+
+    A live partner lane filled up with a therapy practice, a personal site and a
+    counsellor: the search returned them, the walk read their pages, and the kind
+    gate had no way to answer once it had looked — every checklist item came back
+    false and they were delivered as zeroes. Reading a page and finding no
+    delivery work is an answer, not an absence of one.
+    """
+    therapist = ("Ingrid Robinson LMHC. Individual counselling and therapy for anxiety "
+                 "and depression. Sessions by appointment. Contact me to book.")
+    result = check_kind(therapist, allows="services", evidence=FETCHED)
+    assert result.outcome == "fail" and "no delivery language" in result.reason
+
+    # A firm that does the work survives, even without the exact marker words.
+    delivering = check_kind(
+        "Acme delivers data platforms for fintech clients.", allows="services", evidence=FETCHED,
+    )
+    assert delivering.outcome in ("pass", "unknown"), delivering.reason
+
+    # And a snippet still cannot fail it: there is not enough of the page yet.
+    assert check_kind(therapist, allows="services", evidence=SNIPPET).outcome == "unknown"

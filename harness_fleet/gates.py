@@ -65,6 +65,19 @@ DIRECTORY_TERMS = (
     "submit your listing", "featured listings", "view profile", "claim this",
 )
 
+#: The vocabulary of *technical delivery work*, which is what separates a firm a
+#: services lane can use from whoever else the search returned. Deliberately not
+#: a list of things an integrator says about itself — those are SERVICES_TERMS —
+#: but of the work: a therapy practice, a personal site and a counsellor say none
+#: of it, and a live lane filled up with exactly those because the kind gate had
+#: no way to answer "not this" once it had read the page.
+DELIVERY_TERMS = (
+    "deliver", "implement", "integrat", "migrat", "deploy", "consult", "advisory",
+    "systems", "platform", "data", "software", "cloud", "engineer", "architect",
+    "automat", "devops", "infrastructure", "digital transformation", "modernis",
+    "moderniz", "onboarding", "implementation", "projects",
+)
+
 SOFTWARE_TERMS = (
     "our platform", "our product", "book a demo", "request a demo", "free trial",
     "pricing plans", "per seat", "saas", "sign up free", "start your free trial",
@@ -558,6 +571,9 @@ def check_kind(text: str, *, allows: str, evidence: str) -> GateResult:
     kind = read_kind(text)
     if kind == "software" and allows == "services":
         return _gate("kind", "fail", "reads as a product company, not a delivery firm", evidence)
+    if kind == "directory":
+        # A catalogue of companies is not one of them, whatever the lane wants.
+        return _gate("kind", "fail", "reads as a directory of companies", evidence)
     if kind == "services" and allows == "services":
         if evidence == SNIPPET:
             return _gate(
@@ -565,6 +581,25 @@ def check_kind(text: str, *, allows: str, evidence: str) -> GateResult:
                 "snippet reads as a delivery firm; only a page can confirm it", evidence,
             )
         return _gate("kind", "pass", "reads as a delivery firm", evidence)
+    if (
+        evidence == FETCHED
+        and allows == "services"
+        and text.strip()
+        and not matches_any(text, DELIVERY_TERMS)
+    ):
+        # The page was read, had something on it, and nothing on it reads as a
+        # delivery firm. A fetch that came back empty is a different fact — we
+        # learned nothing — and it stays unresolved rather than failing.
+        # Leaving that *unknown* is what filled a live lane with whoever the
+        # search happened to return: a therapy practice, a personal site, a
+        # counsellor — none of them a systems integrator, all of them surviving
+        # to be scored zero. A fetch that answers "not this" is an answer.
+        return _gate(
+            "kind", "fail",
+            "nothing on the page reads as a delivery firm: no services, no clients, "
+            "no delivery language at all",
+            evidence,
+        )
     return _gate("kind", "unknown", "nothing here says what kind of company it is", evidence)
 
 
