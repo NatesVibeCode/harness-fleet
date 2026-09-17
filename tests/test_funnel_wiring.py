@@ -567,7 +567,7 @@ def test_an_eliminated_candidate_is_never_bundled_and_never_fetched(tmp_path: Pa
     first = cli.funnel_stage_report(state)["g0-result"]
     assert first["counts"]["candidates"] == 4
     assert first["counts"]["eliminated_at"] == {"kind": 1, "size": 1, "location": 1}
-    kept = cli.funnel_population(items, state, spec)
+    kept = cli.funnel_population(items, state, spec, store)
     # Only the survivor is fetched, and only it goes on to be scored.
     assert {item.item_id for item in kept} == {"acme.co.uk"}
     assert walked and set(walked) <= {"acme.co.uk"}, (

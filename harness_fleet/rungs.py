@@ -47,23 +47,211 @@ TABLE_COLUMNS: tuple[str, ...] = (
     "gates",
     "surfaces",
     "pages",
-    "text_path",
     "source_uri",
+    "queries",
+    "advances",
+    "next_rung",
 )
 
 
-def table_path(directory: str | Path) -> Path:
-    """Where a node writes its table, given the node's own directory."""
-    return Path(directory) / "table.csv"
+#: Every row a node writes lands in one table, keyed by the run it belongs to.
+#: A rung table is state: the next rung queries it, a report counts it, and a
+#: person reads it by asking a question of it. That is a table in the database
+#: the run already has, not a file per node that something has to remember to
+#: find, parse and keep in step.
+ROWS_TABLE = "rung_rows"
+TEXT_TABLE = "rung_text"
+
+_SCHEMA = f"""
+CREATE TABLE IF NOT EXISTS {ROWS_TABLE} (
+    dag_id TEXT NOT NULL,
+    node_id TEXT NOT NULL,
+    seq INTEGER NOT NULL,
+    kind TEXT NOT NULL DEFAULT '',
+    lane TEXT NOT NULL DEFAULT '',
+    rung TEXT NOT NULL DEFAULT '',
+    item_id TEXT NOT NULL,
+    candidate TEXT NOT NULL DEFAULT '',
+    evidence TEXT NOT NULL DEFAULT '',
+    outcome TEXT NOT NULL DEFAULT '',
+    earned TEXT NOT NULL DEFAULT '',
+    because TEXT NOT NULL DEFAULT '',
+    gates TEXT NOT NULL DEFAULT '[]',
+    surfaces TEXT NOT NULL DEFAULT '{{}}',
+    pages TEXT NOT NULL DEFAULT '[]',
+    queries TEXT NOT NULL DEFAULT '[]',
+    advances INTEGER NOT NULL DEFAULT 0,
+    next_rung TEXT NOT NULL DEFAULT '',
+    source_uri TEXT NOT NULL DEFAULT '',
+    visited INTEGER NOT NULL DEFAULT 0,
+    kept INTEGER NOT NULL DEFAULT 0,
+    skipped TEXT NOT NULL DEFAULT '[]',
+    PRIMARY KEY (dag_id, node_id, seq)
+);
+CREATE TABLE IF NOT EXISTS {TEXT_TABLE} (
+    dag_id TEXT NOT NULL,
+    node_id TEXT NOT NULL,
+    item_id TEXT NOT NULL,
+    text TEXT NOT NULL,
+    PRIMARY KEY (dag_id, node_id, item_id)
+);
+"""
+
+#: Columns that hold JSON, so a reader gets the structure back rather than a
+#: string that once was one.
+_JSON_COLUMNS = ("gates", "surfaces", "pages", "queries", "skipped")
 
 
-def write_table(path: str | Path, rows: Sequence[dict[str, Any]]) -> int:
+class RungTables:
+    """The tables a lane's ladder writes, in the run's own database.
+
+    One writer for every node kind, because every node writes the same thing: a
+    population, the verdicts that produced it, who it passes on, and the prose
+    those verdicts stand on. The rows carry a ``dag_id`` and a ``node_id`` rather
+    than a path, so a rung table can be joined, counted and compared across runs
+    with SQL instead of with a folder full of files.
+    """
+
+    def __init__(self, store: Any) -> None:
+        self.store = store
+        with self.store.connect() as connection:
+            connection.executescript(_SCHEMA)
+
+    def write(
+        self,
+        dag_id: str,
+        node_id: str,
+        rows: Sequence[dict[str, Any]],
+        *,
+        texts: dict[str, str] | None = None,
+        kind: str = "",
+        lane: str = "",
+    ) -> int:
+        """Replace this node's table with these rows, and store their prose."""
+        columns = (
+            "dag_id", "node_id", "seq", "kind", "lane", "rung", "item_id", "candidate",
+            "evidence", "outcome", "earned", "because", "gates", "surfaces", "pages",
+            "queries", "advances", "next_rung", "source_uri", "visited", "kept", "skipped",
+        )
+        with self.store.connect() as connection:
+            connection.execute(
+                f"DELETE FROM {ROWS_TABLE} WHERE dag_id=? AND node_id=?", (dag_id, node_id)
+            )
+            for seq, row in enumerate(rows):
+                values = {
+                    "dag_id": dag_id,
+                    "node_id": node_id,
+                    "seq": seq,
+                    "kind": kind,
+                    "lane": lane,
+                    "rung": row.get("rung", ""),
+                    "item_id": str(row.get("item_id") or ""),
+                    "candidate": row.get("candidate", ""),
+                    "evidence": row.get("evidence", ""),
+                    "outcome": row.get("outcome", ""),
+                    "earned": row.get("earned", ""),
+                    "because": row.get("because", ""),
+                    "gates": row.get("gates", []),
+                    "surfaces": row.get("surfaces", {}),
+                    "pages": row.get("pages", []),
+                    "queries": row.get("queries", []),
+                    "advances": 1 if row.get("advances") else 0,
+                    "next_rung": row.get("next_rung", ""),
+                    "source_uri": row.get("source_uri", ""),
+                    "visited": int(row.get("visited") or 0),
+                    "kept": int(row.get("kept") or 0),
+                    "skipped": row.get("skipped", []),
+                }
+                connection.execute(
+                    f"INSERT OR REPLACE INTO {ROWS_TABLE} ({', '.join(columns)}) "
+                    f"VALUES ({', '.join('?' for _ in columns)})",
+                    tuple(_stored(values[column]) for column in columns),
+                )
+            if texts:
+                connection.execute(
+                    f"DELETE FROM {TEXT_TABLE} WHERE dag_id=? AND node_id=?", (dag_id, node_id)
+                )
+                for item_id, text in texts.items():
+                    connection.execute(
+                        f"INSERT OR REPLACE INTO {TEXT_TABLE} (dag_id, node_id, item_id, text) "
+                        "VALUES (?, ?, ?, ?)",
+                        (dag_id, node_id, str(item_id), text),
+                    )
+        return len(rows)
+
+    def rows(self, dag_id: str, node_id: str) -> list[dict[str, Any]]:
+        with self.store.connect() as connection:
+            found = connection.execute(
+                f"SELECT * FROM {ROWS_TABLE} WHERE dag_id=? AND node_id=? ORDER BY seq",
+                (dag_id, node_id),
+            ).fetchall()
+        out: list[dict[str, Any]] = []
+        for record in found:
+            row = dict(record)
+            for column in _JSON_COLUMNS:
+                try:
+                    row[column] = json.loads(row.get(column) or "null")
+                except ValueError:
+                    pass
+            row["advances"] = bool(row.get("advances"))
+            out.append(row)
+        return out
+
+    def text(self, dag_id: str, node_id: str, item_id: str) -> str:
+        with self.store.connect() as connection:
+            found = connection.execute(
+                f"SELECT text FROM {TEXT_TABLE} WHERE dag_id=? AND node_id=? AND item_id=?",
+                (dag_id, node_id, str(item_id)),
+            ).fetchone()
+        return str(found["text"]) if found else ""
+
+    def texts(self, dag_id: str, node_id: str) -> dict[str, str]:
+        with self.store.connect() as connection:
+            found = connection.execute(
+                f"SELECT item_id, text FROM {TEXT_TABLE} WHERE dag_id=? AND node_id=?",
+                (dag_id, node_id),
+            ).fetchall()
+        return {str(row["item_id"]): str(row["text"]) for row in found}
+
+    def ids(self, dag_id: str, node_id: str) -> list[str]:
+        with self.store.connect() as connection:
+            found = connection.execute(
+                f"SELECT item_id FROM {ROWS_TABLE} WHERE dag_id=? AND node_id=? ORDER BY seq",
+                (dag_id, node_id),
+            ).fetchall()
+        return [str(row["item_id"]) for row in found]
+
+    def export_csv(self, dag_id: str, node_id: str, path: str | Path) -> int:
+        """Hand a node's table to somebody who wants a file, on request."""
+        return write_csv(path, self.rows(dag_id, node_id))
+
+
+def _cell(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, bool | int | float):
+        return str(value)
+    return json.dumps(value, sort_keys=True)
+
+
+def _stored(value: Any) -> Any:
+    if value is None or isinstance(value, str | int | float):
+        return value
+    if isinstance(value, bool):
+        return 1 if value else 0
+    return json.dumps(value, sort_keys=True, ensure_ascii=False)
+
+
+def write_csv(path: str | Path, rows: Sequence[dict[str, Any]]) -> int:
     """Write rows as a CSV table and return how many were written.
 
     Columns are the spine in order, then any extra key the rows carry, in first
     appearance order. Values that are not scalars are written as JSON so a
     reader gets the whole verdict rather than ``[object Object]``; the file is
-    one flat table either way.
+    one flat table either way. This is an *export*: the table lives in the run's
+    database, and this is what you get when you ask for a file.
     """
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -80,20 +268,10 @@ def write_table(path: str | Path, rows: Sequence[dict[str, Any]]) -> int:
     return len(rows)
 
 
-def read_table(path: str | Path) -> list[dict[str, str]]:
-    """Read a rung table back, for a downstream node or a person."""
+def read_csv(path: str | Path) -> list[dict[str, str]]:
+    """Read an exported table back, for a test or a person."""
     with Path(path).open("r", encoding="utf-8", newline="") as handle:
         return list(csv.DictReader(handle))
-
-
-def _cell(value: Any) -> str:
-    if value is None:
-        return ""
-    if isinstance(value, str):
-        return value
-    if isinstance(value, bool | int | float):
-        return str(value)
-    return json.dumps(value, sort_keys=True)
 
 
 def record_text(record: Any) -> str:

@@ -104,9 +104,12 @@ until a carrier that is not a vendor's index exists.
 ### DAG shape
 
 The ladder *is* the pipeline. `lane_spec` compiles it — the same function a run
-calls — into one node per rung, and each node writes the table it produced
-(`table.csv`, plus the text each verdict stood on). `harness-fleet dag --lane
-partner --from-items captured.jsonl --emit-spec` prints exactly this:
+calls — into one node per rung, and each node writes the table it produced into
+the run's own SQLite database: `rung_rows` (the population, the verdicts, who it
+passes on) and `rung_text` (the prose each verdict stood on). The next node
+queries those tables rather than parsing a file, and CSV is an export you ask
+for. `harness-fleet dag --lane partner --from-items captured.jsonl --emit-spec`
+prints exactly this:
 
 ```
 g0-result    gate     0 fetches · kind, size, location

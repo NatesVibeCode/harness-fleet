@@ -22,7 +22,9 @@ by hand — so this picture cannot drift from what a run does. Regenerate with
 - **DAG** — the nodes the ladder compiles to, and the table each one writes. A
   `gate` puts a rung's questions; a `resolve` answers the firmographics one flat
   search can settle; a `retrieve` spends the page visits a rung declared. The
-  nodes are the run: `table.csv` per node is the population at that step.
+  nodes are the run: each one writes its population and the prose behind every
+  verdict into the run's own database (`rung_rows`, `rung_text`), where the next
+  node queries it. CSV is an export you ask for, not the store.
 
 Each lane also carries its ladder as a table — rung, evidence grade, cost,
 gates, surfaces read, and what passing earns — which is the form to compare
@@ -69,29 +71,29 @@ lanes in.
   THE DAG THIS LADDER COMPILES TO
 
   g0-result     gate     0 fetches
-                reads captured.jsonl   | writes table.csv + text/ (the text it gated on)
+                reads captured.jsonl   | writes rung_rows + rung_text (the text it gated on)
   x0-result     resolve  2 search(es) per open candidate
-                reads g0-result        | writes table.csv + text/ (what the search said) + queries
+                reads g0-result        | writes rung_rows + rung_text (what the search said)
   c0-result     gate     0 fetches
-                reads x0-result        | writes table.csv + text/ (the text it gated on)
+                reads x0-result        | writes rung_rows + rung_text (the text it gated on)
   r1-surface    retrieve pages: about, services, careers
-                reads c0-result        | writes table.csv + text/ + items.jsonl
+                reads c0-result        | writes rung_rows + rung_text + its own items table
   g1-surface    gate     0 fetches (reads what the walk brought back)
-                reads r1-surface       | writes table.csv + text/ (the text it gated on)
+                reads r1-surface       | writes rung_rows + rung_text (the text it gated on)
   r2-stories    retrieve pages: case_studies, blog, news
-                reads g1-surface       | writes table.csv + text/ + items.jsonl
+                reads g1-surface       | writes rung_rows + rung_text + its own items table
   g2-stories    gate     0 fetches (reads what the walk brought back)
-                reads r2-stories       | writes table.csv + text/ (the text it gated on)
+                reads r2-stories       | writes rung_rows + rung_text (the text it gated on)
 
   | node | kind | rung | asks / fields | surfaces | writes |
   |---|---|---|---|---|---|
-  | `g0-result` | gate | result | size, location | - | `table.csv`, `text/` |
-  | `x0-result` | resolve | - | searches: location, size -> `"{name}" {field}` | - | `table.csv`, `text/`, queries |
-  | `c0-result` | gate | result | size, location | - | `table.csv`, `text/` |
-  | `r1-surface` | retrieve | surface | reads pages | `about`, `services`, `careers` | `table.csv`, `text/`, `items.jsonl` |
-  | `g1-surface` | gate | surface | size, location | `about`, `services`, `careers` | `table.csv`, `text/` |
-  | `r2-stories` | retrieve | stories | reads pages | `case_studies`, `blog`, `news` | `table.csv`, `text/`, `items.jsonl` |
-  | `g2-stories` | gate | stories | vertical | `case_studies`, `blog`, `news` | `table.csv`, `text/` |
+  | `g0-result` | gate | result | size, location | - | `rung_rows`, `rung_text` |
+  | `x0-result` | resolve | - | searches: location, size -> `"{name}" {field}` | - | `rung_rows`, `rung_text` |
+  | `c0-result` | gate | result | size, location | - | `rung_rows`, `rung_text` |
+  | `r1-surface` | retrieve | surface | reads pages | `about`, `services`, `careers` | `rung_rows`, `rung_text`, items table |
+  | `g1-surface` | gate | surface | size, location | `about`, `services`, `careers` | `rung_rows`, `rung_text` |
+  | `r2-stories` | retrieve | stories | reads pages | `case_studies`, `blog`, `news` | `rung_rows`, `rung_text`, items table |
+  | `g2-stories` | gate | stories | vertical | `case_studies`, `blog`, `news` | `rung_rows`, `rung_text` |
 
   a search settles location, size at result, so no page is fetched for them
 
@@ -151,23 +153,23 @@ lanes in.
   THE DAG THIS LADDER COMPILES TO
 
   g0-result     gate     0 fetches
-                reads captured.jsonl   | writes table.csv + text/ (the text it gated on)
+                reads captured.jsonl   | writes rung_rows + rung_text (the text it gated on)
   x0-result     resolve  1 search(es) per open candidate
-                reads g0-result        | writes table.csv + text/ (what the search said) + queries
+                reads g0-result        | writes rung_rows + rung_text (what the search said)
   c0-result     gate     0 fetches
-                reads x0-result        | writes table.csv + text/ (the text it gated on)
+                reads x0-result        | writes rung_rows + rung_text (the text it gated on)
   r1-posting    retrieve pages: careers, about, ats
-                reads c0-result        | writes table.csv + text/ + items.jsonl
+                reads c0-result        | writes rung_rows + rung_text + its own items table
   g1-posting    gate     0 fetches (reads what the walk brought back)
-                reads r1-posting       | writes table.csv + text/ (the text it gated on)
+                reads r1-posting       | writes rung_rows + rung_text (the text it gated on)
 
   | node | kind | rung | asks / fields | surfaces | writes |
   |---|---|---|---|---|---|
-  | `g0-result` | gate | result | location | - | `table.csv`, `text/` |
-  | `x0-result` | resolve | - | searches: location -> `"{name}" {field}` | - | `table.csv`, `text/`, queries |
-  | `c0-result` | gate | result | location | - | `table.csv`, `text/` |
-  | `r1-posting` | retrieve | posting | reads pages | `careers`, `about`, `ats` | `table.csv`, `text/`, `items.jsonl` |
-  | `g1-posting` | gate | posting | location | `careers`, `about`, `ats` | `table.csv`, `text/` |
+  | `g0-result` | gate | result | location | - | `rung_rows`, `rung_text` |
+  | `x0-result` | resolve | - | searches: location -> `"{name}" {field}` | - | `rung_rows`, `rung_text` |
+  | `c0-result` | gate | result | location | - | `rung_rows`, `rung_text` |
+  | `r1-posting` | retrieve | posting | reads pages | `careers`, `about`, `ats` | `rung_rows`, `rung_text`, items table |
+  | `g1-posting` | gate | posting | location | `careers`, `about`, `ats` | `rung_rows`, `rung_text` |
 
   a search settles location at result, so no page is fetched for them
 
@@ -240,29 +242,29 @@ lanes in.
   THE DAG THIS LADDER COMPILES TO
 
   g0-result     gate     0 fetches
-                reads captured.jsonl   | writes table.csv + text/ (the text it gated on)
+                reads captured.jsonl   | writes rung_rows + rung_text (the text it gated on)
   x0-result     resolve  2 search(es) per open candidate
-                reads g0-result        | writes table.csv + text/ (what the search said) + queries
+                reads g0-result        | writes rung_rows + rung_text (what the search said)
   c0-result     gate     0 fetches
-                reads x0-result        | writes table.csv + text/ (the text it gated on)
+                reads x0-result        | writes rung_rows + rung_text (the text it gated on)
   r1-surface    retrieve pages: home, about, services, partners, careers
-                reads c0-result        | writes table.csv + text/ + items.jsonl
+                reads c0-result        | writes rung_rows + rung_text + its own items table
   g1-surface    gate     0 fetches (reads what the walk brought back)
-                reads r1-surface       | writes table.csv + text/ (the text it gated on)
+                reads r1-surface       | writes rung_rows + rung_text (the text it gated on)
   r2-stories    retrieve pages: case_studies, partners, blog, news
-                reads g1-surface       | writes table.csv + text/ + items.jsonl
+                reads g1-surface       | writes rung_rows + rung_text + its own items table
   g2-stories    gate     0 fetches (reads what the walk brought back)
-                reads r2-stories       | writes table.csv + text/ (the text it gated on)
+                reads r2-stories       | writes rung_rows + rung_text (the text it gated on)
 
   | node | kind | rung | asks / fields | surfaces | writes |
   |---|---|---|---|---|---|
-  | `g0-result` | gate | result | kind, size, location | - | `table.csv`, `text/` |
-  | `x0-result` | resolve | - | searches: location, size -> `"{name}" {field}` | - | `table.csv`, `text/`, queries |
-  | `c0-result` | gate | result | kind, size, location | - | `table.csv`, `text/` |
-  | `r1-surface` | retrieve | surface | reads pages | `home`, `about`, `services`, `partners`, `careers` | `table.csv`, `text/`, `items.jsonl` |
-  | `g1-surface` | gate | surface | kind, size, location | `home`, `about`, `services`, `partners`, `careers` | `table.csv`, `text/` |
-  | `r2-stories` | retrieve | stories | reads pages | `case_studies`, `partners`, `blog`, `news` | `table.csv`, `text/`, `items.jsonl` |
-  | `g2-stories` | gate | stories | vertical | `case_studies`, `partners`, `blog`, `news` | `table.csv`, `text/` |
+  | `g0-result` | gate | result | kind, size, location | - | `rung_rows`, `rung_text` |
+  | `x0-result` | resolve | - | searches: location, size -> `"{name}" {field}` | - | `rung_rows`, `rung_text` |
+  | `c0-result` | gate | result | kind, size, location | - | `rung_rows`, `rung_text` |
+  | `r1-surface` | retrieve | surface | reads pages | `home`, `about`, `services`, `partners`, `careers` | `rung_rows`, `rung_text`, items table |
+  | `g1-surface` | gate | surface | kind, size, location | `home`, `about`, `services`, `partners`, `careers` | `rung_rows`, `rung_text` |
+  | `r2-stories` | retrieve | stories | reads pages | `case_studies`, `partners`, `blog`, `news` | `rung_rows`, `rung_text`, items table |
+  | `g2-stories` | gate | stories | vertical | `case_studies`, `partners`, `blog`, `news` | `rung_rows`, `rung_text` |
 
   a search settles location, size at result, so no page is fetched for them
 

@@ -69,17 +69,17 @@ def render_dag(lane) -> str:
         kind = getattr(node, "kind", "")
         if kind == "gate":
             cost = "0 fetches" if node.evidence != "fetched" else "reads pages"
-            writes = "table.csv + text/ (the text it gated on)"
+            writes = "rung_rows + rung_text (the text it gated on)"
             if node.from_retrieve:
                 cost = "0 fetches (reads what the walk brought back)"
         elif kind == "resolve":
             cost = str(len(node.fields)) + " search(es) per open candidate"
-            writes = "table.csv + text/ (what the search said) + queries"
+            writes = "rung_rows + rung_text (what the search said)"
         else:
             rung = getattr(node, "rung", "")
             surfaces = (getattr(node, "rung_of", None) or {}).get("surfaces") or []
             cost = "pages: " + (", ".join(surfaces) or "none")
-            writes = "table.csv + text/ + items.jsonl"
+            writes = "rung_rows + rung_text + its own items table"
         reads = next(
             (
                 getattr(node, attr, None)
@@ -107,9 +107,9 @@ def render_dag(lane) -> str:
             asks = "reads pages"
         surfaces = ", ".join("`" + surf + "`" for surf in (rung_of.get("surfaces") or [])) or "-"
         writes = {
-            "gate": "`table.csv`, `text/`",
-            "resolve": "`table.csv`, `text/`, queries",
-            "retrieve": "`table.csv`, `text/`, `items.jsonl`",
+            "gate": "`rung_rows`, `rung_text`",
+            "resolve": "`rung_rows`, `rung_text`",
+            "retrieve": "`rung_rows`, `rung_text`, items table",
         }.get(kind, "-")
         add("  | `" + node_id + "` | " + kind + " | " + rung + " | " + asks
             + " | " + surfaces + " | " + writes + " |")
@@ -275,7 +275,9 @@ by hand — so this picture cannot drift from what a run does. Regenerate with
 - **DAG** — the nodes the ladder compiles to, and the table each one writes. A
   `gate` puts a rung's questions; a `resolve` answers the firmographics one flat
   search can settle; a `retrieve` spends the page visits a rung declared. The
-  nodes are the run: `table.csv` per node is the population at that step.
+  nodes are the run: each one writes its population and the prose behind every
+  verdict into the run's own database (`rung_rows`, `rung_text`), where the next
+  node queries it. CSV is an export you ask for, not the store.
 
 Each lane also carries its ladder as a table — rung, evidence grade, cost,
 gates, surfaces read, and what passing earns — which is the form to compare

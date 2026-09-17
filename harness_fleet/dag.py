@@ -38,17 +38,15 @@ from .models import CalibrationReport, ClaimFilter, ClosedModel, RoutePolicy, So
 from .profile import IdealCompanyProfile
 from .providers.registry import ProviderRegistry, ProviderResolutionError
 from .rungs import (
+    RungTables,
     advances_to,
     candidate_name,
     count_rows,
     gate_rows,
     next_rung,
-    read_table,
     record_text,
     resolved_gate_profile,
     surviving_ids,
-    table_path,
-    write_table,
 )
 from .store import HarnessStore
 from .task import load_task_spec
@@ -858,25 +856,10 @@ class _Carried:
         self.metadata = {"entity": candidate, "carried_from": source_uri}
 
 
-def _read_text(path: str) -> str:
-    if not path:
-        return ""
-    try:
-        return Path(path).read_text(encoding="utf-8")
-    except OSError:
-        return ""
-
-
-def _text_file(directory: Path, index: int, candidate: str) -> Path:
-    slug = "".join(ch if ch.isalnum() or ch in "-_." else "_" for ch in candidate) or "candidate"
-    return directory / "text" / f"{index:04d}-{slug}.txt"
-
-
 def _execute_gate_node(
     node: GateNode,
     store: HarnessStore,
     root: Path,
-    dag_dir: Path,
     state: dict[str, Any],
     dag_id: str,
 ) -> dict[str, Any]:
@@ -884,20 +867,19 @@ def _execute_gate_node(
     lane = _lane_for(node.lane, root)
     rung, ladder = _rung_from(node, lane, node.rung)
     profile = resolved_gate_profile(lane, workspace=root, profile_path=node.profile)
-    directory = dag_dir / node.id
-    directory.mkdir(parents=True, exist_ok=True)
+    tables = RungTables(store)
 
     carried: list[Any] = []
     evidence = node.evidence or SNIPPET
-    text_paths: dict[str, str] = {}
-    upstream_table: str = ""
+    texts: dict[str, str] = {}
+    upstream_node: str = ""
     if node.from_items:
         items_path = Path(node.from_items)
         if not items_path.is_file():
             items_path = root / node.from_items
         if not items_path.is_file():
             raise DagError(f"gate node '{node.id}' reads '{node.from_items}', which is not a file")
-        for index, item in enumerate(load_input_items(items_path)):
+        for item in load_input_items(items_path):
             item_id = str(getattr(item, "item_id", "") or "")
             metadata = getattr(item, "metadata", None)
             entity = ""
@@ -905,10 +887,7 @@ def _execute_gate_node(
                 entity = str(metadata.get("entity") or metadata.get("domain") or "")
             candidate = entity.strip() or item_id
             text = record_text(item)
-            path = _text_file(directory, index, candidate)
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(text, encoding="utf-8")
-            text_paths[item_id] = str(path)
+            texts[item_id] = text
             carried.append(_Carried(item_id, candidate, text,
                                     str(getattr(item, "source_uri", "") or "")))
     elif node.from_run:
@@ -941,40 +920,35 @@ def _execute_gate_node(
                 }
             except (OSError, ValueError):
                 given = {}
-        for index, record in enumerate(records):
+        for record in records:
             item_id = str(getattr(record, "item_id", "") or "")
             source = given.get(item_id)
             candidate = candidate_name(source or record, item_id)
             text = record_text(source) if source is not None else record_text(record)
             uri = str(getattr(source or record, "source_uri", "") or "")
-            path = _text_file(directory, index, candidate)
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(text, encoding="utf-8")
-            text_paths[item_id] = str(path)
+            texts[item_id] = text
             carried.append(_Carried(item_id, candidate, text, uri))
     else:
         source_id = node.from_gate or node.from_retrieve or ""
         source_state = (state.get("nodes") or {}).get(source_id) or {}
-        upstream_table = str(source_state.get("table") or "")
-        if not upstream_table or not Path(upstream_table).is_file():
-            raise DagError(
-                f"gate node '{node.id}' reads '{source_id}', which has no table to read"
-            )
+        upstream_node = source_id
+        if not isinstance(source_state, dict) or not source_state:
+            raise DagError(f"gate node '{node.id}' reads '{source_id}', which has not run")
         if node.from_retrieve:
             # We read these pages in the node above, so this rung stands on
             # fetched text whether or not it declared that grade itself.
             evidence = node.evidence or FETCHED
         elif not node.evidence:
             evidence = str(source_state.get("evidence") or SNIPPET)
-        for row in read_table(upstream_table):
+        upstream_texts = tables.texts(dag_id, source_id)
+        for row in tables.rows(dag_id, source_id):
             item_id = str(row.get("item_id") or "")
-            text_path = str(row.get("text_path") or "")
-            text_paths[item_id] = text_path
+            texts[item_id] = upstream_texts.get(item_id, "")
             carried.append(
                 _Carried(
                     item_id=item_id,
                     candidate=str(row.get("candidate") or item_id),
-                    text=_read_text(text_path),
+                    text=upstream_texts.get(item_id, ""),
                     source_uri=str(row.get("source_uri") or ""),
                 )
             )
@@ -990,11 +964,9 @@ def _execute_gate_node(
     )
     following = next_rung(ladder, rung)
     for gate_row, report in zip(rows, reports, strict=True):
-        gate_row["text_path"] = text_paths.get(str(gate_row["item_id"]), "")
         gate_row["advances"] = advances_to(report, following)
         gate_row["next_rung"] = following.name if following else ""
-    path = table_path(directory)
-    write_table(path, rows)
+    tables.write(dag_id, node.id, rows, texts=texts, kind="gate", lane=node.lane)
     counts = count_rows(rows)
     live = sorted(_evaluable_gates(profile))
     note = ""
@@ -1011,8 +983,7 @@ def _execute_gate_node(
         "evidence": evidence,
         "gates": list(rung.gates),
         "from_run": node.from_run or "",
-        "upstream_table": upstream_table,
-        "table": str(path),
+        "from_node": upstream_node,
         "next_rung": following.name if following else "",
         "counts": counts,
         "gates_live": live,
@@ -1034,8 +1005,9 @@ def _execute_gate_node(
 
 def _execute_retrieve_node(
     node: RetrieveNode,
+    store: HarnessStore,
     root: Path,
-    dag_dir: Path,
+    dag_id: str,
     state: dict[str, Any],
 ) -> dict[str, Any]:
     """Spend one rung's page visits and write down what came back."""
@@ -1043,6 +1015,7 @@ def _execute_retrieve_node(
 
     lane = _lane_for(node.lane, root)
     rung, _ladder = _rung_from(node, lane, node.rung)
+    tables = RungTables(store)
     wanted: list[Any] = []
     if node.from_items:
         # No gates asked for, so every captured candidate is walked.
@@ -1066,13 +1039,12 @@ def _execute_retrieve_node(
             ))
     else:
         source_state = (state.get("nodes") or {}).get(node.from_gate) or {}
-        upstream_table = str(source_state.get("table") or "")
-        if not upstream_table or not Path(upstream_table).is_file():
-            raise DagError(
-                f"retrieve node '{node.id}' reads gate '{node.from_gate}', which has no table"
-            )
+        if not isinstance(source_state, dict) or not source_state:
+            raise DagError(f"retrieve node '{node.id}' reads '{node.from_gate}', which has not run")
         passing = {str(item) for item in source_state.get("ids") or []}
-        for row in read_table(upstream_table):
+        gate_id = str(node.from_gate or "")
+        upstream_texts = tables.texts(dag_id, gate_id)
+        for row in tables.rows(dag_id, gate_id):
             item_id = str(row.get("item_id") or "")
             if item_id not in passing:
                 # The rung above decided this candidate is not owed a page visit.
@@ -1081,7 +1053,7 @@ def _execute_retrieve_node(
             wanted.append(_Carried(
                 item_id=item_id,
                 candidate=str(row.get("candidate") or item_id),
-                text=_read_text(str(row.get("text_path") or "")),
+                text=upstream_texts.get(item_id, ""),
                 source_uri=str(row.get("source_uri") or ""),
             ))
     # The walk is the engine's: the same gap-driven, per-host-paced walk every
@@ -1102,10 +1074,9 @@ def _execute_retrieve_node(
         by_entity.setdefault(str(getattr(item, "item_id", "") or ""), []).append(item)
     walked = {str(entry.get("entity") or ""): entry for entry in walk_report}
 
-    directory = dag_dir / node.id
-    directory.mkdir(parents=True, exist_ok=True)
     rows: list[dict[str, Any]] = []
-    for index, candidate_item in enumerate(wanted):
+    texts: dict[str, str] = {}
+    for candidate_item in wanted:
         candidate = candidate_item.candidate
         entry = walked.get(candidate_item.item_id, {})
         records = by_entity.get(candidate_item.item_id, [])
@@ -1115,12 +1086,9 @@ def _execute_retrieve_node(
             outcome, because = "read", ""
         else:
             outcome, because = "nothing", f"no page on {', '.join(rung.surfaces)} named them"
-        text = "\n\n".join(
+        texts[candidate_item.item_id] = "\n\n".join(
             str(getattr(record, "text", "") or "") for record in records
         )
-        path = _text_file(directory, index, candidate)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(text, encoding="utf-8")
         rows.append({
             "item_id": candidate_item.item_id,
             "candidate": candidate,
@@ -1132,27 +1100,35 @@ def _execute_retrieve_node(
             "gates": [],
             "surfaces": entry.get("by_surface") or {},
             "pages": [str(getattr(record, "source_uri", "") or "") for record in records],
-            "text_path": str(path),
             "source_uri": candidate_item.source_uri,
             "visited": entry.get("visited", 0),
             "kept": entry.get("kept", 0),
             "skipped": entry.get("skipped") or [],
             "advances": True,
         })
-    path = table_path(directory)
-    write_table(path, rows)
-    items_path = directory / "items.jsonl"
-    with items_path.open("w", encoding="utf-8") as handle:
-        for item in extra:
-            handle.write(json.dumps(item.model_dump(mode="json", by_alias=True)) + "\n")
+    tables.write(dag_id, node.id, rows, texts=texts, kind="retrieve", lane=node.lane)
+    # What the walk gathered is the next node's input, so it goes in the same
+    # place: a table queried out of the database rather than a file to re-read.
+    items_table = f"rung_items_{dag_id}_{node.id}".replace("-", "_")
+    with store.connect() as connection:
+        connection.execute(
+            f'CREATE TABLE IF NOT EXISTS "{items_table}" '
+            "(seq INTEGER PRIMARY KEY, payload TEXT NOT NULL)"
+        )
+        connection.execute(f'DELETE FROM "{items_table}"')
+        for seq, item in enumerate(extra):
+            connection.execute(
+                f'INSERT INTO "{items_table}" (seq, payload) VALUES (?, ?)',
+                (seq, json.dumps(item.model_dump(mode="json", by_alias=True), ensure_ascii=False)),
+            )
     return {
         "kind": "retrieve",
         "lane": node.lane,
         "rung": rung.name,
         "surfaces": list(rung.surfaces),
         "from_gate": node.from_gate,
-        "table": str(path),
-        "items": str(items_path),
+        "items_table": items_table,
+        "items": len(extra),
         "count": len(rows),
         "read": sum(1 for row in rows if row["outcome"] == "read"),
         "empty": sum(1 for row in rows if row["outcome"] == "nothing"),
@@ -1164,9 +1140,13 @@ def _execute_retrieve_node(
 
 def _open_gates(row: dict[str, Any]) -> set[str]:
     """Which gates this row is still holding open, from its own verdicts."""
-    try:
-        verdicts = json.loads(str(row.get("gates") or "[]"))
-    except ValueError:
+    verdicts = row.get("gates")
+    if isinstance(verdicts, str):
+        try:
+            verdicts = json.loads(verdicts or "[]")
+        except ValueError:
+            return set()
+    if not isinstance(verdicts, list):
         return set()
     return {
         str(result.get("gate"))
@@ -1177,30 +1157,29 @@ def _open_gates(row: dict[str, Any]) -> set[str]:
 
 def _execute_resolve_node(
     node: ResolveNode,
+    store: HarnessStore,
     root: Path,
-    dag_dir: Path,
+    dag_id: str,
     state: dict[str, Any],
 ) -> dict[str, Any]:
     """Ask the search engine the firmographic question, once per candidate."""
     from .discover import web_search
 
     _lane_for(node.lane, root)
+    tables = RungTables(store)
     source_state = (state.get("nodes") or {}).get(node.from_gate) or {}
-    upstream_table = str(source_state.get("table") or "")
-    if not upstream_table or not Path(upstream_table).is_file():
-        raise DagError(
-            f"resolve node '{node.id}' reads '{node.from_gate}', which has no table"
-        )
+    if not isinstance(source_state, dict) or not source_state:
+        raise DagError(f"resolve node '{node.id}' reads '{node.from_gate}', which has not run")
     passing = {str(item) for item in source_state.get("ids") or []}
-    directory = dag_dir / node.id
-    directory.mkdir(parents=True, exist_ok=True)
+    upstream_texts = tables.texts(dag_id, node.from_gate)
     rows: list[dict[str, Any]] = []
-    for index, row in enumerate(read_table(upstream_table)):
+    texts: dict[str, str] = {}
+    for row in tables.rows(dag_id, node.from_gate):
         item_id = str(row.get("item_id") or "")
         if item_id not in passing:
             continue
         candidate = str(row.get("candidate") or item_id)
-        carried_text = _read_text(str(row.get("text_path") or ""))
+        carried_text = upstream_texts.get(item_id, "")
         asked = [field for field in node.fields if field in _open_gates(row)]
         queries: list[str] = []
         hits: list[Any] = []
@@ -1232,10 +1211,7 @@ def _execute_resolve_node(
             for hit in hits
             if hit.get("url")
         )
-        text = carried_text + (("\n\n" + found_text) if found_text else "")
-        path = _text_file(directory, index, candidate)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(text, encoding="utf-8")
+        texts[item_id] = carried_text + (("\n\n" + found_text) if found_text else "")
         rows.append({
             "item_id": item_id,
             "candidate": candidate,
@@ -1254,18 +1230,15 @@ def _execute_resolve_node(
             "pages": [str(hit.get("url") or "") for hit in hits if hit.get("url")],
             "queries": queries,
             "hits": len([hit for hit in hits if hit.get("url")]),
-            "text_path": str(path),
             "source_uri": str(row.get("source_uri") or ""),
             "advances": True,
         })
-    path = table_path(directory)
-    write_table(path, rows)
+    tables.write(dag_id, node.id, rows, texts=texts, kind="resolve", lane=node.lane)
     return {
         "kind": "resolve",
         "lane": node.lane,
         "fields": list(node.fields),
         "from_gate": node.from_gate,
-        "table": str(path),
         "evidence": SNIPPET,
         "count": len(rows),
         "asked": sum(1 for row in rows if row["queries"]),
@@ -1323,31 +1296,31 @@ def run_dag(
             sidecar.write_text(json.dumps(state, indent=2), encoding="utf-8")
             continue
         if isinstance(node, GateNode):
-            if resume and isinstance(saved, dict) and saved.get("table") and Path(saved["table"]).is_file():
+            if resume and isinstance(saved, dict) and saved.get("ids") is not None:
                 saved["cached"] = True
                 id_sets[node_id] = {str(item) for item in saved.get("ids") or []}
                 continue
-            saved = _execute_gate_node(node, store, root, dag_dir, state, dag_id)
+            saved = _execute_gate_node(node, store, root, state, dag_id)
             state["nodes"][node_id] = saved
             id_sets[node_id] = {str(item) for item in saved.get("ids") or []}
             sidecar.write_text(json.dumps(state, indent=2), encoding="utf-8")
             continue
         if isinstance(node, ResolveNode):
-            if resume and isinstance(saved, dict) and saved.get("table") and Path(saved["table"]).is_file():
+            if resume and isinstance(saved, dict) and saved.get("ids") is not None:
                 saved["cached"] = True
                 id_sets[node_id] = {str(item) for item in saved.get("ids") or []}
                 continue
-            saved = _execute_resolve_node(node, root, dag_dir, state)
+            saved = _execute_resolve_node(node, store, root, dag_id, state)
             state["nodes"][node_id] = saved
             id_sets[node_id] = {str(item) for item in saved.get("ids") or []}
             sidecar.write_text(json.dumps(state, indent=2), encoding="utf-8")
             continue
         if isinstance(node, RetrieveNode):
-            if resume and isinstance(saved, dict) and saved.get("table") and Path(saved["table"]).is_file():
+            if resume and isinstance(saved, dict) and saved.get("ids") is not None:
                 saved["cached"] = True
                 id_sets[node_id] = {str(item) for item in saved.get("ids") or []}
                 continue
-            saved = _execute_retrieve_node(node, root, dag_dir, state)
+            saved = _execute_retrieve_node(node, store, root, dag_id, state)
             state["nodes"][node_id] = saved
             id_sets[node_id] = {str(item) for item in saved.get("ids") or []}
             sidecar.write_text(json.dumps(state, indent=2), encoding="utf-8")

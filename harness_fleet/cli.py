@@ -1898,7 +1898,9 @@ def _lane_items(items: list[Any], lane: Any) -> tuple[list[Any], int]:
 
 
 
-def funnel_population(captured: list[Any], state: dict[str, Any], spec: Any) -> list[Any]:
+def funnel_population(
+    captured: list[Any], state: dict[str, Any], spec: Any, store: Any
+) -> list[Any]:
     """Who the ladder left alive, with everything its walks read about them.
 
     Nobody is dropped for failing to earn more evidence, and nobody comes back
@@ -1915,13 +1917,14 @@ def funnel_population(captured: list[Any], state: dict[str, Any], spec: Any) -> 
     nodes = state.get("nodes") or {}
     gates = [node.id for node in spec.nodes if getattr(node, "kind", "") == "gate"]
     retrieves = [node.id for node in spec.nodes if getattr(node, "kind", "") == "retrieve"]
+    from .rungs import RungTables
+
+    tables = RungTables(store)
+    dag_id = str(state.get("dag_id") or "")
     alive: set[str] = set()
     eliminated: set[str] = set()
     for node_id in gates:
-        table = str((nodes.get(node_id) or {}).get("table") or "")
-        if not table or not Path(table).is_file():
-            continue
-        for row in read_rung_table(table):
+        for row in tables.rows(dag_id, node_id):
             item_id = str(row.get("item_id") or "")
             if row.get("outcome") == "eliminated":
                 eliminated.add(item_id)
@@ -1934,22 +1937,29 @@ def funnel_population(captured: list[Any], state: dict[str, Any], spec: Any) -> 
     kept = [item for item in captured if str(getattr(item, "item_id", "")) in alive]
     walked: list[Any] = []
     for node_id in retrieves:
-        items_path = str((nodes.get(node_id) or {}).get("items") or "")
-        if not items_path or not Path(items_path).is_file():
-            continue
-        for line in Path(items_path).read_text(encoding="utf-8").splitlines():
-            if not line.strip():
-                continue
-            item = InputItem.model_validate(json.loads(line))
+        for payload in read_rung_items(store, str((nodes.get(node_id) or {}).get("items_table") or "")):
+            item = InputItem.model_validate(payload)
             if str(item.item_id) in alive:
                 walked.append(item)
     return kept + walked
 
 
-def read_rung_table(path: str | Path) -> list[dict[str, str]]:
-    from .rungs import read_table
+def read_rung_items(store: Any, table: str) -> list[dict[str, Any]]:
+    """The items a walk gathered, read back out of the run's own database."""
+    if not table:
+        return []
+    with store.connect() as connection:
+        found = connection.execute(
+            f'SELECT payload FROM "{table}" ORDER BY seq'
+        ).fetchall()
+    return [json.loads(row["payload"]) for row in found]
 
-    return read_table(path)
+
+def read_rung_table(store: Any, dag_id: str, node_id: str) -> list[dict[str, Any]]:
+    """One node's table, from the run's database."""
+    from .rungs import RungTables
+
+    return RungTables(store).rows(dag_id, node_id)
 
 
 def funnel_stage_report(state: dict[str, Any]) -> dict[str, Any]:
@@ -1965,16 +1975,17 @@ def funnel_stage_report(state: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def funnel_walk_report(state: dict[str, Any]) -> list[dict[str, Any]]:
+def funnel_walk_report(state: dict[str, Any], store: Any) -> list[dict[str, Any]]:
     """What the walks did, in the shape the discovery report always carried."""
+    from .rungs import RungTables
+
+    tables = RungTables(store)
+    dag_id = str(state.get("dag_id") or "")
     out: list[dict[str, Any]] = []
-    for info in (state.get("nodes") or {}).values():
+    for node_id, info in (state.get("nodes") or {}).items():
         if info.get("kind") != "retrieve":
             continue
-        table = str(info.get("table") or "")
-        if not table or not Path(table).is_file():
-            continue
-        for row in read_rung_table(table):
+        for row in tables.rows(dag_id, node_id):
             out.append({
                 "entity": row.get("candidate"),
                 "rung": info.get("rung"),
@@ -2195,7 +2206,7 @@ def cmd_research(args: argparse.Namespace) -> None:
         report["funnel"] = funnel_stage_report(funnel_state)
         report["funnel_stage"] = funnel_stage_note(funnel_state)
         print(funnel_stage_note(funnel_state))
-        keyed = funnel_population(keyed, funnel_state, spec)
+        keyed = funnel_population(keyed, funnel_state, spec, store)
         report["gathered"] = len(keyed)
         _write_discovery_report(workspace, run_id, report)
         if not keyed:
@@ -2205,7 +2216,7 @@ def cmd_research(args: argparse.Namespace) -> None:
                 "territory the lane and profile name. "
                 f"Reasons recorded: {report_path}"
             )
-    report["enrich"] = funnel_walk_report(funnel_state)
+    report["enrich"] = funnel_walk_report(funnel_state, store)
     dossiers = bundle_records(keyed)
     print(f"Captured {len(keyed)} sources into {len(dossiers)} account dossiers")
 

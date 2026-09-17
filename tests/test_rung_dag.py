@@ -8,9 +8,7 @@ left), and a candidate eliminated on a search result is never fetched, never
 re-gated, and never appears in a table above the rung that killed it.
 """
 
-import csv
 import json
-from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
@@ -19,13 +17,14 @@ from harness_fleet.dag import DagSpec, GateNode, RetrieveNode
 from harness_fleet.gates import FETCHED, SNIPPET, FunnelReport, GateResult, LadderRung
 from harness_fleet.lanes import shipped_lanes
 from harness_fleet.rungs import (
+    RungTables,
     advances_to,
     count_rows,
     gate_rows,
     lane_spec,
     next_rung,
-    read_table,
-    write_table,
+    read_csv,
+    write_csv,
 )
 
 #: A delivery firm the shallow gates cannot finish judging, so the ladder owes
@@ -55,6 +54,15 @@ def _record(item_id: str, text: str, uri: str = "", entity: str = ""):
     record.quotes = [_Quote(text)]
     record.metadata = {"entity": entity} if entity else {}
     return record
+
+
+def _rows(store, state, node_id: str):
+    """One node's table, read the way everything else reads it: from the store."""
+    return RungTables(store).rows(str(state["dag_id"]), node_id)
+
+
+def _text(store, state, node_id: str, item_id: str) -> str:
+    return RungTables(store).text(str(state["dag_id"]), node_id, item_id)
 
 
 def _rung_of(lane, name):
@@ -229,29 +237,43 @@ def test_counts_say_where_the_world_shrank():
     assert counts["eliminated_at"] == {"kind": 1, "size": 1}
 
 
-def test_a_table_round_trips_with_its_verdicts_intact(tmp_path):
-    rows = [{
+def test_a_rung_table_lives_in_the_run_database(tmp_path):
+    """Rows and the prose they stand on, stored where the run already keeps state."""
+    from harness_fleet.store import HarnessStore
+
+    store = HarnessStore(tmp_path / "t.db")
+    tables = RungTables(store)
+    tables.write("dag", "g0-result", [{
         "item_id": "a", "candidate": "acme.com", "rung": "result", "evidence": SNIPPET,
         "outcome": "eliminated", "earned": "", "because": "kind: a product vendor",
         "gates": [{"gate": "kind", "outcome": "fail", "reason": "a product vendor"}],
-        "surfaces": {}, "pages": [], "text_path": "/tmp/a.txt", "source_uri": "https://x",
-    }]
-    path = tmp_path / "table.csv"
-    assert write_table(path, rows) == 1
+        "surfaces": {}, "pages": ["https://x"], "source_uri": "https://x",
+    }], texts={"a": "Acme sells a platform."}, kind="gate", lane="partner")
 
-    back = read_table(path)
+    back = tables.rows("dag", "g0-result")
     assert back[0]["candidate"] == "acme.com"
-    assert json.loads(back[0]["gates"])[0]["gate"] == "kind"
-    assert back[0]["outcome"] == "eliminated"
+    assert back[0]["gates"][0]["gate"] == "kind", "JSON comes back as structure, not a string"
+    assert back[0]["pages"] == ["https://x"]
+    assert tables.text("dag", "g0-result", "a") == "Acme sells a platform."
+    assert tables.ids("dag", "g0-result") == ["a"]
 
 
-def test_a_gate_appends_the_columns_it_adds(tmp_path):
-    path = tmp_path / "table.csv"
-    write_table(path, [{"item_id": "a", "advances": True, "next_rung": "surface"}])
-    with path.open(encoding="utf-8", newline="") as handle:
-        header = next(csv.reader(handle))
-    assert header[:4] == ["item_id", "candidate", "rung", "evidence"]
-    assert "advances" in header and "next_rung" in header
+def test_a_csv_is_something_you_ask_for(tmp_path):
+    """The export is a step, not the store: one call, when a file is wanted."""
+    from harness_fleet.store import HarnessStore
+
+    store = HarnessStore(tmp_path / "t.db")
+    tables = RungTables(store)
+    tables.write("dag", "g0-result", [{"item_id": "a", "candidate": "acme.com",
+                                       "outcome": "lead", "gates": [],
+                                       "advances": True, "next_rung": "surface"}])
+    path = tmp_path / "out.csv"
+    assert tables.export_csv("dag", "g0-result", path) == 1
+
+    back = read_csv(path)
+    assert back[0]["candidate"] == "acme.com" and back[0]["advances"] == "True"
+    # And the writing side, for anything that already has rows in hand.
+    assert write_csv(tmp_path / "direct.csv", [{"item_id": "b"}]) == 1
 
 
 # --------------------------------------------------------------------------
@@ -336,7 +358,7 @@ def test_the_walk_reads_only_what_the_rung_below_it_passed_on(tmp_path, monkeypa
     state = dag_module.run_dag(spec, store, workspace_root=tmp_path, dag_id="rungs")
 
     # The rung that reads search results ran over both candidates and killed one…
-    first = read_table(state["nodes"]["g0-result"]["table"])
+    first = _rows(store, state, "g0-result")
     assert [row["candidate"] for row in first] == ["zapcloud.example", "northwind.example"]
     assert [row["outcome"] for row in first] == ["eliminated", "lead"]
     assert state["nodes"]["g0-result"]["counts"]["eliminated_at"] == {"kind": 1}
@@ -345,7 +367,7 @@ def test_the_walk_reads_only_what_the_rung_below_it_passed_on(tmp_path, monkeypa
     # then its case studies) — and the vendor is walked by neither.
     assert fetched == ["northwind.example", "northwind.example"]
     assert "zapcloud.example" not in fetched
-    walked = read_table(state["nodes"]["r1-surface"]["table"])
+    walked = _rows(store, state, "r1-surface")
     assert [row["candidate"] for row in walked] == ["northwind.example"]
     assert state["nodes"]["r2-stories"]["surfaces"] == [
         "case_studies", "partners", "blog", "news",
@@ -353,7 +375,7 @@ def test_the_walk_reads_only_what_the_rung_below_it_passed_on(tmp_path, monkeypa
     # The dead candidate is in no table above the rung that killed it.
     for node in ("r1-surface", "g1-surface"):
         assert "zapcloud.example" not in [
-            row["candidate"] for row in read_table(state["nodes"][node]["table"])
+            row["candidate"] for row in _rows(store, state, node)
         ]
 
 
@@ -389,14 +411,16 @@ def test_the_fetched_rung_above_a_walk_gates_on_what_was_read(tmp_path, monkeypa
         "home", "about", "services", "partners", "careers",
     ]
     assert state["nodes"]["r1-surface"]["read"] == 1
-    second = read_table(state["nodes"]["g1-surface"]["table"])[0]
+    second = _rows(store, state, "g1-surface")[0]
     # Read, so this rung gates as a page: the headcount and the place are on the
     # page, the gates pass, and nothing is left to settle.
     assert second["evidence"] == FETCHED
     assert second["outcome"] == "qualified"
     assert second["because"] == ""
-    assert second["advances"] == "False"
-    assert Path(second["text_path"]).read_text(encoding="utf-8").startswith("northwind")
+    assert second["advances"] is False
+    assert _text(store, state, "r1-surface", "northwind.example").startswith(
+        "northwind.example"
+    )
 
 
 def test_a_rung_reports_the_gates_it_ran_and_where_its_table_lives(tmp_path, monkeypatch):
@@ -416,9 +440,8 @@ def test_a_rung_reports_the_gates_it_ran_and_where_its_table_lives(tmp_path, mon
     assert node["gates"] == ["kind", "size", "location"]
     assert node["counts"]["candidates"] == 1
     assert node["next_rung"] == "surface"
-    assert Path(node["table"]).is_file()
-    row = read_table(node["table"])[0]
-    assert Path(row["text_path"]).read_text(encoding="utf-8").startswith("Zap Cloud")
+    row = _rows(store, state, "g0-result")[0]
+    assert _text(store, state, "g0-result", row["item_id"]).startswith("Zap Cloud")
 
 
 def test_a_run_of_the_chain_writes_the_sidecar_with_every_table(tmp_path, monkeypatch):
@@ -434,7 +457,8 @@ def test_a_run_of_the_chain_writes_the_sidecar_with_every_table(tmp_path, monkey
 
     sidecar = json.loads((tmp_path / "runs" / "rungs" / "dag.json").read_text())
     assert sidecar["nodes"]["g0-result"]["kind"] == "gate"
-    assert sidecar["nodes"]["g0-result"]["table"].endswith("table.csv")
+    assert sidecar["nodes"]["g0-result"]["counts"]["candidates"] == 1
+    assert RungTables(store).rows("rungs", "g0-result")
 
 
 def test_the_cli_compiles_a_lane_ladder_into_a_spec(tmp_path, capsys):
@@ -552,14 +576,12 @@ def test_one_search_settles_the_address_the_walk_would_have_looked_for(
     assert node["resolved"] == 1
     # What the search found is the text the gate above stands on, and it is
     # enough: the country and the headcount are both settled without a page.
-    row = read_table(node["table"])[0]
-    assert "Registered office: 12 Kingsway, London" in Path(row["text_path"]).read_text(
-        encoding="utf-8"
+    row = _rows(store, state, "x0-result")[0]
+    assert "Registered office: 12 Kingsway, London" in _text(
+        store, state, "x0-result", row["item_id"]
     )
-    recheck = read_table(state["nodes"]["c0-result"]["table"])[0]
-    verdicts = {
-        gate["gate"]: gate["outcome"] for gate in json.loads(recheck["gates"])
-    }
+    recheck = _rows(store, state, "c0-result")[0]
+    verdicts = {gate["gate"]: gate["outcome"] for gate in recheck["gates"]}
     assert verdicts["location"] == "pass" and verdicts["size"] == "pass"
     # Two questions asked — the country and the headcount — and no walk node
     # exists to spend anything: the ladder above wanted only the country, and
@@ -612,7 +634,7 @@ def test_the_walk_only_reads_what_is_still_open_after_the_search(tmp_path, monke
     # The country came from the search; the kind question still needed the site.
     assert walked == ["northwind.example"]
     assert state["nodes"]["x0-result"]["resolved"] == 1
-    final = read_table(state["nodes"]["g1-surface"]["table"])[0]
+    final = _rows(store, state, "g1-surface")[0]
     assert final["candidate"] == "northwind.example"
 
 
