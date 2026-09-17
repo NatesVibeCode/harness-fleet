@@ -1,5 +1,15 @@
-"""Clean terminal UI and formatting utilities."""
+"""Clean terminal UI and formatting utilities.
+
+Colour is conditional on a human actually watching. Every escape code in this
+module used to be emitted unconditionally, so a redirect, a pipe, or a captured
+subprocess got escape sequences in its log — which is what made a board startup
+message unreadable in a file. `NO_COLOR` (any non-empty value), a non-tty
+stdout, and `TERM=dumb` all disable colour; `FORCE_COLOR` overrides, for piping
+output that is meant to keep its colour.
+"""
+import os
 import sys
+from contextlib import contextmanager
 
 # Terminal colors
 BOLD = "\033[1m"
@@ -9,6 +19,69 @@ YELLOW = "\033[33m"
 RED = "\033[31m"
 DIM = "\033[2m"
 RESET = "\033[0m"
+
+_COLOR_NAMES = ("BOLD", "GREEN", "CYAN", "YELLOW", "RED", "DIM", "RESET")
+_COLOR_CODES = {
+    "BOLD": "\033[1m",
+    "GREEN": "\033[32m",
+    "CYAN": "\033[36m",
+    "YELLOW": "\033[33m",
+    "RED": "\033[31m",
+    "DIM": "\033[2m",
+    "RESET": "\033[0m",
+}
+
+
+def colors_enabled() -> bool:
+    """True only when escape codes belong in the output.
+
+    Deliberately conservative: a redirected stream is not a terminal, so it gets
+    no colour unless someone asked for it with ``FORCE_COLOR``.
+    """
+    forced = os.environ.get("FORCE_COLOR")
+    if forced:
+        return forced not in {"0", "false", "no"}
+    if os.environ.get("NO_COLOR"):
+        return False
+    if os.environ.get("TERM", "") == "dumb":
+        return False
+    try:
+        return bool(sys.stdout.isatty())
+    except (AttributeError, ValueError):  # detached or replaced stdout
+        return False
+
+
+def _apply(enable: bool) -> None:
+    """Reword the module constants.
+
+    Callers interpolate them into f-strings, so an empty string prints the text
+    plainly rather than suppressing it.
+    """
+    global BOLD, GREEN, CYAN, YELLOW, RED, DIM, RESET
+    for name in _COLOR_NAMES:
+        globals()[name] = _COLOR_CODES[name] if enable else ""
+
+
+@contextmanager
+def plain():
+    """No colour for the duration, whatever the environment says.
+
+    For tests and for anything that renders output destined for a file. The swap
+    is module state; every caller reads the constants at call time, so it needs
+    no lock and no per-call plumbing.
+    """
+    module = sys.modules[__name__]
+    saved = {name: getattr(module, name) for name in _COLOR_NAMES}
+    try:
+        _apply(False)
+        yield
+    finally:
+        for name, value in saved.items():
+            setattr(module, name, value)
+
+
+_apply(colors_enabled())
+
 
 def banner():
     art = r"""
